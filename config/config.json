@@ -1,0 +1,41 @@
+{
+  "tactile_encoding": {
+    "raThresholdSlider": {"min": 1, "max": 10, "default": 3, "tickInterval": 1, "tickPosition": "TicksBelow"},
+    "refPeriodSlider": {"min": 1, "max": 10, "default": 3, "tickInterval": 1, "tickPosition": "TicksBelow"},
+    "saMaxFreqSlider": {"min": 50, "max": 500, "default": 150, "tickInterval": 50, "tickPosition": "TicksBelow"}
+  },
+  "nb_channels": 12,
+  "taxel_max_val": 255,
+  "log_dir": "logs",
+  "recordings_dir": "data",
+  "log_file_pattern": "{datetime}_LOG.log",
+  "log_level": "INFO",
+  "clock_drift_monitor": {
+    "mode": "monitor",
+    "sample_source": "taxel",
+    "max_buffer_samples": 400000,
+    "export_csv_on_stop": true,
+    "export_dir": "logs"
+  },
+  "serial": {
+    "port": "/dev/ttyACM0",
+    "input_baud_rate": 115200
+  },
+  "omega": {
+    "device_index": 0,
+    "serial_number": 11387
+  },
+  "clock_compensation": {
+    "enabled": true,
+    "initial_ppm": 3625.0,
+    "adaptive_enabled": true,
+    "sample_source": "taxel",
+    "update_interval_samples": 2000,
+    "min_fit_duration_ms": 30000,
+    "min_fit_samples": 5000,
+    "min_fit_r2": 0.995,
+    "ema_alpha": 0.15,
+    "max_step_ppm_per_update": 100.0,
+    "log_updates": true
+  }
+}

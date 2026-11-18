@@ -1,0 +1,40 @@
+{
+  "version": "2.0.0",
+  "type": "process",
+  "command": "/home/icub/.virtualenvs/omega/bin/python",
+  "options": {
+    "cwd": "${workspaceFolder}"
+  },
+  "presentation": {
+    "reveal": "always",
+    "panel": "shared",
+    "clear": true
+  },
+  "problemMatcher": [],
+  "tasks": [
+    {
+      "label": "Omega: Circular trajectory",
+      "args": [
+        "-u",
+        "${workspaceFolder}/trajectory_circle_example.py",
+        "--device-index",
+        "0",
+        "--serial",
+        "11387"
+      ],
+      "runOptions": {
+        "instanceLimit": 1
+      }
+    },
+    {
+      "label": "Omega: Circular trajectory + MCU recording",
+      "args": [
+        "-u",
+        "${workspaceFolder}/record_mcu_omega.py"
+      ],
+      "runOptions": {
+        "instanceLimit": 1
+      }
+    }
+  ]
+}
