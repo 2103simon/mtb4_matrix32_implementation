@@ -2,12 +2,13 @@
 Serial communication manager for MCU data reception.
 
 Handles binary protocol communication with the microcontroller over UART,
-parsing taxel pressure values and neuromorphic events.
+parsing taxel pressure values, neuromorphic events, and rate snapshots.
 
 Protocol format (framed, CRC-protected):
 - length(2, BE) + type(1) + payload(N) + crc32(4, BE)
 - type=0x02: Taxel payload = timestamp(4, BE) + 12 pressure bytes
 - type=0x04: Events payload = reference_timestamp(4, BE) + repeated [ID0(1), ID1(1), offset_ms(2, BE)]
+- type=0x05: Rates payload = timestamp(4, BE) + taxel[12](u8) + RA[12](u32 BE, centi-Hz) + SA[12](u32 BE, centi-Hz)
 - type=0x10: Command payload = command_id(1) [+ value_u16(2, BE)]
 - type=0x11: ACK payload = command_id(1) + status(1) + applied_value_u16(2, BE)
 
@@ -58,6 +59,8 @@ class SerialManager():
     SHUTDOWN_TIMEOUT_MS = 2000
     FRAME_TYPE_TAXEL = 0x02
     FRAME_TYPE_EVENTS = 0x04
+    FRAME_TYPE_TACTILE_RATES = 0x05
+    TACTILE_RATES_PAYLOAD_SIZE = 112
     FRAME_TYPE_COMMAND = 0x10
     FRAME_TYPE_ACK = 0x11
 
@@ -83,6 +86,8 @@ class SerialManager():
         # Data callbacks
         # Thread-safe communication queue
         self.data_queue = queue.Queue()
+        self._latest_rates_lock = threading.Lock()
+        self._latest_rates_snapshot = None
 
         self._is_running: bool = False
         self._safe_close: bool = True
@@ -160,6 +165,21 @@ class SerialManager():
         """
         return self._is_running
 
+    def get_latest_rates_snapshot(self):
+        """Return the newest complete rate snapshot, or None (thread-safe).
+
+        The recording queue remains lossless; this overwriting slot is for
+        future stimulation consumers that must not replay stale samples.
+        """
+        with self._latest_rates_lock:
+            if self._latest_rates_snapshot is None:
+                return None
+            snapshot = self._latest_rates_snapshot
+            return {**snapshot,
+                    "taxels": snapshot["taxels"].copy(),
+                    "ra_rates_hz": snapshot["ra_rates_hz"].copy(),
+                    "sa_rates_hz": snapshot["sa_rates_hz"].copy()}
+
     def has_received_telemetry(self) -> bool:
         """Return whether a valid taxel or event frame arrived this session."""
         return self._link_ready_emitted
@@ -184,6 +204,8 @@ class SerialManager():
 
         self._link_ready_emitted = False
         self._taxel_data_received = False
+        with self._latest_rates_lock:
+            self._latest_rates_snapshot = None
 
     def start_comm(self, port: str):
         if self._thread and self._thread.is_alive():
@@ -210,6 +232,8 @@ class SerialManager():
         self._rx_buffer.clear()
         self._link_ready_emitted = False
         self._taxel_data_received = False
+        with self._latest_rates_lock:
+            self._latest_rates_snapshot = None
 
         self._clock_compensator.reset_session()
 
@@ -328,6 +352,40 @@ class SerialManager():
                     pc_receive_ns
                 ))
 
+            elif frame_type == self.FRAME_TYPE_TACTILE_RATES:
+                if len(payload) != self.TACTILE_RATES_PAYLOAD_SIZE:
+                    self.logger.warning(
+                        "Invalid tactile rates payload length: %d", len(payload))
+                    del self._rx_buffer[:total_size]
+                    continue
+
+                raw_timestamp_ms = struct.unpack_from('>I', payload, 0)[0]
+                taxels = list(payload[4:16])
+                ra_rates_hz = [v / 100.0 for v in struct.unpack_from('>12I', payload, 16)]
+                sa_rates_hz = [v / 100.0 for v in struct.unpack_from('>12I', payload, 64)]
+                needs_pc_time = (self._emit_pc_receive_time
+                                 or self._capture_pc_receive_time_for_compensation)
+                pc_receive_ns = time.time_ns() if needs_pc_time else None
+                corrected_timestamp_ms = self._clock_compensator.compensate(
+                    raw_timestamp_ms,
+                    pc_receive_ns=pc_receive_ns,
+                    allow_adaptive_update=(self._clock_compensation_sample_source == "taxel"),
+                )
+                snapshot = {
+                    "raw_timestamp_ms": raw_timestamp_ms,
+                    "corrected_timestamp_ms": corrected_timestamp_ms,
+                    "pc_arrival_monotonic_ns": pc_arrival_monotonic_ns,
+                    "taxels": taxels,
+                    "ra_rates_hz": ra_rates_hz,
+                    "sa_rates_hz": sa_rates_hz,
+                }
+                with self._latest_rates_lock:
+                    self._latest_rates_snapshot = snapshot
+                if not self._taxel_data_received:
+                    self._taxel_data_received = True
+                    self.logger.info("First valid tactile rate snapshot received")
+                self.data_queue.put(("tactile_rates", snapshot))
+
             elif frame_type == self.FRAME_TYPE_EVENTS:
                 if len(payload) < 4 or ((len(payload) - 4) % 4) != 0:
                     self.logger.warning(
@@ -383,6 +441,7 @@ class SerialManager():
             if not self._link_ready_emitted and frame_type in {
                 self.FRAME_TYPE_TAXEL,
                 self.FRAME_TYPE_EVENTS,
+                self.FRAME_TYPE_TACTILE_RATES,
             }:
                 self._link_ready_emitted = True
                 self.data_queue.put(("link_ready",))
