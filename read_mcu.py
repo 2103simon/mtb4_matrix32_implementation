@@ -1,3 +1,4 @@
+import argparse
 import os
 import json
 import queue
@@ -19,6 +20,13 @@ CONFIG_PATH = BASE_DIR / "config" / "config.json"
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Receive and record MCU tactile snapshots")
+    parser.add_argument("--print-every", type=int, default=10,
+                        help="Print every Nth rate snapshot (default 10; 1 = all; 0 = none)")
+    args = parser.parse_args()
+    if args.print_every < 0:
+        parser.error("--print-every must be non-negative")
+    rate_samples = 0
 
     # ----------------------------------
     # 1. Load configuration
@@ -89,7 +97,19 @@ def main():
 
                 data_type = data[0]
 
-                if data_type == "taxel":
+                if data_type == "tactile_rates":
+                    snapshot = data[1]
+                    rate_samples += 1
+                    recorder.record_tactile_rates(snapshot)
+                    if args.print_every and rate_samples % args.print_every == 0:
+                        print(
+                            f"[RATES #{rate_samples}] MCU={snapshot['raw_timestamp_ms']} ms "
+                            f"taxels={snapshot['taxels']} "
+                            f"RA(Hz)={[round(x, 2) for x in snapshot['ra_rates_hz']]} "
+                            f"SA(Hz)={[round(x, 2) for x in snapshot['sa_rates_hz']]}"
+                        )
+
+                elif data_type == "taxel":
 
                     # read taxel data: taxel_values, corrected_timestamp_ms, raw_timestamp_ms
                     values = data[1]
