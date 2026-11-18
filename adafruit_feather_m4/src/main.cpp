@@ -5,12 +5,12 @@
  * @details
  * This module implements neuromorphic event-based tactile encoding for the iCub humanoid robot's
  * tactile fingertip sensors. It reads pressure data from a 12-taxel MTB4 skin board via CAN,
- * encodes mechanoreceptor responses (RA-I, SA-II), and transmits sorted spike events over UART.
+ * computes RA-I / SA-II rates per taxel and transmits coherent snapshots over USB serial.
  *
  * @features
- * - Rapidly Adapting (RA-I): Threshold-based event generation with refractory period
- * - Slowly Adapting (SA-II): Frequency-modulated spike generation proportional to pressure
- * - Event sorting and transmission: Chronological spike ordering before serial transmission
+ * - Rapidly Adapting (RA-I): Threshold-derived spike-request rate per sample
+ * - Slowly Adapting (SA-II): Frequency proportional to pressure
+ * - Snapshot transmission: Raw taxels and both rates, without event generation
  * - Framed CRC-protected binary protocol for telemetry and parameter commands
  * - Optional ASCII debug output mode during firmware development
  * - NeoPixel LED status indicator: Visual feedback for system state (OK, WARNING, ERROR)
@@ -152,7 +152,8 @@ SAParams saParams = {
     .maxSpikingFrequency = 300,
     .slope = 300.f / 255.f};
 
-// define refractory period in ms (minimum inter-event interval)
+// Legacy config setting retained for command compatibility; not applied to
+// transmitted rates. Python will enforce stimulation-rate limits.
 uint32_t refPeriod = 3;
 
 // Timing
@@ -176,7 +177,7 @@ FastCRC32 crc32;
 #define CMD_GET_CONFIG 0x04
 
 /// @brief Writes a framed packet: [length(2BE)] [type(1)] [payload] [crc32(4BE)]
-/// @param frameType Frame type identifier (0x02=Taxel, 0x04=Events)
+/// @param frameType Frame type identifier (0x05=Tactile rates, 0x11=ACK)
 /// @param payload Pointer to payload data (without type or crc)
 /// @param payloadLen Length of payload in bytes
 void writeFrame(uint8_t frameType, const uint8_t* payload, uint16_t payloadLen)
@@ -628,7 +629,7 @@ void setup()
 ///   [length(2, BE)] [type=0x10] [command_id(1) [+ value_u16(2, BE)]] [crc32(4, BE)]
 /// Supported command IDs:
 /// - 0x01 (CMD_RA_THR): Set RA-I threshold (0-255)
-/// - 0x02 (CMD_REF): Set refractory period in ms (1-100)
+/// - 0x02 (CMD_REF): Store legacy refractory setting (not used for rates)
 /// - 0x03 (CMD_SA_FREQ): Set SA-II max frequency in Hz (10-1000)
 /// - 0x04 (CMD_GET_CONFIG): Dump current configuration (ASCII debug mode only)
 void processSerialCommands()
@@ -787,7 +788,7 @@ void loop()
       const uint32_t sampleDtMs = previousSampleValid ? (uint32_t)(currentTime - lastTime) : 0;
       transmitTactileRates(currentTime, sampleDtMs);
       previousSampleValid = true;
-      updateTime();
+      lastTime = currentTime;
     }
   }
 
