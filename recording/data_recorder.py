@@ -14,9 +14,11 @@ class DataRecorder:
 
         self.taxel_file = None
         self.event_file = None
+        self.rates_file = None
 
         self.taxel_writer = None
         self.event_writer = None
+        self.rates_writer = None
 
     def start(self, timestamp=None):
 
@@ -27,6 +29,7 @@ class DataRecorder:
 
         taxel_path = self.recording_dir / f"{timestamp}_taxel.csv"
         event_path = self.recording_dir / f"{timestamp}_events.csv"
+        rates_path = self.recording_dir / f"{timestamp}_tactile_rates.csv"
 
         self.taxel_file = open(
             taxel_path, "w", newline=""
@@ -38,6 +41,8 @@ class DataRecorder:
 
         self.taxel_writer = csv.writer(self.taxel_file)
         self.event_writer = csv.writer(self.event_file)
+        self.rates_file = open(rates_path, "w", newline="")
+        self.rates_writer = csv.writer(self.rates_file)
 
         # CSV headers
         self.taxel_writer.writerow(
@@ -54,6 +59,13 @@ class DataRecorder:
             "pc_arrival_monotonic_ns"
         ])
 
+        self.rates_writer.writerow(
+            ["corrected_timestamp_ms", "raw_timestamp_ms", "pc_arrival_monotonic_ns"]
+            + [f"taxel_{i}" for i in range(12)]
+            + [f"ra_rate_hz_{i}" for i in range(12)]
+            + [f"sa_rate_hz_{i}" for i in range(12)]
+        )
+
         self.is_recording = True
 
         print("Recording started.")
@@ -66,6 +78,19 @@ class DataRecorder:
         self.taxel_writer.writerow(
             [corrected_timestamp, raw_timestamp, pc_arrival_monotonic_ns] + list(values)
         )
+
+    def record_tactile_rates(self, snapshot):
+        """Save one atomic MCU rate snapshot per CSV row."""
+        if not self.is_recording:
+            return
+        self.rates_writer.writerow([
+            snapshot["corrected_timestamp_ms"],
+            snapshot["raw_timestamp_ms"],
+            snapshot["pc_arrival_monotonic_ns"],
+            *snapshot["taxels"],
+            *snapshot["ra_rates_hz"],
+            *snapshot["sa_rates_hz"],
+        ])
 
     def record_events(self, events, pc_arrival_monotonic_ns):
 
@@ -87,9 +112,14 @@ class DataRecorder:
         if self.event_file:
             self.event_file.close()
 
+        if self.rates_file:
+            self.rates_file.close()
+
         self.taxel_file = None
         self.event_file = None
+        self.rates_file = None
         self.taxel_writer = None
         self.event_writer = None
+        self.rates_writer = None
 
         print("Recording stopped.")
