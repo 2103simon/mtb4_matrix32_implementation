@@ -1,6 +1,6 @@
 # Tactile-to-Matrix32 latest-sample pipeline — working notes
 
-Status: **increment (i) firmware implemented on branch, not yet built or hardware-tested**. Python decoder has not been updated.  
+Status: **increments (i) and (ii) implemented on branch, not yet hardware-tested**. Offline tests committed but not executed in this environment.  
 Branch: `feature/tactile-rate-streaming`  
 Last reviewed: 2026-11-18
 
@@ -14,7 +14,7 @@ Given (observed by project): MTB4 tactile updates ~70 Hz; Matrix32 parameter upd
 
 - [x] Inspect MCU acquisition, encoding, framing, and Python receiver.
 - [ ] **(i)** MCU emits raw taxels + per-taxel RA-I and SA-II rates, without generating/sorting/transmitting events.
-- [ ] **(ii)** Python parses, stores, and records these snapshots; add a latest-sample interface for Matrix32.
+- [x] **(ii)** Python parses, stores, and records these snapshots; add a latest-sample interface for Matrix32 (hardware validation pending).
 - [ ] **(iii)** User chooses taxel (0–11) and rate type; Python safely configures Matrix32 CH1 at the newest available frequency.
 - [ ] Measure update age, drops, frequency mapping, and stimulation latency on hardware.
 
@@ -63,7 +63,7 @@ Outer frame: `length_u16_BE = 1 + payload_len`, `type_u8 = 0x05`, payload, `crc3
 
 Payload = **112 bytes**, total framed = **119 bytes/sample**. ~70 Hz yields ~**8,330 bytes/s**, below the ideal 115200 8N1 limit of 11,520 bytes/s, but USB serial behavior and actual throughput must be verified. Chose uint32 centi-Hz instead of uint16 deci-Hz to retain 0.01 Hz resolution and safely represent RA-I transients above 6553.5 Hz (for short sample intervals). Normal recordings may not require this much precision; optimize later based on measured load.
 
-The Python `SerialManager` currently recognizes only `0x02`, `0x04` and `0x11`; this firmware's new `0x05` telemetry will **not be consumed** until increment (ii).
+The Python `SerialManager` now recognizes the `0x05` telemetry in addition to legacy `0x02`, `0x04` and `0x11` frames.
 
 ### Verification remaining
 
@@ -74,7 +74,26 @@ The Python `SerialManager` currently recognizes only `0x02`, `0x04` and `0x11`; 
 - [ ] Host parser and storage (increment ii).
 - [ ] Safe Matrix32 CH1 command pipeline (increment iii).
 
-## Python touchpoints, for later increments
+## Python receiver and verification (implemented)
+
+- `communication/serial_manager.py`: validates CRC and the exact **112-byte** payload, decodes timestamp, raw taxels, RA-I centi-Hz and SA-II centi-Hz. Emits `("tactile_rates", snapshot)` on `data_queue`. The snapshot is a dict with `raw_timestamp_ms`, `corrected_timestamp_ms`, `pc_arrival_monotonic_ns`, `taxels`, `ra_rates_hz`, `sa_rates_hz`. Arrays have 12 elements, rates expressed as float Hz. Applies existing clock compensation to the snapshot timestamp. Legacy packet types remain supported.
+- `SerialManager.get_latest_rates_snapshot()`: returns a thread-safe copy of the newest complete snapshot for future latest-value stimulation logic. The ordinary queue preserves all samples for recording.
+- `recording/data_recorder.py`: writes one row per snapshot to `data/<YYYYMMDD_HHMMSS>_tactile_rates.csv`, with 39 columns: timestamps (3), taxels (12), RA rates (12), SA rates (12). The existing taxel/event CSVs are also created for backward compatibility (and will be empty except for headers with the new MCU firmware).
+- `read_mcu.py`: handles `tactile_rates`, records all samples, prints a progress line every 10th by default; supports `--print-every 1` to inspect every frame and `--print-every 0` to suppress snapshot printing. No Matrix32 output yet.
+- `tests/test_tactile_rate_frames.py`: offline regression tests for exact decoding/scaling, fragmentation, concatenation, CRC rejection, malformed lengths, latest-value overwriting, and CSV recording.
+
+### Host check procedure
+
+1. Flash MCU firmware from `feature/tactile-rate-streaming` (PlatformIO project: `adafruit_feather_m4`).
+2. Install Python dependencies: `pip install -r requirements.txt`; check port in `config/config.json` (default `/dev/ttyACM0`).
+3. Run `python read_mcu.py --print-every 10` (or `--print-every 1` for each frame). Press Ctrl+C to stop and close CSV.
+4. Inspect `data/*_tactile_rates.csv`. Taxel values should be 0..255; SA rate should match raw * configured SA max / 255; RA rate should track thresholded sample-to-sample changes and return zero when unchanged. Note that RA output has **no** refractory limit.
+5. Run offline tests: `python -m unittest discover -s tests -v` from repository root. **These tests were authored but have not been run against live MCU data.**
+6. Investigate CRC failures, sample timestamp intervals, unexpected zeros/saturation, and connection reliability before controlling Matrix32.
+
+**Host validation limitation:** This environment could not clone the GitHub repository into a runnable sandbox (network DNS failure); no compilation or test execution is claimed. The code and tests have been committed directly through the GitHub connector.
+
+## Remaining Matrix32 work
 
 - `communication/serial_manager.py`: currently decodes `0x02` and `0x04` to an **unbounded `queue.Queue()`** and handles MCU clock compensation. Add `0x05` decoding with a structured snapshot; preserve raw and compensated timestamps and monotonic PC receipt time. For real-time stimulation, expose an independently **overwriting latest snapshot** rather than relying on the recording queue.
 - `read_mcu.py` and `recording/data_recorder.py`: presently record taxels/events separately; add rate snapshot recording, retain each sample for analysis. Avoid verbose per-sample console printing in fast path.
