@@ -1,0 +1,5 @@
+bleak==0.22.3
+prompt-toolkit>=3.0.52
+PyYAML
+pyserial
+matplotlib>=3.8
