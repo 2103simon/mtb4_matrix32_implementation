@@ -132,28 +132,13 @@ volatile uint32_t canRxSequence = 0;
 volatile uint32_t canRxOverflowCount = 0;
 volatile uint32_t canRxMalformedCount = 0;
 
-// Event structure and storage
-struct EventData
-{
-  uint8_t ID0;
-  uint8_t ID1;
-  uint32_t time;
-};
-
-EventData *events = nullptr;
-int eventCount = 0;
-int maxEvents = 0;
-uint32_t eventTime = 0;
-
 // RA-I (Rapidly Adapting) parameters
 struct RAParams
 {
   uint8_t prevTaxelVal[NUM_TAXELS];
   uint8_t threshold;
-  uint32_t lastEventTime[NUM_TAXELS]; // Track last event time per channel
 } raParams = {
-    .threshold = 3,
-    .lastEventTime = {} // Initialize all to 0
+    .threshold = 3
 };
 
 // SA-II (Slowly Adapting) parameters
@@ -161,18 +146,11 @@ struct SAParams
 {
   uint32_t maxSpikingFrequency;
   float slope;
-  uint32_t lastEventTime[NUM_TAXELS];
 };
 
 SAParams saParams = {
     .maxSpikingFrequency = 300,
-    .slope = 300.f / 255.f,
-    .lastEventTime = {}};
-
-SAParams saAltParams = {
-    .maxSpikingFrequency = 100,
-    .slope = 100.f / 255.f,
-    .lastEventTime = {}};
+    .slope = 300.f / 255.f};
 
 // define refractory period in ms (minimum inter-event interval)
 uint32_t refPeriod = 3;
@@ -186,7 +164,8 @@ FastCRC32 crc32;
 
 // Frame protocol constants
 #define FRAME_TYPE_TAXEL 0x02
-#define FRAME_TYPE_EVENTS 0x04
+#define FRAME_TYPE_EVENTS 0x04 // Legacy; rate-streaming firmware does not emit this
+#define FRAME_TYPE_TACTILE_RATES 0x05
 #define FRAME_TYPE_COMMAND 0x10
 #define FRAME_TYPE_ACK 0x11
 
@@ -195,20 +174,6 @@ FastCRC32 crc32;
 #define CMD_REF 0x02
 #define CMD_SA_FREQ 0x03
 #define CMD_GET_CONFIG 0x04
-
-/// @brief Clears the event buffer without deallocating memory.
-/// @details Resets eventCount to 0, keeping the allocated memory intact for reuse.
-void clearEvents()
-{
-  // Simply reset eventCount to 0, leaving the memory intact
-  eventCount = 0;
-}
-
-/// @brief Updates the last event time to the current event time.
-void updateTime()
-{
-  lastTime = currentTime;
-}
 
 /// @brief Writes a framed packet: [length(2BE)] [type(1)] [payload] [crc32(4BE)]
 /// @param frameType Frame type identifier (0x02=Taxel, 0x04=Events)
@@ -273,7 +238,7 @@ void applyCommandPayload(const uint8_t* payload, uint16_t payloadLen)
 
   if (cmdId == CMD_RA_THR)
   {
-    uint8_t newThreshold = (uint8_t)constrain((int)rawValue, 0, 255);
+    uint8_t newThreshold = (uint8_t)constrain((int)rawValue, 1, 255);
     raParams.threshold = newThreshold;
     ackPayload[1] = 0x01;
     ackPayload[2] = 0x00;
@@ -314,336 +279,84 @@ void applyCommandPayload(const uint8_t* payload, uint16_t payloadLen)
   writeFrame(FRAME_TYPE_ACK, ackPayload, sizeof(ackPayload));
 }
 
-/// @brief Transmits the current time as a 32-bit value over UART.
-/// @param timeToSend The time value (milliseconds) to send as 4 bytes.
-void sendCurrentTime(uint32_t timeToSend)
+/// @brief Encode a non-negative frequency as unsigned centi-Hz (0.01 Hz).
+/// @details uint32 can represent up to 42,949,672.95 Hz without overflow.
+///          No physiological or stimulation refractory limit is applied here.
+uint32_t hzToCentiHz(float frequencyHz)
 {
-  Serial.write(timeToSend >> 24);  // First byte (most significant byte)
-  Serial.write(timeToSend >> 16);  // Second byte
-  Serial.write(timeToSend >> 8);   // Third byte
-  Serial.write(timeToSend & 0xFF); // Fourth byte (least significant byte)
+  if (!(frequencyHz > 0.0f))
+    return 0;
+
+  const float maxHz = 42949672.0f;
+  if (frequencyHz >= maxHz)
+    return UINT32_MAX;
+
+  return (uint32_t)(frequencyHz * 100.0f + 0.5f);
 }
 
-/// @brief Transmits current taxel data with timestamp using the new framed protocol.
-/// @param currentTime The timestamp (milliseconds) for this taxel data.
-/// @details Frame format: [length] [type=0x02] [timestamp(4)] [12 pressures] [crc32]
-void transmitTaxelData(uint32_t currentTime)
+/// @brief Return a threshold-count-derived RA-I rate, with no refractory cap.
+/// @details Preserve the legacy adaptive reference: prevTaxelVal is only
+///          advanced when a change reaches threshold. Each threshold crossing
+///          contributes one requested spike; rate is requested spikes /
+///          elapsed sample duration. Zero dt or first sample returns zero.
+float calculateRaRateHz(int id, uint32_t sampleDtMs)
 {
-  uint8_t payload[16]; // 4 bytes timestamp + 12 bytes pressures
-  
-  // Write timestamp (big-endian)
-  payload[0] = (currentTime >> 24) & 0xFF;
-  payload[1] = (currentTime >> 16) & 0xFF;
-  payload[2] = (currentTime >> 8) & 0xFF;
-  payload[3] = currentTime & 0xFF;
-  
-  // Write 12 taxel pressure values
-  for (int i = 0; i < 12; i++) {
-    payload[4 + i] = taxelVal[i];
-  }
-  
-  writeFrame(FRAME_TYPE_TAXEL, payload, 16);
+  const int change = abs((int)taxelVal[id] - (int)raParams.prevTaxelVal[id]);
+  const uint8_t threshold = raParams.threshold > 0 ? raParams.threshold : 1;
+  if (change < threshold)
+    return 0.0f;
+
+  const uint32_t requestedEvents = (uint32_t)(change / threshold);
+  raParams.prevTaxelVal[id] = taxelVal[id];
+
+  if (sampleDtMs == 0)
+    return 0.0f;
+
+  return (1000.0f * (float)requestedEvents) / (float)sampleDtMs;
 }
 
-/// @brief Adds an event to the dynamic event array with automatic memory reallocation.
-/// @param ID0 First identifier (mechanoreceptor type: 0=RA-I, 1=SA-II, 2=SA-II alt).
-/// @param ID1 Second identifier (taxel channel 0-11).
-/// @param time Timestamp (milliseconds) when the event occurred.
-void addEvent(uint8_t ID0, uint8_t ID1, uint32_t time)
+/// @brief Return the SA-II requested firing rate, with no refractory cap.
+float calculateSaRateHz(int id)
 {
-  // Check if we need to reallocate memory
-  if (eventCount >= maxEvents)
+  return (float)taxelVal[id] * saParams.slope;
+}
+
+/// @brief Transmit one coherent tactile sample with both unconstrained rates.
+/// @details type 0x05 payload (112 bytes):
+///   timestamp_ms:uint32 BE; taxel[12]:uint8;
+///   ra_rate[12]:uint32 BE in centi-Hz;
+///   sa_rate[12]:uint32 BE in centi-Hz.
+/// The 7-byte framing overhead makes 119 bytes per sample.
+void transmitTactileRates(uint32_t timestampMs, uint32_t sampleDtMs)
+{
+  uint8_t payload[4 + NUM_TAXELS + 8 * NUM_TAXELS];
+  payload[0] = (uint8_t)(timestampMs >> 24);
+  payload[1] = (uint8_t)(timestampMs >> 16);
+  payload[2] = (uint8_t)(timestampMs >> 8);
+  payload[3] = (uint8_t)timestampMs;
+
+  for (int id = 0; id < NUM_TAXELS; ++id)
+    payload[4 + id] = taxelVal[id];
+
+  for (int id = 0; id < NUM_TAXELS; ++id)
   {
-#if (COMM_MODE == ASCII_MODE)
-    Serial.print("Will extend memory to: ");
-    Serial.print(maxEvents);
-    Serial.println(" events.");
-#endif
-    maxEvents = maxEvents == 0 ? 10 : maxEvents * 2; // Start with 10 events and double as needed
-    events = (EventData *)realloc(events, maxEvents * sizeof(EventData));
-    if (events == nullptr)
-    {
-      Serial.println("Memory allocation failed!");
-      return;
-    }
+    const uint32_t rate = hzToCentiHz(calculateRaRateHz(id, sampleDtMs));
+    const int offset = 4 + NUM_TAXELS + 4 * id;
+    payload[offset] = (uint8_t)(rate >> 24);
+    payload[offset + 1] = (uint8_t)(rate >> 16);
+    payload[offset + 2] = (uint8_t)(rate >> 8);
+    payload[offset + 3] = (uint8_t)rate;
   }
-
-  // Add the event to the array
-  events[eventCount].ID0 = ID0;
-  events[eventCount].ID1 = ID1;
-  events[eventCount].time = time;
-  eventCount++;
-}
-
-/// @brief Comparison function for qsort to sort EventData by timestamp.
-/// @param a Pointer to first EventData.
-/// @param b Pointer to second EventData.
-/// @return Negative if a < b, zero if a == b, positive if a > b.
-int compareEvents(const void *a, const void *b)
-{
-  EventData *eventA = (EventData *)a;
-  EventData *eventB = (EventData *)b;
-
-  // Return comparison result directly
-  return (eventA->time > eventB->time) - (eventA->time < eventB->time);
-}
-
-/// @brief Sorts all stored events by timestamp and transmits them over UART.
-/// @details Events are sorted chronologically, transmitted, and then cleared from memory.
-/// @brief Sorts all stored events by timestamp and transmits them using the new framed protocol.
-/// @details Frame format: [length] [type=0x04] [timestamp(4)] [ID0 ID1 time_offset(2)]×N [crc32]
-///          time_offset is delta from frame timestamp in milliseconds (uint16_t)
-void sortAndSendEvents()
-{
-  if (eventCount > 0)
+  for (int id = 0; id < NUM_TAXELS; ++id)
   {
-    // Sort events by time using qsort
-    qsort(events, eventCount, sizeof(EventData), compareEvents);
-    
-    // Get the reference timestamp (first event's timestamp)
-    uint32_t referenceTime = events[0].time;
-    
-    // Build payload: reference timestamp + events
-    // Max payload: 4 (timestamp) + 50*(1+1+2) = 204 bytes (fits comfortably)
-    uint8_t payload[256];
-    uint16_t payloadLen = 0;
-    
-    // Write reference timestamp (big-endian)
-    payload[0] = (referenceTime >> 24) & 0xFF;
-    payload[1] = (referenceTime >> 16) & 0xFF;
-    payload[2] = (referenceTime >> 8) & 0xFF;
-    payload[3] = referenceTime & 0xFF;
-    payloadLen = 4;
-    
-    // Write each event: ID0, ID1, time_offset(2 bytes BE)
-    for (int i = 0; i < eventCount; i++)
-    {
-      if ((size_t)(payloadLen + 4) > sizeof(payload)) {
-        // Payload too large; transmit this batch and start a new one
-        // For now, just skip remaining events (rare case)
-        break;
-      }
-      
-      payload[payloadLen++] = events[i].ID0;
-      payload[payloadLen++] = events[i].ID1;
-      
-      // Time offset from reference timestamp (uint16_t, big-endian)
-      uint16_t timeOffset = (uint16_t)(events[i].time - referenceTime);
-      payload[payloadLen++] = (timeOffset >> 8) & 0xFF;
-      payload[payloadLen++] = timeOffset & 0xFF;
-    }
-    
-    writeFrame(FRAME_TYPE_EVENTS, payload, payloadLen);
-    clearEvents();
+    const uint32_t rate = hzToCentiHz(calculateSaRateHz(id));
+    const int offset = 4 + NUM_TAXELS + 4 * NUM_TAXELS + 4 * id;
+    payload[offset] = (uint8_t)(rate >> 24);
+    payload[offset + 1] = (uint8_t)(rate >> 16);
+    payload[offset + 2] = (uint8_t)(rate >> 8);
+    payload[offset + 3] = (uint8_t)rate;
   }
-}
-
-/// @brief Applies refractory period constraint to inter-event time interval.
-/// @param dtEvents Time interval between events (milliseconds).
-/// @return The maximum of dtEvents and refPeriod to ensure minimum spacing.
-inline uint32_t applyRefractoryPeriod(uint32_t dtEvents)
-{
-  return dtEvents < refPeriod ? refPeriod : dtEvents;
-}
-
-/// @brief Encodes rapidly Adapting (RA-I) mechanoreceptor events.
-/// @param currentTime Current timestamp (milliseconds).
-/// @param id Taxel channel ID (0-11).
-void RaEncoding(uint32_t currentTime, int id)
-{
-  uint8_t abs_change = abs(taxelVal[id] - raParams.prevTaxelVal[id]);
-  if (abs_change >= raParams.threshold)
-  {
-    // Strict threshold-crossing count.
-    uint8_t requested_events = (uint8_t)(abs_change / raParams.threshold);
-
-    // One-sided window policy: exclude lastTime, allow currentTime.
-    uint32_t first_allowed = max(lastTime + 1, raParams.lastEventTime[id] + refPeriod);
-    if (first_allowed > currentTime)
-    {
-      raParams.prevTaxelVal[id] = taxelVal[id];
-      return;
-    }
-
-    uint32_t max_events = ((currentTime - first_allowed) / refPeriod) + 1;
-    uint8_t nb_events = (requested_events < max_events) ? requested_events : (uint8_t)max_events;
-
-#if (COMM_MODE == ASCII_MODE)
-    Serial.print("Taxel: ");
-    Serial.print(id);
-    Serial.print(", TaxelVal: ");
-    Serial.print(taxelVal[id]);
-    Serial.print(", prevTaxelVal: ");
-    Serial.print(raParams.prevTaxelVal[id]);
-    Serial.print(", diffTaxel: ");
-    Serial.print(abs_change);
-    Serial.print(", above thr: ");
-    Serial.print(abs_change >= raParams.threshold);
-    Serial.print(", # events: ");
-    Serial.println(nb_events);
-#endif
-
-    // Emit events backward from currentTime to avoid placing spikes at both window boundaries.
-    for (uint8_t event_counter = 0; event_counter < nb_events; event_counter++)
-    {
-      uint8_t reverse_idx = nb_events - 1 - event_counter;
-      eventTime = currentTime - ((uint32_t)reverse_idx * refPeriod);
-
-      addEvent(0, id, eventTime);
-      raParams.lastEventTime[id] = eventTime; // Update last event time for this channel
-
-#if (COMM_MODE == ASCII_MODE)
-      Serial.print("RA spike time: ");
-      Serial.println(eventTime);
-#endif
-    }
-
-    raParams.prevTaxelVal[id] = taxelVal[id];
-  }
-}
-
-/// @brief Encodes Slow Adaptation (SA-II) mechanoreceptor events based on taxel value magnitude.
-/// @param currentTime Current timestamp (milliseconds).
-/// @param id Taxel channel ID (0-11).
-void SaEncoding(uint32_t currentTime, int id)
-{
-  if (taxelVal[id] > 0)
-  {
-    // Taxel values are uint8_t, already constrained to [0, 255].
-    float local_frequ = (float)taxelVal[id] * saParams.slope;
-    uint32_t dtSaEvents = applyRefractoryPeriod((uint32_t)((1.0f / local_frequ) * 1E3));
-    // Ensure we respect the refPeriod
-    if (dtSaEvents < refPeriod)
-    {
-      dtSaEvents = refPeriod;
-    }
-#if (COMM_MODE == ASCII_MODE)
-    Serial.print("Taxel: ");
-    Serial.print(id);
-    Serial.print(", TaxelVal: ");
-    Serial.print(taxelVal[id]);
-    Serial.print(", Frequ: ");
-    Serial.print(local_frequ);
-    Serial.print("Hz, SA dt: ");
-    Serial.print(dtSaEvents);
-    Serial.print("ms, dt sample: ");
-    Serial.print(currentTime - lastTime);
-    Serial.print("ms");
-    Serial.print("ms, last event at: ");
-    Serial.print(saParams.lastEventTime[id]);
-    Serial.println("ms");
-#endif
-
-    // One-sided window policy: exclude lastTime, allow currentTime.
-    uint32_t first_allowed = max(lastTime + 1, saParams.lastEventTime[id] + dtSaEvents);
-    if (first_allowed > currentTime)
-    {
-#if (COMM_MODE == ASCII_MODE)
-      Serial.println("Event to add would be in the future to respect the frequ. No event added.");
-#endif
-      return;
-    }
-
-    uint32_t nb_events = ((currentTime - first_allowed) / dtSaEvents) + 1;
-    for (uint32_t event_counter = 0; event_counter < nb_events; event_counter++)
-    {
-      uint32_t reverse_idx = nb_events - 1 - event_counter;
-      eventTime = currentTime - reverse_idx * dtSaEvents;
-#if (COMM_MODE == ASCII_MODE)
-      Serial.print("SA spike time: ");
-      Serial.print(eventTime);
-      Serial.println("ms");
-#endif
-      addEvent(1, id, eventTime); // Add event with ID 1 and the channel ID `id`
-    }
-    saParams.lastEventTime[id] = currentTime;
-  }
-}
-
-/// @brief Encodes alternate Slow Adaptation (SA-II alt) events based on inverse taxel value.
-/// @param currentTime Current timestamp (milliseconds).
-/// @param id Taxel channel ID (0-11).
-void SaAltEncoding(uint32_t currentTime, int id)
-{
-  if (taxelVal[id] < 255)
-  {
-    float local_frequ = (255.f - (float)taxelVal[id]) * saAltParams.slope;
-    uint32_t dtSaAltEvents = applyRefractoryPeriod((uint32_t)((1.0f / local_frequ) * 1E3));
-    // Ensure we respect the refPeriod
-    if (dtSaAltEvents < refPeriod)
-    {
-      dtSaAltEvents = refPeriod;
-    }
-#if (COMM_MODE == ASCII_MODE)
-    Serial.print("Taxel: ");
-    Serial.print(id);
-    Serial.print(", TaxelVal: ");
-    Serial.print(taxelVal[id]);
-    Serial.print(", Frequ: ");
-    Serial.print(local_frequ);
-    Serial.print("Hz, SA dt: ");
-    Serial.print(dtSaAltEvents);
-    Serial.print("ms, dt sample: ");
-    Serial.print(currentTime - lastTime);
-    Serial.print("ms");
-    Serial.print("ms, last event at: ");
-    Serial.print(saAltParams.lastEventTime[id]);
-    Serial.println("ms");
-#endif
-    if (saAltParams.lastEventTime[id] + dtSaAltEvents > currentTime)
-    {
-#if (COMM_MODE == ASCII_MODE)
-      Serial.println("Event to add would be in the future to respect the frequ. No event added.");
-#endif
-      return;
-    }
-    else if (saAltParams.lastEventTime[id] + dtSaAltEvents < lastTime)
-    {
-#if (COMM_MODE == ASCII_MODE)
-      Serial.println("Event should be added even before last sample time, so we start at last sample time.");
-#endif
-      for (eventTime = lastTime; eventTime <= currentTime; eventTime += dtSaAltEvents)
-      {
-#if (COMM_MODE == ASCII_MODE)
-        Serial.print("SA alt spike time: ");
-        Serial.print(eventTime);
-        Serial.println("ms");
-#endif
-        addEvent(1, id, eventTime); // Add event with ID 1 and the channel ID `id`
-      }
-      saAltParams.lastEventTime[id] = eventTime;
-    }
-    else
-    {
-      for (eventTime = saAltParams.lastEventTime[id] + dtSaAltEvents; eventTime <= currentTime; eventTime += dtSaAltEvents)
-      {
-#if (COMM_MODE == ASCII_MODE)
-        Serial.print("SA alt spike time: ");
-        Serial.print(eventTime);
-        Serial.println("ms");
-#endif
-        addEvent(1, id, eventTime); // Add event with ID 1 and the channel ID `id`
-      }
-      saAltParams.lastEventTime[id] = eventTime;
-    }
-  }
-}
-
-/// @brief Processes all mechanoreceptor encodings for the current sample.
-/// @param currentTime Current timestamp (milliseconds).
-void mechanoreceptorEncoding(uint32_t currentTime)
-{
-#if (COMM_MODE == ASCII_MODE)
-  Serial.print("Mechanoreceptor encoding for time: ");
-  Serial.print(currentTime);
-  Serial.println("ms");
-#endif
-  for (int id = 0; id < NUM_TAXELS; id++)
-  {
-    RaEncoding(currentTime, id);
-    SaEncoding(currentTime, id);
-    // SaAltEncoding(currentTime, id);
-  }
+  writeFrame(FRAME_TYPE_TACTILE_RATES, payload, sizeof(payload));
 }
 
 /// @brief Initializes the NeoPixel LED.
@@ -1069,10 +782,11 @@ void loop()
     if (assembleTaxelSample(frame.canId, frame.payload, frame.payloadLength))
     {
       currentTime = frame.arrivalTime;
-      transmitTaxelData(currentTime);
-      mechanoreceptorEncoding(currentTime);
-      sortAndSendEvents();
-      // store the new last time
+      // First sample has no meaningful interval. Avoid a synthetic RA burst.
+      static bool previousSampleValid = false;
+      const uint32_t sampleDtMs = previousSampleValid ? (uint32_t)(currentTime - lastTime) : 0;
+      transmitTactileRates(currentTime, sampleDtMs);
+      previousSampleValid = true;
       updateTime();
     }
   }
