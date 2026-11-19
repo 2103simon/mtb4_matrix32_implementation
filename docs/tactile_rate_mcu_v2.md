@@ -40,6 +40,12 @@ The previous Python `communication/serial_manager.py` already has `FRAME_TYPE_TA
 
 Existing diagnostic `0x12` frames are still emitted every ten seconds. Event-related diagnostic counters will remain zero in rate mode.
 
+## Fixed MTB4 acquisition period
+
+The experimental `E06_MTB4_PERIOD_MS` compile-time selector has been removed. During startup the Feather now always requests a **10 ms MTB4 skin-service transmit period (100 Hz nominal)** using `SKIN_SET_BRD_CFG`. This configures the MTB4 at runtime; it does not flash MTB4 firmware.
+
+**Throughput consideration:** a 119-byte rate snapshot at 100 Hz is **11,900 bytes/s**, excluding periodic diagnostics and USB overhead. This exceeds the nominal **11,520 bytes/s** payload capacity of a conventional 115200-baud 8N1 UART. The Feather's `Serial` may be USB CDC (where the configured baud is not necessarily a physical line-rate limit), so actual sustained throughput and backpressure **must be measured** before assuming all 100 samples/s reach Python without queuing.
+
 ## Validation
 
 1. Switch to this branch: `git fetch origin && git switch feature/tactile-rate-streaming-v2 && git pull`.
