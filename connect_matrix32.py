@@ -9,12 +9,51 @@ Run from repository root:
 """
 
 import asyncio
+import subprocess
 
 from matrix32 import Matrix32Device
+from matrix32.ble import check_bluetooth_service
 
 
 HEARTBEAT_SECONDS = 5.0
 DISCONNECT_TIMEOUT_SECONDS = 5.0
+
+
+def check_pc_bluetooth():
+    """Verify BlueZ service and that the default Bluetooth adapter is powered."""
+    if not check_bluetooth_service():
+        raise RuntimeError(
+            "PC Bluetooth service is unavailable. "
+            "Start it with: sudo systemctl start bluetooth"
+        )
+
+    try:
+        result = subprocess.run(
+            ["bluetoothctl", "show"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        raise RuntimeError(
+            "Unable to check PC Bluetooth adapter using 'bluetoothctl show'."
+        ) from exc
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            "No usable PC Bluetooth adapter was found. "
+            "Check the adapter and run 'bluetoothctl show'."
+        )
+    if not any(
+        line.strip().lower() == "powered: yes"
+        for line in result.stdout.splitlines()
+    ):
+        raise RuntimeError(
+            "PC Bluetooth adapter is OFF. "
+            "Turn it on with: bluetoothctl power on"
+        )
+
+    print("PC Bluetooth service is active and adapter is powered on.")
 
 
 async def hold_connection(device, heartbeat_seconds=HEARTBEAT_SECONDS):
@@ -32,6 +71,8 @@ async def hold_connection(device, heartbeat_seconds=HEARTBEAT_SECONDS):
 
 async def run_connection(device=None, heartbeat_seconds=HEARTBEAT_SECONDS):
     """Connect only, hold, then disconnect on exit or failure."""
+    # Fail before constructing/connecting the Matrix32 device.
+    await asyncio.to_thread(check_pc_bluetooth)
     device = Matrix32Device() if device is None else device
     try:
         print("Connecting to Matrix32 (no stimulation commands)...")
