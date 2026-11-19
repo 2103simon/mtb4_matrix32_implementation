@@ -1,7 +1,7 @@
 """MTB4 -> Feather M4 -> latest tactile rate -> Matrix32 channel 1.
 
-No stimulation without --arm and explicit, positive output parameters in the
-dedicated config/stim_tactile_ch1.yaml. Do not use on a person before
+No stimulation without --arm. Fixed CH1 settings are in config/config.json
+under matrix32_stimulation. Do not use on a person before
 independent bench/oscilloscope verification.
 """
 import argparse
@@ -16,17 +16,61 @@ from communication.mcu_configuration import McuConfigurationHandshake
 from communication.serial_manager import SerialManager
 from connect_matrix32 import check_bleak_version, check_pc_bluetooth
 from matrix32 import Matrix32Device
-from matrix32.config import load_config
 from recording.data_recorder import DataRecorder
 
 
 ROOT = Path(__file__).resolve().parent
 MCU_CONFIG = ROOT / "config" / "config.json"
-STIM_CONFIG = ROOT / "config" / "stim_tactile_ch1.yaml"
 STALE_SECONDS = 0.25
 POLL_SECONDS = 0.005
 STOP_TIMEOUT_SECONDS = 4.0
 DISCONNECT_TIMEOUT_SECONDS = 5.0
+
+
+def build_stim_config(config):
+    """Convert fixed CH1 settings to Matrix32 protocol configuration.
+
+    Frequency is intentionally not configurable here: the MCU provides it.
+    SF=20 is an untransmitted placeholder, overwritten from a fresh MCU
+    snapshot before the first ACK-verified configuration/START.
+    """
+    settings = config["matrix32_stimulation"]
+    channel = settings["channel"]
+    current = settings["currentCommand"]
+    width = settings["phaseWidthUs"]
+    voltage = settings["outputVoltageCommand"]
+    inter_pulse = settings["interPulseTimingCommand"]
+
+    if type(channel) is not int or channel != 1:
+        raise ValueError("Only Matrix32 channel 1 is supported")
+    if type(current) is not int or not 1 <= current <= 65535:
+        raise ValueError("matrix32_stimulation.currentCommand must be 1..65535")
+    if type(width) is not int or not 1 <= width <= 65535:
+        raise ValueError("matrix32_stimulation.phaseWidthUs must be 1..65535")
+    if type(voltage) is not int or not 1 <= voltage <= 255:
+        raise ValueError("matrix32_stimulation.outputVoltageCommand must be 1..255")
+    if type(inter_pulse) is not int or not 1 <= inter_pulse <= 255:
+        raise ValueError("matrix32_stimulation.interPulseTimingCommand must be 1..255")
+
+    # A phase width is the commanded width of ONE polarity; nominal
+    # biphasic occupied time starts at 2*width before device overhead.
+    # At SF=400, physical output ~401 Hz gives 2493.77 us per cycle.
+    # 2*100=200 us and 2*200=400 us fit the full CH1-only cycle.
+    # A hypothetical /32 slot is only ~77.93 us, which fits neither.
+    # There is NO evidence that CH1-only must obey such a /32 slot.
+    # This arithmetic is NOT hardware acceptance or waveform validation:
+    # verify the exact SF=400/SW setting on a dummy load and scope.
+    cycle_us = 1_000_000 / 401.0
+    if 2 * width >= cycle_us:
+        raise ValueError(
+            "Biphasic phase widths exceed one 401 Hz output cycle; "
+            "choose a narrower phaseWidthUs"
+        )
+    return {
+        "sa": [1], "sc": [current], "sw": [width],
+        "pw": width, "sv": voltage, "st": inter_pulse,
+        "sf": 20,
+    }
 
 
 def validate_settings(config, stim_config, *, arm):
@@ -52,7 +96,7 @@ def validate_settings(config, stim_config, *, arm):
     ):
         raise ValueError(
             "Before --arm, set positive CH1 current and pulse width in "
-            "config/stim_tactile_ch1.yaml; confirm safe values with your protocol"
+            "config/config.json matrix32_stimulation; confirm safe values with your protocol"
         )
     return taxel, receptor
 
@@ -241,8 +285,9 @@ async def stale_supervisor(sm, device, ready, *, arm, stale_seconds):
             raise TimeoutError("Stale tactile input: watchdog stopped stimulation")
 
 
-async def run(config, stim_config, *, arm, stale_seconds=STALE_SECONDS,
+async def run(config, stim_config=None, *, arm, stale_seconds=STALE_SECONDS,
               serial_factory=SerialManager, device_factory=Matrix32Device):
+    stim_config = build_stim_config(config) if stim_config is None else stim_config
     taxel, receptor = validate_settings(config, stim_config, arm=arm)
     check_bleak_version()
     await asyncio.to_thread(check_pc_bluetooth)
@@ -309,9 +354,13 @@ def main():
         parser.error("--stale-ms must be between 50 and 2000")
     with MCU_CONFIG.open(encoding="utf-8") as file:
         config = json.load(file)
-    if not STIM_CONFIG.is_file():
-        parser.error(f"Missing dedicated CH1 stimulation configuration: {STIM_CONFIG}")
-    stim_config = load_config(STIM_CONFIG)
+    stim_config = build_stim_config(config)
+    print(
+        f"[CONFIG] Fixed Matrix32 CH1: SC={stim_config['sc'][0]}, "
+        f"SW={stim_config['sw'][0]} us/phase, "
+        f"SV={stim_config['sv']}, ST={stim_config['st']}; "
+        "SF comes from the selected MCU rate."
+    )
     try:
         asyncio.run(run(config, stim_config, arm=args.arm, stale_seconds=args.stale_ms / 1000))
     except KeyboardInterrupt:
