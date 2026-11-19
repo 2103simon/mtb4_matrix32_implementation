@@ -5,32 +5,60 @@ timestamps. Host BLE write/ACK timestamps are observations, not electrical
 waveform or device-application timestamps. Files are created only by --record.
 """
 import json
+import queue
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
 
 class Matrix32Trace:
+    """Queue events immediately; do not block the BLE event loop on file I/O."""
+
     def __init__(self, directory, recording_id):
         self.path = Path(directory) / f"{recording_id}_matrix32_commands.jsonl"
         self._file = self.path.open("x", encoding="utf-8")
+        self._pending = queue.SimpleQueue()
+        self._closed = False
+        self._error = None
+        self._writer = threading.Thread(
+            target=self._write_forever, name="matrix32-trace-writer", daemon=True,
+        )
+        self._writer.start()
+
+    def _write_forever(self):
+        try:
+            while True:
+                row = self._pending.get()
+                if row is None:
+                    break
+                self._file.write(
+                    json.dumps(row, default=str, separators=(",", ":")) + "\n"
+                )
+                self._file.flush()
+        except BaseException as exc:
+            self._error = exc
+        finally:
+            self._file.close()
 
     def emit(self, event, **details):
-        if self._file is None:
+        if self._closed:
             return
-        row = {
+        # Timestamp at event creation, before the asynchronous file write.
+        self._pending.put({
             "event": event,
             "pc_monotonic_ns": time.monotonic_ns(),
             "pc_wall_iso": datetime.now().astimezone().isoformat(),
             **details,
-        }
-        self._file.write(json.dumps(row, default=str, separators=(",", ":")) + "\n")
-        self._file.flush()
+        })
 
     def close(self):
-        if self._file is not None:
-            self._file.close()
-            self._file = None
+        if not self._closed:
+            self._closed = True
+            self._pending.put(None)
+            self._writer.join()
+        if self._error is not None:
+            raise OSError(f"Matrix32 event trace write failed: {self._error}") from self._error
 
 
 class OptionalCapture:
