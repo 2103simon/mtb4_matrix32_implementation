@@ -10,13 +10,40 @@ Run from repository root:
 
 import asyncio
 import subprocess
+from importlib.metadata import PackageNotFoundError, version
 
 from matrix32 import Matrix32Device
 from matrix32.ble import check_bluetooth_service
 
 
 HEARTBEAT_SECONDS = 5.0
+VALIDATED_BLEAK_VERSION = "0.22.3"
 DISCONNECT_TIMEOUT_SECONDS = 5.0
+
+
+def check_bleak_version():
+    """Reject incompatible Bleak versions before scanning repeatedly.
+
+    The validated Linux BlueZ 5.53 setup requires Bleak 0.22.3; newer
+    versions have previously raised KeyError('Roles') during scanning.
+    """
+    try:
+        installed = version("bleak")
+    except PackageNotFoundError as exc:
+        raise RuntimeError(
+            "Python package 'bleak' is missing. Install dependencies with: "
+            "python -m pip install -r requirements.txt"
+        ) from exc
+    if installed != VALIDATED_BLEAK_VERSION:
+        raise RuntimeError(
+            f"Incompatible Bleak {installed}; the validated Matrix32/BlueZ "
+            f"environment requires bleak=={VALIDATED_BLEAK_VERSION}. "
+            "The repeated Bluetooth scan KeyError('Roles') was previously "
+            "caused by an incompatible Bleak version. Fix the active Python "
+            "environment with: "
+            f"python -m pip install 'bleak=={VALIDATED_BLEAK_VERSION}'"
+        )
+    print(f"Bleak {installed} verified (Matrix32 validated version).")
 
 
 def check_pc_bluetooth():
@@ -72,6 +99,7 @@ async def hold_connection(device, heartbeat_seconds=HEARTBEAT_SECONDS):
 async def run_connection(device=None, heartbeat_seconds=HEARTBEAT_SECONDS):
     """Connect only, hold, then disconnect on exit or failure."""
     # Fail before constructing/connecting the Matrix32 device.
+    check_bleak_version()
     await asyncio.to_thread(check_pc_bluetooth)
     device = Matrix32Device() if device is None else device
     try:
