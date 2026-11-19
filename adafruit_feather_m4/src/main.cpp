@@ -169,6 +169,7 @@ FastCRC32 crc32;
 // Frame protocol constants
 #define FRAME_TYPE_TAXEL 0x02
 #define FRAME_TYPE_EVENTS 0x04
+#define FRAME_TYPE_TACTILE_RATES 0x05
 #define FRAME_TYPE_DIAGNOSTICS 0x12
 #define FRAME_TYPE_COMMAND 0x10
 #define FRAME_TYPE_ACK 0x11
@@ -327,6 +328,44 @@ void transmitTaxelData(uint32_t currentTime)
   }
   
   writeFrame(FRAME_TYPE_TAXEL, payload, 16);
+}
+
+/// @brief Send a single timestamped sample with 12 raw taxels and 24 rates.
+/// @details Frame type 0x05, 112 payload bytes:
+/// [timestamp:uint32 BE][taxel[12]:uint8]
+/// [RA-I[12]:uint32 BE, centi-Hz][SA-II[12]:uint32 BE, centi-Hz].
+/// The existing writer adds length, type, and CRC32 (119 bytes total).
+void transmitTactileRateSnapshot(uint32_t sampleTimeMs, uint32_t sampleDtMs)
+{
+  uint32_t raRateCentiHz[NUM_TAXELS] = {};
+  uint32_t saRateCentiHz[NUM_TAXELS] = {};
+  calculateTactileRates(taxelVal, sampleDtMs, raRateCentiHz, saRateCentiHz);
+
+  uint8_t payload[4 + NUM_TAXELS + 8 * NUM_TAXELS] = {};
+  payload[0] = (uint8_t)(sampleTimeMs >> 24);
+  payload[1] = (uint8_t)(sampleTimeMs >> 16);
+  payload[2] = (uint8_t)(sampleTimeMs >> 8);
+  payload[3] = (uint8_t)sampleTimeMs;
+
+  for (int id = 0; id < NUM_TAXELS; ++id)
+    payload[4 + id] = taxelVal[id];
+
+  for (int id = 0; id < NUM_TAXELS; ++id)
+  {
+    const size_t raOffset = 4 + NUM_TAXELS + 4 * id;
+    const size_t saOffset = 4 + NUM_TAXELS + 4 * NUM_TAXELS + 4 * id;
+    const uint32_t ra = raRateCentiHz[id];
+    const uint32_t sa = saRateCentiHz[id];
+    payload[raOffset] = (uint8_t)(ra >> 24);
+    payload[raOffset + 1] = (uint8_t)(ra >> 16);
+    payload[raOffset + 2] = (uint8_t)(ra >> 8);
+    payload[raOffset + 3] = (uint8_t)ra;
+    payload[saOffset] = (uint8_t)(sa >> 24);
+    payload[saOffset + 1] = (uint8_t)(sa >> 16);
+    payload[saOffset + 2] = (uint8_t)(sa >> 8);
+    payload[saOffset + 3] = (uint8_t)sa;
+  }
+  writeFrame(FRAME_TYPE_TACTILE_RATES, payload, sizeof(payload));
 }
 
 /// @brief Adds an event to the dynamic event array with automatic memory reallocation.
@@ -867,10 +906,19 @@ void loop()
     {
       ++taxelSamplesCompletedCount;
       currentTime = frame.arrivalTime;
+#if MCU_RATE_STREAMING
+      // Initial sample establishes the RA reference; rate=0 until a valid dt.
+      static bool previousSampleValid = false;
+      const uint32_t sampleDtMs =
+          previousSampleValid ? (uint32_t)(currentTime - lastTime) : 0;
+      transmitTactileRateSnapshot(currentTime, sampleDtMs);
+      previousSampleValid = true;
+#else
       transmitTaxelData(currentTime);
       mechanoreceptorEncoding(currentTime);
       sortAndSendEvents();
-      // store the new last time
+#endif
+      // Keep timing state consistent in either output mode.
       updateTime();
     }
   }
