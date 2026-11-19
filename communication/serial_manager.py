@@ -531,7 +531,7 @@ class SerialManager():
 
         return bytes([cmd_id]) + struct.pack('>H', value)
 
-    def send_command(self, command: str) -> None:
+    def send_command(self, command: str) -> bool:
         """
         Send framed binary command to MCU for parameter configuration.
 
