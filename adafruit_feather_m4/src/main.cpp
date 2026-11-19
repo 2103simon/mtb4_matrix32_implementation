@@ -63,17 +63,9 @@ CANSAME5x CAN;
 #define CAN_BD_RATE 1000000
 #define NOLD 0xFF
 
-// E06 experimental build option: this is an MTB4 skin-service request,
-// not a Feather timer. On Feather startup, this CAN command changes the
-// MTB4's live transmission-period setting (without flashing MTB4 firmware).
-// Production/default builds retain the historical 10 ms request.
-// Only approved test intervals are accepted to avoid arbitrary CAN values.
-#ifndef E06_MTB4_PERIOD_MS
-#define E06_MTB4_PERIOD_MS 10
-#endif
-static_assert(E06_MTB4_PERIOD_MS == 10 || E06_MTB4_PERIOD_MS == 12 ||
-              E06_MTB4_PERIOD_MS == 16 || E06_MTB4_PERIOD_MS == 20,
-              "E06_MTB4_PERIOD_MS must be one of 10, 12, 16, or 20 ms");
+// Fixed MTB4 skin-service transmission request: 10 ms = 100 Hz.
+// Actual sample arrival rate depends on CAN/USB transport and must be measured.
+static constexpr uint8_t MTB4_TX_PERIOD_MS = 10;
 
 #define TAXEL_ID 0x00
 #define SENS 0x00
@@ -665,7 +657,7 @@ void startMTB4stream()
   CAN.beginPacket(ID);
   CAN.write(0x4D); // SKIN_SET_BRD_CFG
   CAN.write(0x01); // contains the compensation type
-  CAN.write((uint8_t)E06_MTB4_PERIOD_MS); // requested MTB4 period, ms
+  CAN.write(MTB4_TX_PERIOD_MS); // fixed 10 ms MTB4 transmission period (100 Hz)
   CAN.write(NOLD); // contains the no-load value
   CAN.endPacket();
 
