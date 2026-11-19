@@ -96,6 +96,7 @@ class SerialManager():
         self.config = config or {}
         self.baudrate = self._get_baudrate_from_config()
         self._rx_buffer = bytearray()
+        self._resynchronizing = False
         self._link_ready_emitted = False
         self._taxel_data_received = False
         self._emit_pc_receive_time = self._clock_drift_monitor_enabled_from_config()
@@ -230,6 +231,7 @@ class SerialManager():
         self._stop_event.clear()
 
         self._rx_buffer.clear()
+        self._resynchronizing = False
         self._link_ready_emitted = False
         self._taxel_data_received = False
         with self._latest_rates_lock:
@@ -296,17 +298,45 @@ class SerialManager():
             except (AttributeError, OSError, serial.SerialException) as e:
                 self.logger.error(f"Error closing serial port: {e}")
 
+    def _find_valid_frame_offset(self):
+        """Locate a complete CRC-valid frame after losing frame alignment.
+
+        An invalid packet can contain plausible length headers. Returning
+        early for one such *incomplete* candidate would leave subsequent valid
+        frames stuck in the buffer. A CRC-verified candidate provides a safe
+        point at which to resume processing.
+        """
+        buffer = self._rx_buffer
+        for offset in range(1, len(buffer) - 6):
+            length = (buffer[offset] << 8) | buffer[offset + 1]
+            if not 1 <= length <= self.MAX_FRAME_LENGTH:
+                continue
+            end = offset + 2 + length + 4
+            if end > len(buffer):
+                continue
+            received_crc = struct.unpack_from('>I', buffer, offset + 2 + length)[0]
+            computed_crc = zlib.crc32(buffer[offset + 2:offset + 2 + length]) & 0xFFFFFFFF
+            if received_crc == computed_crc:
+                return offset
+        return None
+
     def _process_rx_buffer(self, pc_arrival_monotonic_ns: int) -> None:
         """Parse as many valid frames as possible from the receive buffer."""
         while len(self._rx_buffer) >= 7:
             length = (self._rx_buffer[0] << 8) | self._rx_buffer[1]
             if length < 1 or length > self.MAX_FRAME_LENGTH:
                 # Invalid length header; discard one byte and resync.
+                self._resynchronizing = True
                 del self._rx_buffer[0]
                 continue
 
             total_size = 2 + length + 4
             if len(self._rx_buffer) < total_size:
+                if self._resynchronizing:
+                    offset = self._find_valid_frame_offset()
+                    if offset is not None:
+                        del self._rx_buffer[:offset]
+                        continue
                 return
 
             frame_type = self._rx_buffer[2]
@@ -315,10 +345,16 @@ class SerialManager():
             computed_crc = zlib.crc32(bytes([frame_type]) + payload) & 0xFFFFFFFF
 
             if received_crc != computed_crc:
-                self.logger.warning(
-                    "CRC mismatch in serial frame; dropping one byte to resync")
+                if not self._resynchronizing:
+                    self.logger.warning(
+                        "CRC mismatch in serial frame; searching for next valid frame")
+                self._resynchronizing = True
                 del self._rx_buffer[0]
                 continue
+
+            # Valid CRC establishes an actual frame boundary, including for
+            # legacy or currently unsupported frame types.
+            self._resynchronizing = False
 
             if frame_type == self.FRAME_TYPE_TAXEL:
                 if len(payload) != 16:
