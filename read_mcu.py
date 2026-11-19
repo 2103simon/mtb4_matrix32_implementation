@@ -140,9 +140,18 @@ def main():
                     )
                     if handshake.accept_ack(command_id, status, value):
                         if not recording_started:
-                            recorder.start()
+                            applied_settings = {
+                                "raThreshold": handshake.expected[0x01],
+                                "saMaxFrequencyHz": handshake.expected[0x03],
+                                "acknowledged": True,
+                            }
+                            recorder.start(
+                                config=config,
+                                applied_settings=applied_settings,
+                            )
                             recording_started = True
                             print("Both MCU settings confirmed; recording started.")
+                            print(f"Experiment settings: {recorder.recording_id}_settings.json")
                     continue
 
                 if not recording_started:
