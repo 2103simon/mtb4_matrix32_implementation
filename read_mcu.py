@@ -207,6 +207,11 @@ def main():
             except queue.Empty:
                 continue
 
+        if not handshake.ready:
+            raise McuConfigurationError(
+                "Serial connection ended before both MCU settings were acknowledged"
+            )
+
     except KeyboardInterrupt:
         print("Stopping application...")
     except McuConfigurationError as exc:
