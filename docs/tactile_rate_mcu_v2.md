@@ -124,6 +124,16 @@ The metadata is saved **with the data**, rather than inferred from whatever `con
 
 The writer refuses to reuse an existing run ID instead of silently overwriting data. Run `python -m unittest discover -s tests -v` (includes `tests/test_recording_manifest.py`) to check metadata integrity and analysis naming. Changes are committed but not yet confirmed in a local user test session.
 
+## Matrix32 connection-only diagnostic
+
+`connect_matrix32.py` is the first Matrix32 integration increment. It calls the **existing** `Matrix32Device.connect()` (scans/retries, GATT discovery, 3-second stabilization, non-stimulating battery-report round trip) and then holds the BLE event loop open. It prints a heartbeat every 5 seconds, exits on unexpected disconnection, and attempts `Matrix32Device.disconnect()` in `finally` on Ctrl+C or other errors.
+
+```bash
+python connect_matrix32.py
+```
+
+There are **no calls to** `apply()`, `start()`, `apply_live_frequency()`, or other stimulation commands. No automatic reconnection is attempted. This standalone diagnostic does not use the MCU serial port and does not create a recording. Offline mock-based tests in `tests/test_connect_matrix32.py` cover cancellation, connection loss and failed readiness; physical BLE behavior must be verified separately.
+
 ## Next increments
 
 - Measure whether 119 bytes/sample and diagnostic traffic introduce USB queueing at observed ~70 Hz.
