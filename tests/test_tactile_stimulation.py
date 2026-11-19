@@ -5,13 +5,20 @@ import unittest
 from copy import deepcopy
 
 from run_tactile_stimulation import (
-    frequency_worker, requested_frequency, validate_settings,
+    build_stim_config, frequency_worker, requested_frequency, validate_settings,
 )
 
 
 CONFIG = {
     "tactile_encoding": {"raThreshold": 3, "saMaxFrequencyHz": 150},
     "stimulation_source": {"taxel": 4, "encoding": "ra_i"},
+    "matrix32_stimulation": {
+        "channel": 1,
+        "currentCommand": 50,
+        "phaseWidthUs": 100,
+        "outputVoltageCommand": 50,
+        "interPulseTimingCommand": 10,
+    },
 }
 STIM = {
     "sa": [1], "sc": [20], "sw": [100], "sf": 20,
@@ -67,6 +74,46 @@ class FakeMatrix32:
     async def stop(self):
         self.running = False
         self.records.append(("stop",))
+
+
+class FixedConfigTests(unittest.TestCase):
+    def test_reference_settings_and_ch1_only(self):
+        settings = build_stim_config(CONFIG)
+        self.assertEqual(settings, {
+            "sa": [1], "sc": [50], "sw": [100], "pw": 100,
+            "sf": 20, "sv": 50, "st": 10,
+        })
+        # SF is merely a bootstrap placeholder: the live MCU request sets it.
+        self.assertEqual(validate_settings(CONFIG, settings, arm=True), (4, "ra_i"))
+
+    def test_200us_is_within_full_cycle_but_not_verified_at_400hz(self):
+        cfg = deepcopy(CONFIG)
+        cfg["matrix32_stimulation"]["phaseWidthUs"] = 200
+        settings = build_stim_config(cfg)
+        self.assertEqual(settings["sw"], [200])
+
+    def test_reject_physically_impossible_full_cycle_and_other_channels(self):
+        cfg = deepcopy(CONFIG)
+        cfg["matrix32_stimulation"]["phaseWidthUs"] = 1300
+        with self.assertRaisesRegex(ValueError, "Biphasic"):
+            build_stim_config(cfg)
+        cfg["matrix32_stimulation"]["phaseWidthUs"] = 100
+        cfg["matrix32_stimulation"]["channel"] = 2
+        with self.assertRaisesRegex(ValueError, "channel 1"):
+            build_stim_config(cfg)
+
+    def test_reject_bad_fixed_configuration_types(self):
+        for key, invalid in (
+            ("currentCommand", 0),
+            ("phaseWidthUs", True),
+            ("outputVoltageCommand", 300),
+            ("interPulseTimingCommand", 0),
+        ):
+            with self.subTest(key=key):
+                cfg = deepcopy(CONFIG)
+                cfg["matrix32_stimulation"][key] = invalid
+                with self.assertRaises(ValueError):
+                    build_stim_config(cfg)
 
 
 class SelectionTests(unittest.TestCase):
