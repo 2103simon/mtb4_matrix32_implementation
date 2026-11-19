@@ -16,7 +16,7 @@ from communication.mcu_configuration import McuConfigurationHandshake
 from communication.serial_manager import SerialManager
 from connect_matrix32 import check_bleak_version, check_pc_bluetooth
 from matrix32 import Matrix32Device
-from recording.data_recorder import DataRecorder
+from recording.matrix32_trace import OptionalCapture
 
 
 ROOT = Path(__file__).resolve().parent
@@ -120,7 +120,7 @@ def requested_frequency(snapshot, taxel, receptor, *, max_hz=400):
     return min(max_hz, int(value + 0.5))
 
 
-async def mcu_receiver(sm, config, recorder, ready, manifest_config):
+async def mcu_receiver(sm, config, capture, ready):
     """Lossless CSV consumer; configure MCU before accepting any recording."""
     handshake = McuConfigurationHandshake(
         config["tactile_encoding"]["raThreshold"],
@@ -155,44 +155,51 @@ async def mcu_receiver(sm, config, recorder, ready, manifest_config):
             if handshake.accept_ack(command, status, value) and not ready.is_set():
                 # Any samples queued before the last ACK must not be
                 # recorded or used to trigger stimulation.
-                recorder.start(
-                    config=manifest_config,
-                    applied_settings={
-                        "raThreshold": handshake.expected[0x01],
-                        "saMaxFrequencyHz": handshake.expected[0x03],
-                        "acknowledged": True,
-                    },
-                )
+                capture.start(applied_settings={
+                    "raThreshold": handshake.expected[0x01],
+                    "saMaxFrequencyHz": handshake.expected[0x03],
+                    "acknowledged": True,
+                })
                 ready.configured_ns = time.monotonic_ns()
                 ready.set()
-                print(f"[MCU] Configured; recording {recorder.recording_id}")
+                print("[MCU] Configured; ready for live data.")
             continue
         if not ready.is_set():
             continue
-        if kind == "tactile_rates":
-            recorder.record_tactile_rates(data[1])
-        elif kind == "taxel":
-            recorder.record_taxel(data[1], data[2], data[3], data[4])
-        elif kind == "events":
-            recorder.record_events(data[1], data[2])
+        if capture.recorder is not None:
+            if kind == "tactile_rates":
+                capture.recorder.record_tactile_rates(data[1])
+            elif kind == "taxel":
+                capture.recorder.record_taxel(data[1], data[2], data[3], data[4])
+            elif kind == "events":
+                capture.recorder.record_events(data[1], data[2])
     raise ConnectionError("MCU serial reader stopped")
 
 
-async def stop_output(device, *, reason):
+async def stop_output(device, *, reason, capture=None):
     """STOP independently of current SF command; unknown if BLE already lost."""
     if device.client is None or not device.connected:
         print(f"[WARNING] {reason}: BLE unavailable; output state UNKNOWN")
+        if capture is not None:
+            capture.emit("stop_unavailable", reason=reason, output_state="UNKNOWN")
         return
     print(f"[STOP] {reason}")
+    if capture is not None:
+        capture.emit("stop_requested", reason=reason)
     try:
         await asyncio.wait_for(device.stop(), timeout=STOP_TIMEOUT_SECONDS)
+        if capture is not None:
+            capture.emit("stop_write_completed", reason=reason, output_verified=False)
     except Exception as exc:
+        if capture is not None:
+            capture.emit("stop_failed", reason=reason, error=repr(exc), output_state="UNKNOWN")
         print(f"[WARNING] STOP not confirmed; output state UNKNOWN: {exc}")
         raise
 
 
 async def frequency_worker(sm, device, ready, taxel, receptor, *, arm,
-                           stale_seconds=STALE_SECONDS):
+                           stale_seconds=STALE_SECONDS, capture=None,
+                           experimental_sf_zero=False):
     """Single sequential BLE command worker. Never queues older frequencies."""
     await ready.wait()
     print(f"[ROUTING] taxel={taxel}, encoding={receptor}, Matrix32 CH1")
@@ -209,7 +216,7 @@ async def frequency_worker(sm, device, ready, taxel, receptor, *, arm,
         age = (time.monotonic_ns() - snapshot["pc_arrival_monotonic_ns"]) / 1e9 if snapshot else float("inf")
         if age > stale_seconds:
             if not stopped:
-                await stop_output(device, reason=f"stale tactile input ({age:.3f}s)")
+                await stop_output(device, reason=f"stale tactile input ({age:.3f}s)", capture=capture)
                 stopped = True
                 last_command = None
             await asyncio.sleep(POLL_SECONDS)
@@ -232,15 +239,53 @@ async def frequency_worker(sm, device, ready, taxel, receptor, *, arm,
             last_command = target_hz
             continue
         if target_hz == 0:
-            if not stopped:
-                await stop_output(device, reason="requested frequency is zero")
-                stopped, last_command = True, None
+            if stopped:
+                continue  # Never START at SF=0.
+            if experimental_sf_zero:
+                if last_command != 0:
+                    if capture is not None:
+                        capture.emit("sf_requested", frequency_hz=0,
+                                     source_sample_ns=sample_ns,
+                                     experimental_zero=True)
+                    try:
+                        sf_record = await device.apply_live_frequency(
+                            0, experimental_allow_zero=True
+                        )
+                    except BaseException as exc:
+                        if capture is not None:
+                            capture.emit("sf_failed", frequency_hz=0,
+                                         error=repr(exc),
+                                         evidence=getattr(exc, "record", None))
+                        raise
+                    if capture is not None:
+                        capture.emit("sf_ack", frequency_hz=0, status=sf_record["status"],
+                                     evidence=sf_record, experimental_zero=True)
+                    if sf_record["status"] != "OK":
+                        raise RuntimeError("Experimental SF=0 not ACK-verified")
+                    print("[SF ACK] Experimental SF=0 accepted; physical output state UNVERIFIED")
+                    last_command = 0
+                continue
+            await stop_output(device, reason="requested frequency is zero", capture=capture)
+            stopped, last_command = True, None
             continue
         if stopped:
             # The initial SF must match the first live sample, not a stale
             # default. Every START follows exact ACK-verified configuration.
             device.set_global_frequency(target_hz)
-            records = await device.apply(settle_time=0.02, require_ack=True)
+            if capture is not None:
+                capture.emit("configuration_requested", frequency_hz=target_hz,
+                             source_sample_ns=sample_ns, configuration=device.config)
+            try:
+                records = await device.apply(settle_time=0.02, require_ack=True)
+            except BaseException as exc:
+                if capture is not None:
+                    capture.emit("configuration_failed", error=repr(exc),
+                                 evidence=list(device.config_ack_records))
+                raise
+            if capture is not None:
+                capture.emit("configuration_ack", frequency_hz=target_hz,
+                             evidence=records,
+                             verified=device.config_verified)
             if not device.config_verified or len(records) != 7:
                 raise RuntimeError("Matrix32 configuration ACK verification failed")
             # If the sensor went stale during the config writes, do not START.
@@ -253,19 +298,44 @@ async def frequency_worker(sm, device, ready, taxel, receptor, *, arm,
             # still matches a recently observed request.
             if requested_frequency(fresh, taxel, receptor) != target_hz:
                 continue
-            await device.start()
+            if capture is not None:
+                capture.emit("start_requested", frequency_hz=target_hz)
+            try:
+                await device.start()
+            except BaseException as exc:
+                if capture is not None:
+                    capture.emit("start_failed", error=repr(exc), output_state="UNKNOWN")
+                raise
+            if capture is not None:
+                capture.emit("start_write_completed", frequency_hz=target_hz,
+                             output_verified=False)
             stopped = False
             last_command = target_hz
             print(f"[START] Matrix32 CH1: {target_hz} Hz")
             continue
         if target_hz == last_command:
             continue
-        await device.apply_live_frequency(target_hz)
+        if capture is not None:
+            capture.emit("sf_requested", frequency_hz=target_hz,
+                         source_sample_ns=sample_ns)
+        try:
+            sf_record = await device.apply_live_frequency(target_hz)
+        except BaseException as exc:
+            if capture is not None:
+                capture.emit("sf_failed", frequency_hz=target_hz,
+                             error=repr(exc),
+                             evidence=getattr(exc, "record", None))
+            raise
+        if capture is not None:
+            capture.emit("sf_ack", frequency_hz=target_hz, status=sf_record["status"],
+                         evidence=sf_record)
+        if sf_record["status"] != "OK":
+            raise RuntimeError("Matrix32 SF update not ACK-verified")
         last_command = target_hz
         print(f"[SF ACK] Matrix32 CH1: {target_hz} Hz")
 
 
-async def stale_supervisor(sm, device, ready, *, arm, stale_seconds):
+async def stale_supervisor(sm, device, ready, *, arm, stale_seconds, capture=None):
     """Independent stale-input STOP, even if a BLE SF update is still awaiting ACK."""
     if not arm:
         return
@@ -279,21 +349,23 @@ async def stale_supervisor(sm, device, ready, *, arm, stale_seconds):
         snapshot = sm.get_latest_rates_snapshot()
         age = (time.monotonic_ns() - snapshot["pc_arrival_monotonic_ns"]) / 1e9 if snapshot else float("inf")
         if age > stale_seconds:
-            await stop_output(device, reason=f"watchdog: tactile sample age {age:.3f}s")
+            await stop_output(device, reason=f"watchdog: tactile sample age {age:.3f}s", capture=capture)
             # Cancel the worker rather than permitting it to issue a delayed
             # START/SF command after the STOP.
             raise TimeoutError("Stale tactile input: watchdog stopped stimulation")
 
 
-async def run(config, stim_config=None, *, arm, stale_seconds=STALE_SECONDS,
+async def run(config, stim_config=None, *, arm, record=False,
+              experimental_sf_zero=False, stale_seconds=STALE_SECONDS,
               serial_factory=SerialManager, device_factory=Matrix32Device):
+    if experimental_sf_zero and not arm:
+        raise ValueError("--experimental-sf-zero requires --arm (bench-only)")
     stim_config = build_stim_config(config) if stim_config is None else stim_config
     taxel, receptor = validate_settings(config, stim_config, arm=arm)
     check_bleak_version()
     await asyncio.to_thread(check_pc_bluetooth)
     device = device_factory(config=stim_config)
     sm = serial_factory(config=config)
-    recorder = DataRecorder(config["recordings_dir"])
     ready = asyncio.Event()
     ready.configured_ns = 0
     manifest_config = {
@@ -301,11 +373,14 @@ async def run(config, stim_config=None, *, arm, stale_seconds=STALE_SECONDS,
         "matrix32_stimulation": stim_config,
         "stimulation_control": {
             "armed": arm,
+            "record": record,
+            "experimental_sf_zero": experimental_sf_zero,
             "stale_timeout_ms": int(stale_seconds * 1000),
             "source": config["stimulation_source"],
             "matrix32_channel": 1,
         },
     }
+    capture = OptionalCapture(record, config["recordings_dir"], manifest_config)
     try:
         await device.connect()
         if not device.connected or device.last_battery_level is None:
@@ -316,11 +391,12 @@ async def run(config, stim_config=None, *, arm, stale_seconds=STALE_SECONDS,
             raise ConnectionError("Failed to open MCU serial connection")
         print(f"[MCU] Connected: {config['serial']['port']}")
         async with asyncio.TaskGroup() as group:
-            group.create_task(mcu_receiver(sm, config, recorder, ready, manifest_config))
+            group.create_task(mcu_receiver(sm, config, capture, ready))
             group.create_task(frequency_worker(sm, device, ready, taxel, receptor, arm=arm,
-                                               stale_seconds=stale_seconds))
+                                               stale_seconds=stale_seconds, capture=capture,
+                                               experimental_sf_zero=experimental_sf_zero))
             group.create_task(stale_supervisor(sm, device, ready, arm=arm,
-                                               stale_seconds=stale_seconds))
+                                               stale_seconds=stale_seconds, capture=capture))
     finally:
         # In the normal no-output path this is a harmless best-effort STOP.
         # STOP is also attempted when START may have reached hardware but
@@ -328,18 +404,25 @@ async def run(config, stim_config=None, *, arm, stale_seconds=STALE_SECONDS,
         if device.client is not None:
             if device.connected:
                 try:
+                    capture.emit("shutdown_stop_requested")
                     await asyncio.wait_for(device.stop(), timeout=STOP_TIMEOUT_SECONDS)
+                    capture.emit("shutdown_stop_write_completed", output_verified=False)
                     print("[SHUTDOWN] Matrix32 STOP sent.")
                 except BaseException as exc:
+                    capture.emit("shutdown_stop_failed", error=repr(exc),
+                                 output_state="UNKNOWN")
                     print(f"[WARNING] Matrix32 STOP uncertain: {exc}")
             else:
+                capture.emit("ble_lost", output_state="UNKNOWN")
                 print("[WARNING] Matrix32 disconnected: output state UNKNOWN")
             try:
                 await asyncio.wait_for(device.disconnect(), timeout=DISCONNECT_TIMEOUT_SECONDS)
+                capture.emit("ble_disconnect_completed")
             except BaseException as exc:
+                capture.emit("ble_disconnect_failed", error=repr(exc))
                 print(f"[WARNING] Matrix32 disconnect uncertain: {exc}")
         sm.stop_serial()
-        recorder.stop()
+        capture.close()
         print("[SHUTDOWN] Finished.")
 
 
@@ -347,6 +430,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arm", action="store_true",
                         help="Explicitly enable ACK-verified CH1 stimulation; otherwise DRY RUN")
+    parser.add_argument("--record", action="store_true",
+                        help="Save all MCU samples and timestamped Matrix32 commands/ACKs")
+    parser.add_argument("--experimental-sf-zero", action="store_true",
+                        help="Bench/scope only: try SF=0 instead of STOP for zero requests; "
+                             "ACK does NOT guarantee zero physical output")
     parser.add_argument("--stale-ms", type=int, default=250,
                         help="Stop output when no tactile sample arrives for this many ms (default 250)")
     args = parser.parse_args()
@@ -362,7 +450,10 @@ def main():
         "SF comes from the selected MCU rate."
     )
     try:
-        asyncio.run(run(config, stim_config, arm=args.arm, stale_seconds=args.stale_ms / 1000))
+        asyncio.run(run(config, stim_config, arm=args.arm,
+                        record=args.record,
+                        experimental_sf_zero=args.experimental_sf_zero,
+                        stale_seconds=args.stale_ms / 1000))
     except KeyboardInterrupt:
         print("[STOP] Ctrl+C requested.")
     except Exception as exc:
