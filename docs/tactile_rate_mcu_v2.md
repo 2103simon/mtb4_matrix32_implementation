@@ -136,6 +136,12 @@ Before connection attempts, the script now verifies that Linux BlueZ is active a
 
 There are **no calls to** `apply()`, `start()`, `apply_live_frequency()`, or other stimulation commands. No automatic reconnection is attempted. This standalone diagnostic does not use the MCU serial port and does not create a recording. Offline mock-based tests in `tests/test_connect_matrix32.py` cover cancellation, connection loss and failed readiness; physical BLE behavior must be verified separately.
 
+## Bleak / BlueZ compatibility check
+
+The Matrix32 BLE code (`matrix32/device.py`, `matrix32/ble.py`) and `requirements.txt` match the reference repository at `cleanup/analysis-consolidation`. Its BLE troubleshooting handoff records that **Bleak 3.0.2 with BlueZ 5.53** caused repeatable scanner `KeyError('Roles')`, which was resolved with **`bleak==0.22.3`**.
+
+`connect_matrix32.py` now checks the active Python environment's installed Bleak distribution **before scanning**, and stops with an installation instruction when the version differs from the validated `0.22.3`. Check your environment using `python -m pip show bleak`, and install the pinned version with `python -m pip install 'bleak==0.22.3'`. This check is intentionally scoped to the connection-only diagnostic; existing Matrix32 library code remains unchanged.
+
 ## Next increments
 
 - Measure whether 119 bytes/sample and diagnostic traffic introduce USB queueing at observed ~70 Hz.
