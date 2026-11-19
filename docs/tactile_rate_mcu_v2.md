@@ -70,6 +70,30 @@ Run from the repository root:
 
 Outputs are saved in `analysis/<id>_traces*.png`. If an associated Omega recording exists, a six-panel combined figure is also saved, with rate traces instead of spike rasters. Plot tests: `python -m unittest discover -s tests -v` (includes `tests/test_analyze_rate_recording.py`). **These changes have not been executed in the user's environment yet.**
 
+## Fixed encoding and CH1 source configuration
+
+`config/config.json` no longer contains GUI slider metadata. It contains:
+
+```json
+"tactile_encoding": {
+  "raThreshold": 3,
+  "saMaxFrequencyHz": 150
+},
+"stimulation_source": {
+  "taxel": 0,
+  "encoding": "sa_ii"
+}
+```
+
+- `raThreshold`: integer **1–255**, applied to MCU using `RA_THR`.
+- `saMaxFrequencyHz`: integer **10–1000 Hz**, applied to MCU using `SA_FREQ`.
+- `stimulation_source.taxel`: integer **0–11**, using zero-based taxel indexing.
+- `stimulation_source.encoding`: **`ra_i`** or **`sa_ii`**.
+- `read_mcu.py` validates these values, sends the two MCU encoding commands **after receiving link-ready telemetry**, and prints the selected channel's requested frequency during acquisition. Existing ACK messages show whether the MCU accepted each setting.
+- The selected source is **not yet connected to Matrix32**; no stimulation starts as a result of these settings. The current source selection is a preparation for the single-channel CH1 stimulation worker.
+
+The default encoding maximum is **150 Hz**, matching the former slider default; the MCU's internal startup default remains 300 Hz until the host sends its command. This initial period can appear in early telemetry.
+
 ## Next increments
 
 - Measure whether 119 bytes/sample and diagnostic traffic introduce USB queueing at observed ~70 Hz.
