@@ -144,7 +144,7 @@ The Matrix32 BLE code (`matrix32/device.py`, `matrix32/ble.py`) and `requirement
 
 ## First combined tactile -> Matrix32 CH1 implementation
 
-`run_tactile_stimulation.py` combines the existing MCU telemetry/parser and ACK handshake with the verified Matrix32 BLE device object. It is **dry-run by default**, records all rate samples, and prints the selected frequency without enabling stimulation. The same `config/config.json` `stimulation_source.taxel` (0–11) and `stimulation_source.encoding` (`ra_i` / `sa_ii`) select the only rate forwarded to **Matrix32 CH1**.
+`run_tactile_stimulation.py` combines the existing MCU telemetry/parser and ACK handshake with the verified Matrix32 BLE device object. It is **dry-run by default**, records only when `--record` is supplied, and prints the selected frequency without enabling stimulation. The same `config/config.json` `stimulation_source.taxel` (0–11) and `stimulation_source.encoding` (`ra_i` / `sa_ii`) select the only rate forwarded to **Matrix32 CH1**.
 
 Fixed parameters are now kept in the main `config/config.json` under `matrix32_stimulation`:
 
@@ -181,6 +181,36 @@ Behavior:
 - Zero requested rate issues Matrix32 STOP. A separate 20-ms stale-data supervisor attempts STOP if output is running and MCU input has aged more than 250 ms (configurable via `--stale-ms`); it then aborts the run rather than automatically restarting. Any sensor/connection failure or Ctrl+C triggers a best-effort STOP and BLE disconnect in cleanup. **If BLE is lost, physical output state is unknown**; isolate output and verify physically.
 - This is a **bench-test increment**, not medically or clinically qualified stimulation. Confirm frequency, latency, output-off behavior and rapid-change behavior on the oscilloscope with a suitable dummy load before any other use.
 - Offline tests: `python -m unittest discover -s tests -p 'test_tactile_stimulation.py' -v`. The integration has **not been physically tested** and the tests have **not been executed** here.
+
+## Optional MCU + Matrix32 recording and bench-only experimental SF=0
+
+`run_tactile_stimulation.py` is **no longer recording by default**. Add `--record` to create:
+
+- `data/<run_id>_tactile_rates.csv`: every MCU rate sample after successful encoding ACKs, including 12 raw taxels and RA/SA requested frequencies.
+- `data/<run_id>_settings.json`: configuration snapshot, MCU ACK settings, arm/record/zero-test flags, and filenames.
+- `data/<run_id>_matrix32_commands.jsonl`: newline-delimited structured Matrix32 **host-side** events. Includes START/STOP requests and write completion, seven configuration ACK records, every live SF request, every SF ACK with full device-library evidence, and errors. Event fields include `pc_monotonic_ns` (same host clock domain as the MCU CSV `pc_arrival_monotonic_ns`) and `pc_wall_iso`; SF requests also carry `source_sample_ns` to link the selected tactile snapshot to the BLE request. The detailed nested ACK evidence includes actual `write_begin_monotonic_s` and `ack_monotonic_s` for comparing transport delay. These are **host-observed times**, not proof of physical application or output.
+- Legacy `*_taxel.csv` and `*_events.csv` are created for compatibility (header-only with MCU rate streaming).
+
+Without `--record`, **no recording files are created**. Existing `read_mcu.py` still independently records as before.
+
+The validated Matrix32 library only supports SF commands from **1 to 400 Hz**. To experimentally test **SF=0 without STOP/START latency**, use the explicit bench-only `--experimental-sf-zero` option **together with `--arm`**, on a properly connected oscilloscope and dummy load. During a previously started session, requested rates below 2 Hz then send one unqualified `>SF;00 00<` frame through the existing persistent one-at-a-time, guard-spaced, ACK-verified live SF transport. A later positive request uses the normal live SF update, without a new START. Before initial START, zeros do nothing. Ordinary `--arm` runs **still STOP** on zero. Any failed SF=0 command fails the run and attempts STOP during cleanup; missing tactile data invokes the existing independent STOP watchdog regardless of SF mode.
+
+**Crucial: firmware `>OK<` for SF=0 (if one is received) would only establish acknowledgement. SF=0 is outside the documented protocol and may leave physical stimulation unchanged, stopped, or in another anomalous state. Do not treat SF=0 as an electrically verified OFF state or use it outside controlled dummy-load/oscilloscope characterization.**
+
+Examples:
+
+```bash
+# No output, no recording
+/home/icub/.virtualenvs/matrix32/bin/python run_tactile_stimulation.py
+# No output, but save MCU CSV plus Matrix32 event log
+/home/icub/.virtualenvs/matrix32/bin/python run_tactile_stimulation.py --record
+# Approved bench ONLY: armed stimulation and full recording, normal zero->STOP
+/home/icub/.virtualenvs/matrix32/bin/python run_tactile_stimulation.py --arm --record
+# Scope/dummy-load experiment: live SF=0 rather than STOP
+/home/icub/.virtualenvs/matrix32/bin/python run_tactile_stimulation.py --arm --record --experimental-sf-zero
+```
+
+Relevant offline tests: `test_tactile_stimulation.py` and `test_matrix32_capture.py`. No hardware behavior for SF=0 has been validated by these tests.
 
 ## Next increments
 
