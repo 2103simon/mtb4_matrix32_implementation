@@ -132,6 +132,8 @@ The writer refuses to reuse an existing run ID instead of silently overwriting d
 python connect_matrix32.py
 ```
 
+Before connection attempts, the script now verifies that Linux BlueZ is active and D-Bus-accessible (using the existing `check_bluetooth_service()` helper), then confirms that the default PC Bluetooth adapter reports `Powered: yes` through `bluetoothctl show`. When either preflight check fails, it exits with a terminal error before attempting a Matrix32 BLE connection. Recovery commands are `sudo systemctl start bluetooth` or `bluetoothctl power on` as appropriate. Unit tests mock both checks so no physical adapter is required.
+
 There are **no calls to** `apply()`, `start()`, `apply_live_frequency()`, or other stimulation commands. No automatic reconnection is attempted. This standalone diagnostic does not use the MCU serial port and does not create a recording. Offline mock-based tests in `tests/test_connect_matrix32.py` cover cancellation, connection loss and failed readiness; physical BLE behavior must be verified separately.
 
 ## Next increments
