@@ -1,5 +1,7 @@
 # Tactile-to-Matrix32 latest-sample pipeline — working notes
 
+> **Current MCU implementation:** see [tactile_rate_mcu_v2.md](tactile_rate_mcu_v2.md). Earlier firmware notes below describe the superseded monolithic implementation; the new modular firmware is modified in `feature/tactile-rate-streaming-v2`.
+
 Status: **increments (i) and (ii) implemented on branch, not yet hardware-tested**. Offline tests committed but not executed in this environment.  
 Branch: `feature/tactile-rate-streaming`  
 Last reviewed: 2026-11-18
