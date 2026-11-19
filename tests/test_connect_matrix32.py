@@ -48,7 +48,7 @@ class BluetoothPreflightTest(unittest.TestCase):
         run.assert_not_called()
 
     @patch("connect_matrix32.subprocess.run", return_value=SimpleNamespace(
-        returncode=0, stdout="Controller 12:34:56\\n  Powered: no\\n"
+        returncode=0, stdout="Controller 12:34:56\n  Powered: no\n"
     ))
     @patch("connect_matrix32.check_bluetooth_service", return_value=True)
     def test_adapter_powered_off(self, service, run):
@@ -56,7 +56,7 @@ class BluetoothPreflightTest(unittest.TestCase):
             check_pc_bluetooth()
 
     @patch("connect_matrix32.subprocess.run", return_value=SimpleNamespace(
-        returncode=0, stdout="Controller 12:34:56\\n  Powered: yes\\n"
+        returncode=0, stdout="Controller 12:34:56\n  Powered: yes\n"
     ))
     @patch("connect_matrix32.check_bluetooth_service", return_value=True)
     def test_adapter_powered_on(self, service, run):
