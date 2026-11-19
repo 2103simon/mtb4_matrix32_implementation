@@ -271,3 +271,52 @@ void mechanoreceptorEncoding(uint32_t currentTime)
   }
 }
 
+
+/// @brief Compute unscheduled, refractory-unlimited RA-I and SA-II rates.
+/// @details This is intentionally separate from the original spike encoders,
+/// so the legacy event-scheduling algorithm remains available for comparison.
+/// RA threshold crossing count is computed relative to the last thresholded
+/// reference, matching RaEncoding's non-refractory component.
+void calculateTactileRates(const uint8_t taxels[NUM_TAXELS],
+                          uint32_t sampleDtMs,
+                          uint32_t raRateCentiHz[NUM_TAXELS],
+                          uint32_t saRateCentiHz[NUM_TAXELS])
+{
+  static bool initialized = false;
+  if (!initialized)
+  {
+    for (int id = 0; id < NUM_TAXELS; ++id)
+      raParams.prevTaxelVal[id] = taxels[id];
+    initialized = true;
+    sampleDtMs = 0;  // First sample has no valid preceding acquisition.
+  }
+
+  // A zero interval or a backwards/discontinuous timestamp must not
+  // produce an arbitrarily high RA-I rate. uint32 subtraction in the caller
+  // handles ordinary millis() rollover for intervals under 2^31 ms.
+  const bool validDt = sampleDtMs > 0 && sampleDtMs < 0x80000000UL;
+  const uint32_t threshold = raParams.threshold > 0 ? raParams.threshold : 1;
+
+  for (int id = 0; id < NUM_TAXELS; ++id)
+  {
+    const int change = abs((int)taxels[id] - (int)raParams.prevTaxelVal[id]);
+    uint32_t count = 0;
+    if ((uint32_t)change >= threshold)
+    {
+      count = (uint32_t)change / threshold;
+      raParams.prevTaxelVal[id] = taxels[id];
+    }
+
+    // Values stay within uint32 centi-Hz: at least 1 ms per valid window,
+    // at most 255 requested RA spikes => at most 25,500,000 centi-Hz.
+    raRateCentiHz[id] = validDt
+        ? (uint32_t)((100000.0f * (float)count / (float)sampleDtMs) + 0.5f)
+        : 0;
+
+    // SA-II target remains independent of the legacy refractory period.
+    const float requestedSaHz = (float)taxels[id] * saParams.slope;
+    saRateCentiHz[id] = requestedSaHz > 0.0f
+        ? (uint32_t)(requestedSaHz * 100.0f + 0.5f)
+        : 0;
+  }
+}
