@@ -68,8 +68,12 @@ class FakeMatrix32:
         self.running = True
         self.records.append(("start", self.config["sf"]))
 
-    async def apply_live_frequency(self, hz):
+    async def apply_live_frequency(self, hz, *, experimental_allow_zero=False):
+        if hz == 0 and not experimental_allow_zero:
+            raise ValueError("SF=0 is bench-only")
         self.records.append(("live", hz))
+        return {"status": "OK", "new_frequency_hz": hz,
+                "experimental_zero_frequency": hz == 0}
 
     async def stop(self):
         self.running = False
@@ -162,6 +166,32 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
             serial.snapshot = sample(0)
             await asyncio.sleep(0.05)
             self.assertIn(("stop",), device.records)
+        finally:
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+    async def test_opt_in_zero_then_positive_does_not_restart(self):
+        serial = FakeSerial(sample(40))
+        device = FakeMatrix32()
+        ready = asyncio.Event()
+        ready.configured_ns = 0
+        ready.set()
+        task = asyncio.create_task(frequency_worker(
+            serial, device, ready, 4, "ra_i", arm=True,
+            experimental_sf_zero=True
+        ))
+        try:
+            await asyncio.sleep(0.05)
+            self.assertIn(("start", 40), device.records)
+            serial.snapshot = sample(0)
+            await asyncio.sleep(0.05)
+            self.assertIn(("live", 0), device.records)
+            self.assertNotIn(("stop",), device.records)
+            serial.snapshot = sample(80)
+            await asyncio.sleep(0.05)
+            self.assertIn(("live", 80), device.records)
+            self.assertEqual(sum(record[0] == "start" for record in device.records), 1)
         finally:
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
