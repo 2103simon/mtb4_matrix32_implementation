@@ -7,6 +7,7 @@ from copy import deepcopy
 from run_tactile_stimulation import (
     build_stim_config, frequency_worker, requested_frequency, validate_settings,
 )
+from matrix32 import Matrix32Device
 
 
 CONFIG = {
@@ -145,6 +146,19 @@ class SelectionTests(unittest.TestCase):
         zero["sc"] = [0]
         with self.assertRaisesRegex(ValueError, "positive CH1 current"):
             validate_settings(CONFIG, zero, arm=True)
+
+
+class ZeroProtocolGuardTest(unittest.IsolatedAsyncioTestCase):
+    async def test_sf_zero_requires_explicit_bench_flag(self):
+        # This must fail before touching BLE or a hardware device.
+        device = Matrix32Device()
+        with self.assertRaisesRegex(ValueError, "experimental_allow_zero"):
+            await device.apply_live_frequency(0)
+
+    async def test_sf_zero_does_not_bypass_connection_readiness(self):
+        device = Matrix32Device()
+        with self.assertRaises(RuntimeError):
+            await device.apply_live_frequency(0, experimental_allow_zero=True)
 
 
 class WorkerTests(unittest.IsolatedAsyncioTestCase):
