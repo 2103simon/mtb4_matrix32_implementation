@@ -146,13 +146,27 @@ The Matrix32 BLE code (`matrix32/device.py`, `matrix32/ble.py`) and `requirement
 
 `run_tactile_stimulation.py` combines the existing MCU telemetry/parser and ACK handshake with the verified Matrix32 BLE device object. It is **dry-run by default**, records all rate samples, and prints the selected frequency without enabling stimulation. The same `config/config.json` `stimulation_source.taxel` (0–11) and `stimulation_source.encoding` (`ra_i` / `sa_ii`) select the only rate forwarded to **Matrix32 CH1**.
 
-The new `config/stim_tactile_ch1.yaml` is an isolated *single-channel* setup. It intentionally starts with `sc: [0]` and `sw: [0]` to prevent inadvertent stimulation; before using `--arm`, set approved bench current and pulse-width values, and independently verify `sv`, `st`, pulse morphology and output wiring. No output parameters are automatically borrowed from the multi-channel `stim_config.yaml`.
+Fixed parameters are now kept in the main `config/config.json` under `matrix32_stimulation`:
+
+```json
+"matrix32_stimulation": {
+  "channel": 1,
+  "currentCommand": 50,
+  "phaseWidthUs": 100,
+  "outputVoltageCommand": 50,
+  "interPulseTimingCommand": 10
+}
+```
+
+These values follow the **frequently used bench configurations** in the reference `matrix32_nerve_stimulation` repository: CH1, SC=50, SW=100 us (with 200 us as an explored alternative), SV=50, ST=10. SC and SV are **device command values**, not independently verified delivered current/voltage. `phaseWidthUs` is a single polarity's commanded width; nominal biphasic pulse length begins at `2*phaseWidthUs`, excluding all firmware delays and switching overhead. The application sends the same value for SW1 and PW (although SW is the normal selected per-channel command). The **only variable stimulation setting is SF**, selected from the MCU; the Python internal SF=20 placeholder is overwritten with the latest sensor rate before the first configuration is sent. The old dedicated `stim_tactile_ch1.yaml` is removed to prevent conflicting sources of truth.
+
+**Maximum-frequency arithmetic / unresolved timing assumption:** The observed output at commanded SF=400 is approximately 401 Hz, so the full single-channel repetition period is `1e6/401 ~= 2493.77 us`. A 100-us phase (nominal 200-us biphasic pair) or a 200-us phase (400-us pair) fits **within that full period**. If the device instead required each channel's entire biphasic pulse to fit in an equal `1/32` slot, the available slot would be only `2493.77/32 ~= 77.93 us`, with a theoretical maximum of **38 us/phase before hardware overhead**. **Neither 100 nor 200 us would fit that hypothetical slot.** The reference tests do not establish that such a rigid 32-slot rule applies when only CH1 is active. Therefore this code does **not** assume that the narrower 32-slot budget is a valid hard safety guarantee. It rejects widths that cannot fit even the full 401-Hz period, but does **not** claim that a width passing this check is feasible or safe at SF=400. Require a dummy-load oscilloscope test of SF=400, SW=100, ST=10, SC=50, SV=50 and the actual waveform / firmware ACK behavior **before permitting output on any other load**. SW=200 at SF=400 remains an unverified alternative requiring its own scope test.
 
 Run using the already-validated Matrix32 Python environment:
 
 ```bash
 /home/icub/.virtualenvs/matrix32/bin/python run_tactile_stimulation.py
-# Explicit output enabling only after safe CH1 parameters are configured:
+# Explicit output enabling only after CH1 bench configuration is reviewed:
 /home/icub/.virtualenvs/matrix32/bin/python run_tactile_stimulation.py --arm
 ```
 
