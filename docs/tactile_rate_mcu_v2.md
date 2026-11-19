@@ -94,6 +94,16 @@ Outputs are saved in `analysis/<id>_traces*.png`. If an associated Omega recordi
 
 The default encoding maximum is **150 Hz**, matching the former slider default; the MCU's internal startup default remains 300 Hz until the host sends its command. This initial period can appear in early telemetry.
 
+## MCU configuration handshake before recording
+
+`read_mcu.py` now waits for the first valid MCU telemetry frame before sending `RA_THR=<config value>` and `SA_FREQ=<config value>` through `SerialManager.send_command()`. **No recording files are opened and no samples are recorded until both successful ACKs are received**. Each ACK must include the corresponding command ID, success status **1**, and the exact requested applied value. ACK order is arbitrary.
+
+- Console prints each ACK and announces `Both MCU settings confirmed; recording started.`
+- Data queued before the second ACK is discarded, including any frames generated with startup defaults.
+- Missing ACKs cause a configuration error after 5 seconds. Initial telemetry not received within 15 seconds also fails. Command write errors, rejection, wrong applied values, unexpected command ACKs, or premature disconnection all stop without starting recording.
+- The `communication/mcu_configuration.py` handshake is separately unit-tested by `tests/test_mcu_configuration.py`. The serial sender now returns success/failure to allow early abort.
+- `stimulation_source` remains selection-only; this does not operate Matrix32.
+
 ## Next increments
 
 - Measure whether 119 bytes/sample and diagnostic traffic introduce USB queueing at observed ~70 Hz.
