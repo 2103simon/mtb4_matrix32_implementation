@@ -750,6 +750,9 @@ class Matrix32Device:
                 or not 0 < timeout_s <= 10):
             raise ValueError(
                 "Live update operation timeout must be >0 and <=10 seconds")
+        if hz == 0 and transport != "optimized_persistent":
+            raise ValueError("Experimental SF=0 is supported only by the "
+                             "optimized_persistent ACK-verified path")
         if transport == "legacy_per_command_subscription":
             return await self._apply_live_frequency_legacy(
                 hz, timeout_s=timeout_s, timing_marker=timing_marker)
