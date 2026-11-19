@@ -4,7 +4,7 @@
     "saMaxFrequencyHz": 150
   },
   "stimulation_source": {
-    "taxel": 0,
+    "taxel": 11,
     "encoding": "sa_ii"
   },
   "nb_channels": 12,
@@ -44,7 +44,7 @@
   "matrix32_stimulation": {
     "channel": 1,
     "currentCommand": 50,
-    "phaseWidthUs": 100,
+    "phaseWidthUs": 200,
     "outputVoltageCommand": 50,
     "interPulseTimingCommand": 10
   }
