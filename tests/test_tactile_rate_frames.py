@@ -66,6 +66,29 @@ class TactileRateFrameTest(unittest.TestCase):
         self.assertEqual(kind, "tactile_rates")
         self.assertEqual(sample["raw_timestamp_ms"], 99)
 
+    def test_bad_crc_then_fragmented_valid_frame(self):
+        bad = bytearray(frame_05(10))
+        bad[-1] ^= 1
+        valid = frame_05(20)
+        # Corrupted frame, followed by only part of a valid one.
+        self.feed(bytes(bad) + valid[:40])
+        self.assertTrue(self.sm.data_queue.empty())
+        self.feed(valid[40:])
+        kind, sample = self.sm.data_queue.get_nowait()
+        self.assertEqual(kind, "tactile_rates")
+        self.assertEqual(sample["raw_timestamp_ms"], 20)
+
+    def test_bad_crc_followed_by_noise_and_valid_frame(self):
+        bad = bytearray(frame_05(10))
+        bad[-1] ^= 1
+        # A plausible but incomplete (257-byte) header inside corrupt data
+        # must not block the following complete and valid frame.
+        noise = bytes([0x01, 0x01, 0x55, 0xAA, 0x00])
+        self.feed(bytes(bad) + noise + frame_05(33))
+        kind, sample = self.sm.data_queue.get_nowait()
+        self.assertEqual(kind, "tactile_rates")
+        self.assertEqual(sample["raw_timestamp_ms"], 33)
+
     def test_wrong_size_is_rejected(self):
         body = bytes([0x05]) + bytes(111)
         malformed = struct.pack(">H", len(body)) + body + struct.pack(">I", zlib.crc32(body))
