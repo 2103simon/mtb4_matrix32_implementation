@@ -5,12 +5,12 @@
  * @details
  * This module implements neuromorphic event-based tactile encoding for the iCub humanoid robot's
  * tactile fingertip sensors. It reads pressure data from a 12-taxel MTB4 skin board via CAN,
- * computes RA-I / SA-II rates per taxel and transmits coherent snapshots over USB serial.
+ * encodes mechanoreceptor responses (RA-I, SA-II), and transmits sorted spike events over UART.
  *
  * @features
- * - Rapidly Adapting (RA-I): Threshold-derived spike-request rate per sample
- * - Slowly Adapting (SA-II): Frequency proportional to pressure
- * - Snapshot transmission: Raw taxels and both rates, without event generation
+ * - Rapidly Adapting (RA-I): Threshold-based event generation with refractory period
+ * - Slowly Adapting (SA-II): Frequency-modulated spike generation proportional to pressure
+ * - Event sorting and transmission: Chronological spike ordering before serial transmission
  * - Framed CRC-protected binary protocol for telemetry and parameter commands
  * - Optional ASCII debug output mode during firmware development
  * - NeoPixel LED status indicator: Visual feedback for system state (OK, WARNING, ERROR)
@@ -43,6 +43,12 @@
 #include <Adafruit_NeoPixel.h>
 #include <stdlib.h>
 #include <FastCRC.h>
+#include "ra_threshold.h"
+#include "taxel_assembler.h"
+#include "encoding.h"
+#include "event_transport.h"
+#include "diagnostic_telemetry.h"
+#include "firmware_mode.h"
 
 // chmod 777 /dev/ttyACM0
 // Create a new CAN object
@@ -54,19 +60,26 @@ CANSAME5x CAN;
 #define _ERROR_ Serial.print("[ERROR]: ");
 #define _WARN_ Serial.print("[WARNING]: ");
 
-#define BINARY_MODE 0
-#define ASCII_MODE 1
-#define COMM_MODE BINARY_MODE // binary mode uses framed telemetry/command packets; ASCII mode is for debug output only
 #define CAN_BD_RATE 1000000
 #define NOLD 0xFF
+
+// E06 experimental build option: this is an MTB4 skin-service request,
+// not a Feather timer. On Feather startup, this CAN command changes the
+// MTB4's live transmission-period setting (without flashing MTB4 firmware).
+// Production/default builds retain the historical 10 ms request.
+// Only approved test intervals are accepted to avoid arbitrary CAN values.
+#ifndef E06_MTB4_PERIOD_MS
+#define E06_MTB4_PERIOD_MS 10
+#endif
+static_assert(E06_MTB4_PERIOD_MS == 10 || E06_MTB4_PERIOD_MS == 12 ||
+              E06_MTB4_PERIOD_MS == 16 || E06_MTB4_PERIOD_MS == 20,
+              "E06_MTB4_PERIOD_MS must be one of 10, 12, 16, or 20 ms");
+
 #define TAXEL_ID 0x00
 #define SENS 0x00
-#define NUM_TAXELS 12
 #define CAN_FRAME_MAX_BYTES 8
 #define CAN_RX_QUEUE_SIZE 32
 #define CAN_RX_QUEUE_MASK (CAN_RX_QUEUE_SIZE - 1)
-#define TAXEL_FIRST_FRAME_BYTES 8
-#define TAXEL_SECOND_FRAME_MIN_BYTES 6
 
 static_assert((CAN_RX_QUEUE_SIZE & CAN_RX_QUEUE_MASK) == 0,
               "CAN_RX_QUEUE_SIZE must be a power of two");
@@ -109,9 +122,7 @@ Adafruit_NeoPixel __LED(1, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
 
 // Taxel data processing
 uint8_t taxelVal[NUM_TAXELS] = {};
-uint8_t pendingTaxelValues[7] = {};
-bool firstTaxelFramePending = false;
-uint32_t pendingTaxelCanId = 0;
+TaxelSampleAssembler taxelAssembler;
 
 // CAN receive queue. The interrupt owns head; loop() owns tail. Monotonic
 // uint8_t counters allow all 32 slots to be used while keeping each shared
@@ -131,30 +142,22 @@ volatile uint8_t canRxTail = 0;
 volatile uint32_t canRxSequence = 0;
 volatile uint32_t canRxOverflowCount = 0;
 volatile uint32_t canRxMalformedCount = 0;
+volatile uint32_t canRxObservedCount = 0;
+volatile uint32_t canRxQueuedCount = 0;
+uint32_t canRxDequeuedCount = 0;
+uint32_t canRxSequenceMissingCount = 0;
+uint32_t taxelSamplesCompletedCount = 0;
 
-// RA-I (Rapidly Adapting) parameters
-struct RAParams
-{
-  uint8_t prevTaxelVal[NUM_TAXELS];
-  uint8_t threshold;
-} raParams = {
-    .threshold = 3
-};
-
-// SA-II (Slowly Adapting) parameters
-struct SAParams
-{
-  uint32_t maxSpikingFrequency;
-  float slope;
-};
-
-SAParams saParams = {
-    .maxSpikingFrequency = 300,
-    .slope = 300.f / 255.f};
-
-// Legacy config setting retained for command compatibility; not applied to
-// transmitted rates. Python will enforce stimulation-rate limits.
-uint32_t refPeriod = 3;
+// Foreground-only event storage and diagnostic accounting.
+// Serialized counts are NOT proof that a downstream USB host received data.
+EventData *events = nullptr;
+int eventCount = 0;
+int maxEvents = 0;
+uint32_t eventAllocationFailureCount = 0;
+uint32_t eventAllocationDroppedCount = 0;
+uint32_t eventFramesSerializedCount = 0;
+uint32_t eventRecordsSerializedCount = 0;
+uint32_t eventRecordsEnqueuedCount = 0;
 
 // Timing
 uint32_t currentTime = 0;
@@ -165,8 +168,8 @@ FastCRC32 crc32;
 
 // Frame protocol constants
 #define FRAME_TYPE_TAXEL 0x02
-#define FRAME_TYPE_EVENTS 0x04 // Legacy; rate-streaming firmware does not emit this
-#define FRAME_TYPE_TACTILE_RATES 0x05
+#define FRAME_TYPE_EVENTS 0x04
+#define FRAME_TYPE_DIAGNOSTICS 0x12
 #define FRAME_TYPE_COMMAND 0x10
 #define FRAME_TYPE_ACK 0x11
 
@@ -176,8 +179,22 @@ FastCRC32 crc32;
 #define CMD_SA_FREQ 0x03
 #define CMD_GET_CONFIG 0x04
 
+/// @brief Clears the event buffer without deallocating memory.
+/// @details Resets eventCount to 0, keeping the allocated memory intact for reuse.
+void clearEvents()
+{
+  // Simply reset eventCount to 0, leaving the memory intact
+  eventCount = 0;
+}
+
+/// @brief Updates the last event time to the current event time.
+void updateTime()
+{
+  lastTime = currentTime;
+}
+
 /// @brief Writes a framed packet: [length(2BE)] [type(1)] [payload] [crc32(4BE)]
-/// @param frameType Frame type identifier (0x05=Tactile rates, 0x11=ACK)
+/// @param frameType Frame type identifier (0x02=Taxel, 0x04=Events)
 /// @param payload Pointer to payload data (without type or crc)
 /// @param payloadLen Length of payload in bytes
 void writeFrame(uint8_t frameType, const uint8_t* payload, uint16_t payloadLen)
@@ -239,8 +256,9 @@ void applyCommandPayload(const uint8_t* payload, uint16_t payloadLen)
 
   if (cmdId == CMD_RA_THR)
   {
-    uint8_t newThreshold = (uint8_t)constrain((int)rawValue, 1, 255);
-    raParams.threshold = newThreshold;
+    // A zero threshold would divide by zero inside RaEncoding().
+    // ACK the effective (clamped) value so the host can see what was applied.
+    uint8_t newThreshold = applyRaThreshold(rawValue, raParams.threshold);
     ackPayload[1] = 0x01;
     ackPayload[2] = 0x00;
     ackPayload[3] = newThreshold;
@@ -280,84 +298,111 @@ void applyCommandPayload(const uint8_t* payload, uint16_t payloadLen)
   writeFrame(FRAME_TYPE_ACK, ackPayload, sizeof(ackPayload));
 }
 
-/// @brief Encode a non-negative frequency as unsigned centi-Hz (0.01 Hz).
-/// @details uint32 can represent up to 42,949,672.95 Hz without overflow.
-///          No physiological or stimulation refractory limit is applied here.
-uint32_t hzToCentiHz(float frequencyHz)
+/// @brief Transmits the current time as a 32-bit value over UART.
+/// @param timeToSend The time value (milliseconds) to send as 4 bytes.
+void sendCurrentTime(uint32_t timeToSend)
 {
-  if (!(frequencyHz > 0.0f))
-    return 0;
-
-  const float maxHz = 42949672.0f;
-  if (frequencyHz >= maxHz)
-    return UINT32_MAX;
-
-  return (uint32_t)(frequencyHz * 100.0f + 0.5f);
+  Serial.write(timeToSend >> 24);  // First byte (most significant byte)
+  Serial.write(timeToSend >> 16);  // Second byte
+  Serial.write(timeToSend >> 8);   // Third byte
+  Serial.write(timeToSend & 0xFF); // Fourth byte (least significant byte)
 }
 
-/// @brief Return a threshold-count-derived RA-I rate, with no refractory cap.
-/// @details Preserve the legacy adaptive reference: prevTaxelVal is only
-///          advanced when a change reaches threshold. Each threshold crossing
-///          contributes one requested spike; rate is requested spikes /
-///          elapsed sample duration. Zero dt or first sample returns zero.
-float calculateRaRateHz(int id, uint32_t sampleDtMs)
+/// @brief Transmits current taxel data with timestamp using the new framed protocol.
+/// @param currentTime The timestamp (milliseconds) for this taxel data.
+/// @details Frame format: [length] [type=0x02] [timestamp(4)] [12 pressures] [crc32]
+void transmitTaxelData(uint32_t currentTime)
 {
-  const int change = abs((int)taxelVal[id] - (int)raParams.prevTaxelVal[id]);
-  const uint8_t threshold = raParams.threshold > 0 ? raParams.threshold : 1;
-  if (change < threshold)
-    return 0.0f;
-
-  const uint32_t requestedEvents = (uint32_t)(change / threshold);
-  raParams.prevTaxelVal[id] = taxelVal[id];
-
-  if (sampleDtMs == 0)
-    return 0.0f;
-
-  return (1000.0f * (float)requestedEvents) / (float)sampleDtMs;
-}
-
-/// @brief Return the SA-II requested firing rate, with no refractory cap.
-float calculateSaRateHz(int id)
-{
-  return (float)taxelVal[id] * saParams.slope;
-}
-
-/// @brief Transmit one coherent tactile sample with both unconstrained rates.
-/// @details type 0x05 payload (112 bytes):
-///   timestamp_ms:uint32 BE; taxel[12]:uint8;
-///   ra_rate[12]:uint32 BE in centi-Hz;
-///   sa_rate[12]:uint32 BE in centi-Hz.
-/// The 7-byte framing overhead makes 119 bytes per sample.
-void transmitTactileRates(uint32_t timestampMs, uint32_t sampleDtMs)
-{
-  uint8_t payload[4 + NUM_TAXELS + 8 * NUM_TAXELS];
-  payload[0] = (uint8_t)(timestampMs >> 24);
-  payload[1] = (uint8_t)(timestampMs >> 16);
-  payload[2] = (uint8_t)(timestampMs >> 8);
-  payload[3] = (uint8_t)timestampMs;
-
-  for (int id = 0; id < NUM_TAXELS; ++id)
-    payload[4 + id] = taxelVal[id];
-
-  for (int id = 0; id < NUM_TAXELS; ++id)
-  {
-    const uint32_t rate = hzToCentiHz(calculateRaRateHz(id, sampleDtMs));
-    const int offset = 4 + NUM_TAXELS + 4 * id;
-    payload[offset] = (uint8_t)(rate >> 24);
-    payload[offset + 1] = (uint8_t)(rate >> 16);
-    payload[offset + 2] = (uint8_t)(rate >> 8);
-    payload[offset + 3] = (uint8_t)rate;
+  uint8_t payload[16]; // 4 bytes timestamp + 12 bytes pressures
+  
+  // Write timestamp (big-endian)
+  payload[0] = (currentTime >> 24) & 0xFF;
+  payload[1] = (currentTime >> 16) & 0xFF;
+  payload[2] = (currentTime >> 8) & 0xFF;
+  payload[3] = currentTime & 0xFF;
+  
+  // Write 12 taxel pressure values
+  for (int i = 0; i < 12; i++) {
+    payload[4 + i] = taxelVal[i];
   }
-  for (int id = 0; id < NUM_TAXELS; ++id)
+  
+  writeFrame(FRAME_TYPE_TAXEL, payload, 16);
+}
+
+/// @brief Adds an event to the dynamic event array with automatic memory reallocation.
+/// @param ID0 First identifier (mechanoreceptor type: 0=RA-I, 1=SA-II, 2=SA-II alt).
+/// @param ID1 Second identifier (taxel channel 0-11).
+/// @param time Timestamp (milliseconds) when the event occurred.
+void addEvent(uint8_t ID0, uint8_t ID1, uint32_t time)
+{
+  // Check if we need to reallocate memory
+  if (eventCount >= maxEvents)
   {
-    const uint32_t rate = hzToCentiHz(calculateSaRateHz(id));
-    const int offset = 4 + NUM_TAXELS + 4 * NUM_TAXELS + 4 * id;
-    payload[offset] = (uint8_t)(rate >> 24);
-    payload[offset + 1] = (uint8_t)(rate >> 16);
-    payload[offset + 2] = (uint8_t)(rate >> 8);
-    payload[offset + 3] = (uint8_t)rate;
+#if (COMM_MODE == ASCII_MODE)
+    Serial.print("Will extend memory to: ");
+    Serial.print(maxEvents);
+    Serial.println(" events.");
+#endif
+    const int requestedCapacity = maxEvents == 0 ? 10 : maxEvents * 2;
+    // Never overwrite the old pointer on allocation failure: previously
+    // queued events must remain intact and can still be transmitted.
+    EventData *resized = (EventData *)realloc(events, requestedCapacity * sizeof(EventData));
+    if (resized == nullptr)
+    {
+      ++eventAllocationFailureCount;
+      ++eventAllocationDroppedCount;
+#if (COMM_MODE == ASCII_MODE)
+      Serial.println("Event allocation failed; one event not queued");
+#endif
+      return;
+    }
+    events = resized;
+    maxEvents = requestedCapacity;
   }
-  writeFrame(FRAME_TYPE_TACTILE_RATES, payload, sizeof(payload));
+
+  // Add the event to the array
+  events[eventCount].ID0 = ID0;
+  events[eventCount].ID1 = ID1;
+  events[eventCount].time = time;
+  eventCount++;
+  ++eventRecordsEnqueuedCount;
+}
+
+/// @brief Wrap serialized event payload in the existing CRC-framed 0x04 packet.
+/// Each call receives at most 256 payload bytes (63 event records).
+static void transmitEventPayload(const uint8_t *payload, uint16_t payloadLen)
+{
+  writeFrame(FRAME_TYPE_EVENTS, payload, payloadLen);
+}
+
+/// @brief Serialize all current taxel-sample events over one or more 0x04 frames.
+/// @details Uses (lastTime, currentTime] as chronological origin, including
+///          the ordinary uint32 millis() wrap. The timestamp/reference format
+///          and host decoder are unchanged; no events are dropped at 63 records.
+void sortAndSendEvents()
+{
+  if (eventCount <= 0)
+  {
+    return;
+  }
+
+  const EventBatchStats sent = sortAndEmitEventBatches(
+      events, (size_t)eventCount, lastTime, transmitEventPayload);
+  eventFramesSerializedCount += (uint32_t)sent.frames;
+  eventRecordsSerializedCount += (uint32_t)sent.records;
+
+  // Fail closed if a programmer error in the batcher would leave records
+  // unsent. Never clear an incomplete event buffer.
+  if (sent.records == (size_t)eventCount)
+  {
+    clearEvents();
+  }
+#if (COMM_MODE == ASCII_MODE)
+  else
+  {
+    Serial.println("Event batch incomplete; queue preserved");
+  }
+#endif
 }
 
 /// @brief Initializes the NeoPixel LED.
@@ -390,6 +435,7 @@ void onCanReceive(int packetSize)
   frame.canId = (uint32_t)CAN.packetId();
   frame.arrivalTime = millis();
   frame.sequence = canRxSequence++;
+  ++canRxObservedCount;
 
   bool payloadOverflow = false;
   while (CAN.available())
@@ -427,6 +473,7 @@ void onCanReceive(int packetSize)
   canRxQueue[head & CAN_RX_QUEUE_MASK] = frame;
   __DMB(); // Publish the completed entry only after every field is written.
   canRxHead = (uint8_t)(head + 1);
+  ++canRxQueuedCount;
 }
 
 /// @brief Removes one CAN frame from the interrupt-owned receive queue.
@@ -444,6 +491,7 @@ bool dequeueCanFrame(CanRxFrame &frame)
   frame = canRxQueue[tail & CAN_RX_QUEUE_MASK];
   __DMB(); // Do not release this slot until its contents have been copied.
   canRxTail = (uint8_t)(tail + 1);
+  ++canRxDequeuedCount;
   return true;
 }
 
@@ -464,38 +512,83 @@ void idleUntilInterrupt()
 
 /// @brief Discovers and configures the MTB4 sensor board via CAN.
 /// @details Sends discovery command and retrieves MTB4 board information.
-void configMTB4()
+bool configMTB4()
 {
-  // Discore CAN network
-  CAN.beginPacket(0x70F); // mng command to everyone
-  CAN.write(0xFF);        // discover
-  CAN.endPacket();
+  // The discovery request is correct: broadcast to all iCub CAN boards.
+  // Discovery replies use CAN class 0x700 and command 0xFF; periodic
+  // tactile data use class 0x400 and must not be mistaken for a reply.
+  constexpr uint16_t kDiscoveryRequestId = 0x70F;
+  constexpr uint8_t kDiscoveryCommand = 0xFF;
+  constexpr uint32_t kReplyWindowMs = 500;
+  constexpr uint8_t kMaxAttempts = 3;
 
-  delay(500);
+  MTB4 = {};
 
-  int packetSize = CAN.parsePacket();
-
-  if (packetSize)
+  for (uint8_t attempt = 0; attempt < kMaxAttempts; ++attempt)
   {
-    _DEBUG_ Serial.print(CAN.packetId(), HEX);
-    Serial.print(" of size ");
-    Serial.println(packetSize);
-    MTB4.info.ID = (CAN.packetId() & 0xf0) >> 4;
-    int _c = 1;
-    // received a packet
-    while (CAN.available())
-    {
-      MTB4.bytes[_c++] = CAN.read();
-    }
+    CAN.beginPacket(kDiscoveryRequestId);
+    CAN.write(kDiscoveryCommand);
+    CAN.endPacket();
 
-    if (packetSize == 4)
+    const uint32_t startedAt = millis();
+    while ((uint32_t)(millis() - startedAt) < kReplyWindowMs)
     {
-      _WARN_ Serial.println("Your MTB4 board is in bootloader mode. Fix it!!!");
+      const int packetSize = CAN.parsePacket();
+      if (packetSize <= 0)
+      {
+        delay(1);
+        continue;
+      }
 
-      systemStatus = WARN;
-      LED(_YELLOW);
+      const uint32_t canId = CAN.packetId();
+      uint8_t payload[8] = {};
+      size_t received = 0;
+      // Always drain a frame; bound the destination even if malformed.
+      while (CAN.available())
+      {
+        const int value = CAN.read();
+        if (value < 0)
+          break;
+        if (received < sizeof(payload))
+          payload[received] = (uint8_t)value;
+        ++received;
+      }
+
+      // 0x7<board>0 is an iCub CANLoader reply addressed to the host.
+      // Reject sensor data (e.g., 0x4C0), unrelated replies and bad DLCs.
+      if ((canId & 0x70F) != 0x700 ||
+          ((canId >> 4) & 0x0F) == 0 ||
+          (packetSize != 4 && packetSize != 5) ||
+          received != (size_t)packetSize ||
+          payload[0] != kDiscoveryCommand)
+        continue;
+
+      // Only a supported MTB4 family board may configure our skin stream.
+      const uint8_t boardType = payload[1];
+      if (boardType != 11 && boardType != 16 && boardType != 20)
+        continue;
+
+      // An application reply has five bytes; a bootloader reply has
+      // four and must never be used to start the tactile data stream.
+      if (packetSize == 4)
+      {
+        _WARN_ Serial.println("MTB4 is in bootloader mode; cannot start skin stream.");
+        systemStatus = WARN;
+        LED(_YELLOW);
+        return false;
+      }
+
+      MTB4.info.ID = (uint8_t)((canId >> 4) & 0x0F);
+      for (size_t i = 0; i < 5 && i + 1 < sizeof(MTB4.bytes); ++i)
+        MTB4.bytes[i + 1] = payload[i];
+      return true;
     }
   }
+
+  _ERROR_ Serial.println("No valid MTB4 discovery response; skin stream not started.");
+  systemStatus = ERROR;
+  LED(_RED);
+  return false;
 }
 
 /// @brief Prints MTB4 board information to serial output.
@@ -533,9 +626,7 @@ void startMTB4stream()
   CAN.beginPacket(ID);
   CAN.write(0x4D); // SKIN_SET_BRD_CFG
   CAN.write(0x01); // contains the compensation type
-  CAN.write(0x0A); // contains the tx rate: 10 ms (100 Hz)
-  // CAN.write(0xC); // contains the tx rate: 12 ms.
-  // CAN.write(0x10); // contains the tx rate: 16 ms.
+  CAN.write((uint8_t)E06_MTB4_PERIOD_MS); // requested MTB4 period, ms
   CAN.write(NOLD); // contains the no-load value
   CAN.endPacket();
 
@@ -607,8 +698,9 @@ void setup()
   }
   Serial.println("connected!");
 
-  // Discover MTB4 and configure data
-  configMTB4();
+  // Do not configure or stream from an unverified board address.
+  if (!configMTB4())
+    return;
 
 #if (COMM_MODE == ASCII_MODE)
   dumpMTB4info();
@@ -629,7 +721,7 @@ void setup()
 ///   [length(2, BE)] [type=0x10] [command_id(1) [+ value_u16(2, BE)]] [crc32(4, BE)]
 /// Supported command IDs:
 /// - 0x01 (CMD_RA_THR): Set RA-I threshold (0-255)
-/// - 0x02 (CMD_REF): Store legacy refractory setting (not used for rates)
+/// - 0x02 (CMD_REF): Set refractory period in ms (1-100)
 /// - 0x03 (CMD_SA_FREQ): Set SA-II max frequency in Hz (10-1000)
 /// - 0x04 (CMD_GET_CONFIG): Dump current configuration (ASCII debug mode only)
 void processSerialCommands()
@@ -696,61 +788,51 @@ void processSerialCommands()
   }
 }
 
-/// @brief Adds one CAN payload to the two-frame MTB4 taxel sample assembler.
-/// @details A complete sample is accepted only when a valid 0x40 frame is
-/// followed by a valid 0xC0 frame from the same CAN source. A new 0x40 frame
-/// supersedes an incomplete sample, preventing halves from different samples
-/// from being combined after a dropped frame.
-/// @param canId CAN identifier of the received frame.
-/// @param payload Copied CAN payload.
-/// @param payloadLength Number of bytes copied into payload.
-/// @return true when taxelVal contains one new complete sample.
-bool assembleTaxelSample(uint32_t canId, const uint8_t *payload, uint8_t payloadLength)
+/// @brief Periodically publish an immutable snapshot of MCU-side counters.
+/// @details Does not issue CAN requests or serial commands.  Sequence numbers
+///          permit the host to detect missing status snapshots; counters are
+///          cumulative since reset. Only the short ISR-owned counter read is
+///          protected against interrupts; encoding/USB I/O remain foreground.
+void maybeTransmitDiagnostics()
 {
-  if (payloadLength == 0)
+  static uint32_t lastDiagnosticMs = 0;
+  static uint32_t nextDiagnosticSequence = 0;
+  static bool started = false;
+  const uint32_t now = millis();
+  if (!started)
   {
-    return false;
+    lastDiagnosticMs = now;
+    started = true;
+    return;
   }
+  if ((uint32_t)(now - lastDiagnosticMs) < 10000u)
+    return;
 
-  if (payload[0] == 0x40)
-  {
-    if (payloadLength != TAXEL_FIRST_FRAME_BYTES)
-    {
-      firstTaxelFramePending = false;
-      return false;
-    }
+  lastDiagnosticMs = now;
+  DiagnosticSnapshot snapshot = {};
+  snapshot.sequence = nextDiagnosticSequence++;
+  snapshot.uptime_ms = now;
 
-    for (uint8_t i = 0; i < 7; i++)
-    {
-      pendingTaxelValues[i] = ~payload[i + 1];
-    }
-    pendingTaxelCanId = canId;
-    firstTaxelFramePending = true;
-    return false;
-  }
+  noInterrupts();
+  snapshot.counters[CAN_RX_OBSERVED] = canRxObservedCount;
+  snapshot.counters[CAN_RX_QUEUED] = canRxQueuedCount;
+  snapshot.counters[CAN_RX_MALFORMED] = canRxMalformedCount;
+  snapshot.counters[CAN_RX_QUEUE_OVERFLOW] = canRxOverflowCount;
+  interrupts();
 
-  if (payload[0] == 0xC0)
-  {
-    bool matchesPendingFrame = firstTaxelFramePending && canId == pendingTaxelCanId;
-    firstTaxelFramePending = false;
+  snapshot.counters[CAN_RX_DEQUEUED] = canRxDequeuedCount;
+  snapshot.counters[CAN_RX_SEQUENCE_MISSING] = canRxSequenceMissingCount;
+  snapshot.counters[TAXEL_SAMPLES_COMPLETED] = taxelSamplesCompletedCount;
+  snapshot.counters[EVENT_RECORDS_ENQUEUED] = eventRecordsEnqueuedCount;
+  snapshot.counters[EVENT_RECORDS_SERIALIZED] = eventRecordsSerializedCount;
+  snapshot.counters[EVENT_FRAMES_SERIALIZED] = eventFramesSerializedCount;
+  snapshot.counters[EVENT_ALLOCATION_FAILURES] = eventAllocationFailureCount;
+  snapshot.counters[EVENT_RECORDS_DROPPED] = eventAllocationDroppedCount;
 
-    if (!matchesPendingFrame || payloadLength < TAXEL_SECOND_FRAME_MIN_BYTES)
-    {
-      return false;
-    }
-
-    for (uint8_t i = 0; i < 7; i++)
-    {
-      taxelVal[i] = pendingTaxelValues[i];
-    }
-    for (uint8_t i = 0; i < 5; i++)
-    {
-      taxelVal[i + 7] = ~payload[i + 1];
-    }
-    return true;
-  }
-
-  return false;
+  uint8_t payload[DIAGNOSTIC_PAYLOAD_SIZE] = {};
+  if (encodeDiagnosticPayload(snapshot, payload, sizeof(payload)) ==
+      sizeof(payload))
+    writeFrame(FRAME_TYPE_DIAGNOSTICS, payload, sizeof(payload));
 }
 
 /// @brief Arduino main loop - processes queued CAN frames and then idles.
@@ -770,7 +852,8 @@ void loop()
     {
       // At least one frame was dropped or malformed. Never pair a staged
       // first half with a second half across that receive gap.
-      firstTaxelFramePending = false;
+      canRxSequenceMissingCount += frame.sequence - lastCanSequence - 1u;
+      taxelAssembler.resetPending();
     }
     lastCanSequence = frame.sequence;
     sequenceTrackingStarted = true;
@@ -780,17 +863,18 @@ void loop()
     Serial.println(" ");
 #endif
 
-    if (assembleTaxelSample(frame.canId, frame.payload, frame.payloadLength))
+    if (taxelAssembler.assembleTaxelSample(frame.canId, frame.payload, frame.payloadLength, taxelVal))
     {
+      ++taxelSamplesCompletedCount;
       currentTime = frame.arrivalTime;
-      // First sample has no meaningful interval. Avoid a synthetic RA burst.
-      static bool previousSampleValid = false;
-      const uint32_t sampleDtMs = previousSampleValid ? (uint32_t)(currentTime - lastTime) : 0;
-      transmitTactileRates(currentTime, sampleDtMs);
-      previousSampleValid = true;
-      lastTime = currentTime;
+      transmitTaxelData(currentTime);
+      mechanoreceptorEncoding(currentTime);
+      sortAndSendEvents();
+      // store the new last time
+      updateTime();
     }
   }
 
+  maybeTransmitDiagnostics();
   idleUntilInterrupt();
 }

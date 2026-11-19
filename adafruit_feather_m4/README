@@ -68,6 +68,54 @@ Important paths:
 - lib/
 - test/
 
+## Firmware architecture
+
+The firmware uses two small, independently testable modules while retaining
+hardware orchestration in `src/main.cpp`.
+
+| Owner | Responsibility | Execution context |
+|---|---|---|
+| `src/main.cpp` | Arduino setup/loop, MTB4 CAN discovery and stream configuration, CAN receive ISR and bounded queue, USB framing/CRC32 and commands, event buffer/sorting/transmission, LED and idle | ISR copies CAN frames; everything else runs in foreground |
+| `include/taxel_assembler.h` + `src/taxel_assembler.cpp` | Pair the 0x40 and 0xC0 MTB4 CAN halves by source, apply 8-bit inversion and preserve all 12 taxel positions | Foreground only |
+| `include/encoding.h` + `src/encoding.cpp` | Unchanged RA-I, SA-II and inactive SA-II-alt code, parameter state and refractory period | Foreground only |
+| `include/ra_threshold.h` | Zero-safe RA-I threshold application (0 becomes 1) | Foreground command handler |
+| `include/firmware_mode.h` | Shared compile-time binary/ASCII mode selection | Compile time |
+
+`loop()` processes commands, dequeues complete CAN frames, discards staged
+taxel halves after receive-sequence gaps, assembles 12-taxel samples, and
+calls `mechanoreceptorEncoding(currentTime)`. The encoder reads the
+foreground-owned `taxelVal` and `lastTime` values and emits via
+`addEvent()`, which remains owned by the main event buffer. The main loop
+then sorts, serializes and sends events and advances `lastTime`. No encoder
+operation, serial write, allocation, or sample reconstruction runs in the
+CAN ISR. The existing queue and interrupt memory barriers are unchanged.
+
+The encoder deliberately retains limited, explicit dependencies on the
+existing taxel buffer, previous timestamp and event sink. Moving these into
+a new object graph would require more state transitions and interface churn
+without a demonstrated benefit. Parameters `raParams`, `saParams`,
+`saAltParams` and `refPeriod` are defined once in `encoding.cpp`; command
+handling updates them through declarations in `encoding.h`. No new heap
+allocations have been added.
+
+For new encoders, preserve the RA/SA event timestamp, source/channel and
+state-update conventions and add host-native C++ regression cases under
+`tests/firmware/`. For new commands or telemetry frames, update only the
+existing foreground serial handler, verify CRC/ACK/payload byte layouts
+against FalangeGUI, and add protocol regression tests. Never add serial I/O
+or encoding to the interrupt callback.
+
+Device-free encoder and assembler tests compile their **production C++**
+implementations directly:
+`python -m pytest tests/firmware/ -v`. Complete repository checks use
+`python -m pytest tests/ -v`. The build-only target is
+`cd FalangeM4 && platformio run -e adafruit_feather_m4_can`.
+Host tests and compilation do not establish hardware behavior.
+
+**Known issue unchanged:** event batches containing more than 63 entries
+may be silently truncated by `sortAndSendEvents()` (K2). Address this in
+a separate, explicitly tested functional change.
+
 ## Build and Upload
 
 From repository root:
@@ -101,7 +149,7 @@ All dependencies are declared in `platformio.ini` and fetched automatically by P
 
 ## Development Workflow
 
-1. Edit firmware in src/main.cpp.
+1. Edit the owning firmware module under src/ and include/.
 2. Build with platformio run.
 3. Upload with platformio run -t upload.
 4. Verify serial output with device monitor.
