@@ -40,5 +40,12 @@
     "ema_alpha": 0.15,
     "max_step_ppm_per_update": 100,
     "log_updates": true
+  },
+  "matrix32_stimulation": {
+    "channel": 1,
+    "currentCommand": 50,
+    "phaseWidthUs": 100,
+    "outputVoltageCommand": 50,
+    "interPulseTimingCommand": 10
   }
 }
