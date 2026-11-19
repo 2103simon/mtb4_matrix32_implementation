@@ -35,7 +35,27 @@ def main():
     with open(CONFIG_PATH, "r") as f:
         config = json.load(f)
 
-    print("Configuration loaded.")
+    # Validate the fixed encoding parameters and the future CH1 signal source.
+    encoding_settings = config["tactile_encoding"]
+    ra_threshold = encoding_settings["raThreshold"]
+    sa_max_hz = encoding_settings["saMaxFrequencyHz"]
+    source = config["stimulation_source"]
+    taxel_id = source["taxel"]
+    rate_encoding = source["encoding"]
+    if type(ra_threshold) is not int or not 1 <= ra_threshold <= 255:
+        raise ValueError("tactile_encoding.raThreshold must be an integer 1..255")
+    if type(sa_max_hz) is not int or not 10 <= sa_max_hz <= 1000:
+        raise ValueError("tactile_encoding.saMaxFrequencyHz must be an integer 10..1000")
+    if type(taxel_id) is not int or not 0 <= taxel_id < 12:
+        raise ValueError("stimulation_source.taxel must be an integer 0..11")
+    if rate_encoding not in ("ra_i", "sa_ii"):
+        raise ValueError("stimulation_source.encoding must be 'ra_i' or 'sa_ii'")
+
+    print(
+        f"Configuration loaded. RA threshold={ra_threshold}, "
+        f"SA max={sa_max_hz} Hz, selected taxel={taxel_id}, "
+        f"selected encoding={rate_encoding}"
+    )
 
     # ----------------------------------
     # 2. Initialize communication
@@ -102,8 +122,13 @@ def main():
                     rate_samples += 1
                     recorder.record_tactile_rates(snapshot)
                     if args.print_every and rate_samples % args.print_every == 0:
+                        selected_rate_key = ("ra_rates_hz" if rate_encoding == "ra_i"
+                                             else "sa_rates_hz")
+                        selected_rate = snapshot[selected_rate_key][taxel_id]
                         print(
-                            f"[RATES #{rate_samples}] MCU={snapshot['raw_timestamp_ms']} ms "
+                            f"[RATES #{rate_samples}] selected taxel={taxel_id} "
+                            f"{rate_encoding}={selected_rate:.2f} Hz | "
+                            f"MCU={snapshot['raw_timestamp_ms']} ms "
                             f"taxels={snapshot['taxels']} "
                             f"RA(Hz)={[round(x, 2) for x in snapshot['ra_rates_hz']]} "
                             f"SA(Hz)={[round(x, 2) for x in snapshot['sa_rates_hz']]}"
@@ -159,7 +184,10 @@ def main():
 
                 elif data_type == "link_ready":
 
-                    print("MCU connection ready!")
+                    print("MCU connection ready! Configuring encoding parameters...")
+                    sm.send_command(f"RA_THR={ra_threshold}")
+                    sm.send_command(f"SA_FREQ={sa_max_hz}")
+                    print("MCU configuration sent; waiting for ACKs.")
 
             except queue.Empty:
                 continue
