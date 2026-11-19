@@ -107,6 +107,7 @@ async def mcu_receiver(sm, config, recorder, ready, finished):
                             "acknowledged": True,
                         },
                     )
+                    ready.configured_ns = time.monotonic_ns()
                     ready.set()
                     print(f"[MCU] Configured; recording {recorder.recording_id}")
                 continue
@@ -160,6 +161,11 @@ async def frequency_worker(sm, device, ready, taxel, receptor, *, arm,
             await asyncio.sleep(POLL_SECONDS)
             continue
         sample_ns = snapshot["pc_arrival_monotonic_ns"]
+        # A latest-slot sample may have been parsed BEFORE the configuration
+        # ACKs. Only a newly received post-handshake sample may drive output.
+        if sample_ns <= ready.configured_ns:
+            await asyncio.sleep(POLL_SECONDS)
+            continue
         if sample_ns == last_sample_ns:
             await asyncio.sleep(POLL_SECONDS)
             continue
@@ -234,6 +240,7 @@ async def run(config, stim_config, *, arm, stale_seconds=STALE_SECONDS,
     sm = serial_factory(config=config)
     recorder = DataRecorder(config["recordings_dir"])
     ready = asyncio.Event()
+    ready.configured_ns = 0
     finished = asyncio.Event()
     try:
         await device.connect()
@@ -283,6 +290,8 @@ def main():
         parser.error("--stale-ms must be between 50 and 2000")
     with MCU_CONFIG.open(encoding="utf-8") as file:
         config = json.load(file)
+    if not STIM_CONFIG.is_file():
+        parser.error(f"Missing dedicated CH1 stimulation configuration: {STIM_CONFIG}")
     stim_config = load_config(STIM_CONFIG)
     try:
         asyncio.run(run(config, stim_config, arm=args.arm, stale_seconds=args.stale_ms / 1000))
