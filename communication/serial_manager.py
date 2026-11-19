@@ -539,20 +539,27 @@ class SerialManager():
             command (str): Logical command string (e.g., "RA_THR=5\n").
 
         Supported commands:
-            - RA_THR=<value>: Set RA-I threshold (0-10)
-            - REF=<value>: Set refractory period (1-10 ms)
-            - SA_FREQ=<value>: Set SA-II max frequency (1-300 Hz)
+            - RA_THR=<value>: Set RA-I threshold (1-255)
+            - REF=<value>: Set legacy refractory period (1-100 ms)
+            - SA_FREQ=<value>: Set SA-II maximum frequency (10-1000 Hz)
             - GET_CONFIG: Request current parameter values
+
+        Returns True only if the full frame was written successfully.
         """
         if not isinstance(command, str):
             raise TypeError("command must be a string")
-        if getattr(self.ser, "is_open", False):
-            try:
-                payload = self._encode_command_payload(command)
-                frame = self._build_frame(self.FRAME_TYPE_COMMAND, payload)
-                self.ser.write(frame)
-                self.ser.flush()
-                self.logger.info(f"Sent framed command: {command.strip()}")
-            except (AttributeError, OSError, ValueError, TypeError, serial.SerialTimeoutException, serial.SerialException) as e:
-                self.logger.error(
-                    f"Failed to send command '{command.strip()}': {e}")
+        if not getattr(self.ser, "is_open", False):
+            self.logger.error("Cannot send MCU command: serial port is closed")
+            return False
+        try:
+            payload = self._encode_command_payload(command)
+            frame = self._build_frame(self.FRAME_TYPE_COMMAND, payload)
+            bytes_written = self.ser.write(frame)
+            if bytes_written != len(frame):
+                raise OSError(f"Short serial write: {bytes_written}/{len(frame)} bytes")
+            self.ser.flush()
+            self.logger.info("Sent framed command: %s", command.strip())
+            return True
+        except (AttributeError, OSError, ValueError, TypeError, serial.SerialTimeoutException, serial.SerialException) as e:
+            self.logger.error("Failed to send command '%s': %s", command.strip(), e)
+            return False
