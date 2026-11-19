@@ -70,7 +70,7 @@ def requested_frequency(snapshot, taxel, receptor, *, max_hz=400):
     return max(2, min(max_hz, int(value + 0.5)))
 
 
-async def mcu_receiver(sm, config, recorder, ready, finished):
+async def mcu_receiver(sm, config, recorder, ready, manifest_config):
     """Lossless CSV consumer; configure MCU before accepting any recording."""
     handshake = McuConfigurationHandshake(
         config["tactile_encoding"]["raThreshold"],
@@ -100,7 +100,7 @@ async def mcu_receiver(sm, config, recorder, ready, finished):
                     # Any samples queued before the last ACK must not be
                     # recorded or used to trigger stimulation.
                     recorder.start(
-                        config=config,
+                        config=manifest_config,
                         applied_settings={
                             "raThreshold": handshake.expected[0x01],
                             "saMaxFrequencyHz": handshake.expected[0x03],
@@ -121,7 +121,7 @@ async def mcu_receiver(sm, config, recorder, ready, finished):
                 recorder.record_events(data[1], data[2])
         raise ConnectionError("MCU serial reader stopped")
     finally:
-        finished.set()
+        pass
 
 
 async def stop_output(device, *, reason):
@@ -241,7 +241,16 @@ async def run(config, stim_config, *, arm, stale_seconds=STALE_SECONDS,
     recorder = DataRecorder(config["recordings_dir"])
     ready = asyncio.Event()
     ready.configured_ns = 0
-    finished = asyncio.Event()
+    manifest_config = {
+        **config,
+        "matrix32_stimulation": stim_config,
+        "stimulation_control": {
+            "armed": arm,
+            "stale_timeout_ms": int(stale_seconds * 1000),
+            "source": config["stimulation_source"],
+            "matrix32_channel": 1,
+        },
+    }
     try:
         await device.connect()
         if not device.connected or device.last_battery_level is None:
@@ -252,7 +261,7 @@ async def run(config, stim_config, *, arm, stale_seconds=STALE_SECONDS,
             raise ConnectionError("Failed to open MCU serial connection")
         print(f"[MCU] Connected: {config['serial']['port']}")
         async with asyncio.TaskGroup() as group:
-            group.create_task(mcu_receiver(sm, config, recorder, ready, finished))
+            group.create_task(mcu_receiver(sm, config, recorder, ready, manifest_config))
             group.create_task(frequency_worker(sm, device, ready, taxel, receptor, arm=arm,
                                                stale_seconds=stale_seconds))
             group.create_task(stale_supervisor(sm, device, ready, arm=arm,
