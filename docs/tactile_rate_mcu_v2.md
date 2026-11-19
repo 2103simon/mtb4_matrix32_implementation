@@ -56,6 +56,20 @@ The experimental `E06_MTB4_PERIOD_MS` compile-time selector has been removed. Du
 
 **Unverified:** GitHub source edits were possible, but this environment could not access github.com from the code container (DNS resolution failure). Compilation, tests and hardware behavior have therefore not been claimed as passing.
 
+## Plot recorded taxels and rates
+
+`analyze_mcu_recording.py` now automatically discovers the most recently modified `*_tactile_rates.csv` in the configured recordings directory. It plots three synchronized time-series panels: **raw taxel values**, **RA-I requested rates in Hz**, **SA-II requested rates in Hz**. This replaces the spike raster on new rate recordings, while legacy taxel/event files still use the old raster plot.
+
+Run from the repository root:
+
+- `python analyze_mcu_recording.py` — newest rate recording; all 12 channels.
+- `python analyze_mcu_recording.py --taxel 3` — inspect one taxel more clearly.
+- `python analyze_mcu_recording.py --datetime 20261119_082300` — choose recording by ID.
+- `python analyze_mcu_recording.py --zoom-sec 1.0` — plot the most active 1-second pressure window.
+- `python analyze_mcu_recording.py --pc-time` — use arrival-time axis instead of corrected MCU time.
+
+Outputs are saved in `analysis/<id>_traces*.png`. If an associated Omega recording exists, a six-panel combined figure is also saved, with rate traces instead of spike rasters. Plot tests: `python -m unittest discover -s tests -v` (includes `tests/test_analyze_rate_recording.py`). **These changes have not been executed in the user's environment yet.**
+
 ## Next increments
 
 - Measure whether 119 bytes/sample and diagnostic traffic introduce USB queueing at observed ~70 Hz.
