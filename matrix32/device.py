@@ -706,7 +706,7 @@ class Matrix32Device:
     async def apply_live_frequency(
             self, hz, *, timeout_s=2.0, timing_marker=None,
             min_ack_to_write_ms=LIVE_FREQUENCY_MIN_ACK_TO_WRITE_MS,
-            transport="optimized_persistent"):
+            transport="optimized_persistent", experimental_allow_zero=False):
         """Apply one verified live SF update over the optimized persistent path.
 
         Consecutive calls reuse one indication subscription and send the short
@@ -724,6 +724,10 @@ class Matrix32Device:
         before the SF write. It is diagnostic and therefore adds latency; the
         qualified ~44 Hz path does not use a per-command marker.
 
+        experimental_allow_zero=True permits unqualified SF=0 only on a
+        supervised bench with a scope and a dummy load. Firmware >OK< does
+        not demonstrate zero physical output pulses.
+
         timeout_s bounds the command exchange after any required guard/marker.
         transport="legacy_per_command_subscription" is retained only so closed
         S05/S06-F1 experiment runners can reproduce their original transport
@@ -734,9 +738,14 @@ class Matrix32Device:
         exchange cleanup finishes. An independent STOP supervisor remains
         required for bounded-output experiments.
         """
-        if type(hz) is not int or not 1 <= hz <= 400:
+        # SF=0 is OUTSIDE the manufacturer's specified 1..400 Hz range.
+        # Only an explicit bench experiment may send it. >OK< does NOT
+        # establish that physical output is electrically off.
+        if type(hz) is not int or not (
+                1 <= hz <= 400 or (hz == 0 and experimental_allow_zero)):
             raise ValueError(
-                "Live SF must be an exact integer in manufacturer range 1..400 Hz")
+                "Live SF must be integer 1..400 Hz (0 requires "
+                "experimental_allow_zero=True and scope verification)")
         if (type(timeout_s) not in (int, float) or not math.isfinite(timeout_s)
                 or not 0 < timeout_s <= 10):
             raise ValueError(
@@ -784,9 +793,14 @@ class Matrix32Device:
             old_frequency = old_config["sf"]
             proposed = deepcopy(old_config)
             proposed["sf"] = hz
-            message = next(
-                item for item in build_config_messages(proposed)
-                if item.startswith(b">SF;"))
+            # The normal encoder rejects SF=0. The experimental value
+            # uses the same frame format, persistent link, ACK and guard.
+            message = (
+                b">SF;\x00\x00<" if hz == 0
+                else next(
+                    item for item in build_config_messages(proposed)
+                    if item.startswith(b">SF;"))
+            )
 
             requested = time.monotonic()
             generation = self._control_generation
@@ -797,6 +811,7 @@ class Matrix32Device:
             record = {
                 "sequence_id": len(self.live_frequency_records) + 1,
                 "command": "SF",
+                "experimental_zero_frequency": hz == 0,
                 "old_frequency_hz": old_frequency,
                 "new_frequency_hz": hz,
                 "same_value": old_frequency == hz,
