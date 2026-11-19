@@ -65,6 +65,13 @@ def load_recordings(data_dir, recording_id):
     data_dir = Path(data_dir)
     rates_path = data_dir / f"{recording_id}_tactile_rates.csv"
     data = {"recording_id": recording_id}
+    settings_path = data_dir / f"{recording_id}_settings.json"
+    if settings_path.is_file():
+        with settings_path.open(encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        if manifest.get("recording_id") != recording_id:
+            raise ValueError(f"Manifest recording_id mismatch: {settings_path}")
+        data["experiment_settings"] = manifest
 
     if rates_path.exists():
         rows = _read_rows(rates_path)
@@ -166,6 +173,24 @@ def _plot_rate_axes(axs, t, data, mask, channel_colors, selected_taxel=None):
         ax.grid(True, alpha=0.25)
 
 
+def _experiment_label(data):
+    """Concise plot annotation sourced from the saved experiment manifest."""
+    settings = data.get("experiment_settings")
+    if not settings:
+        return ""
+    config = settings.get("configuration", {})
+    encoding = config.get("tactile_encoding", {})
+    source = config.get("stimulation_source", {})
+    if not encoding or not source:
+        return ""
+    return (
+        f"RA threshold={encoding.get('raThreshold', '?')}, "
+        f"SA max={encoding.get('saMaxFrequencyHz', '?')} Hz, "
+        f"selected taxel={source.get('taxel', '?')} "
+        f"({source.get('encoding', '?')})"
+    )
+
+
 def plot_traces(data, output, interval=None, selected_taxel=None, x_axis="mcu"):
     """Three aligned panels: raw taxels, RA requested rate, SA requested rate."""
     if x_axis == "pc":
@@ -231,6 +256,7 @@ def plot_traces(data, output, interval=None, selected_taxel=None, x_axis="mcu"):
     fig.suptitle(
         f"{data['recording_id']} — {'MCU rates' if data['mode'] == 'rates' else 'legacy spikes'}"
         + (f" — taxel {selected_taxel}" if selected_taxel is not None else "")
+        + (f"\n{_experiment_label(data)}" if _experiment_label(data) else "")
     )
     fig.savefig(output, dpi=150)
     plt.close(fig)
@@ -294,7 +320,8 @@ def plot_combined(data, output, selected_taxel=None):
             ax.set_yticks(indices)
 
     axs[-1].set_xlabel("PC monotonic time since first sample (s)")
-    fig.suptitle("Omega and tactile measurements (host-clock alignment)")
+    fig.suptitle("Omega and tactile measurements (host-clock alignment)"
+                 + (f"\n{_experiment_label(data)}" if _experiment_label(data) else ""))
     fig.savefig(output, dpi=150)
     plt.close(fig)
     return True
@@ -302,7 +329,10 @@ def plot_combined(data, output, selected_taxel=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--datetime", help="Recording ID, e.g. 20261119_082300 (default: latest)")
+    parser.add_argument(
+        "--datetime",
+        help="Full recording ID (including settings suffix), or omit for latest",
+    )
     parser.add_argument("--taxel", type=int, choices=range(CHANNEL_COUNT),
                         metavar="0-11", help="Show only this taxel across all three panels")
     parser.add_argument("--zoom-sec", type=float, default=0.5,
@@ -320,6 +350,11 @@ def main():
         data_dir = BASE_DIR / data_dir
     recording_id = choose_recording(data_dir, args.datetime)
     data = load_recordings(data_dir, recording_id)
+    if "experiment_settings" in data:
+        print(f"Loaded experiment settings: {data_dir / (recording_id + '_settings.json')}")
+        print(_experiment_label(data))
+    else:
+        print("No settings manifest found; plotting legacy recording metadata.")
     OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
 
     axis = "pc" if args.pc_time else "mcu"
