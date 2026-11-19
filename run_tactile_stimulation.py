@@ -77,51 +77,55 @@ async def mcu_receiver(sm, config, recorder, ready, manifest_config):
         config["tactile_encoding"]["saMaxFrequencyHz"],
     )
     deadline = time.monotonic() + 15.0
-    try:
-        while sm.is_running() or not sm.data_queue.empty():
-            if not handshake.started and time.monotonic() > deadline:
-                raise TimeoutError("No MCU telemetry within 15 seconds")
-            handshake.check_timeout()
-            try:
-                data = sm.data_queue.get_nowait()
-            except queue.Empty:
-                await asyncio.sleep(0.003)
-                continue
-            kind = data[0]
-            if kind == "link_ready":
-                if not handshake.started:
-                    handshake.start(sm)
-                    print("Sent MCU RA_THR and SA_FREQ; waiting for both ACKs.")
-                continue
-            if kind == "ack":
-                command, status, value = data[1:]
-                print(f"[MCU ACK] cmd=0x{command:02X}, status={status}, value={value}")
-                if handshake.accept_ack(command, status, value) and not ready.is_set():
-                    # Any samples queued before the last ACK must not be
-                    # recorded or used to trigger stimulation.
-                    recorder.start(
-                        config=manifest_config,
-                        applied_settings={
-                            "raThreshold": handshake.expected[0x01],
-                            "saMaxFrequencyHz": handshake.expected[0x03],
-                            "acknowledged": True,
-                        },
-                    )
-                    ready.configured_ns = time.monotonic_ns()
-                    ready.set()
-                    print(f"[MCU] Configured; recording {recorder.recording_id}")
-                continue
-            if not ready.is_set():
-                continue
-            if kind == "tactile_rates":
-                recorder.record_tactile_rates(data[1])
-            elif kind == "taxel":
-                recorder.record_taxel(data[1], data[2], data[3], data[4])
-            elif kind == "events":
-                recorder.record_events(data[1], data[2])
-        raise ConnectionError("MCU serial reader stopped")
-    finally:
-        pass
+    processed_since_yield = 0
+    while sm.is_running() or not sm.data_queue.empty():
+        if not handshake.started and time.monotonic() > deadline:
+            raise TimeoutError("No MCU telemetry within 15 seconds")
+        handshake.check_timeout()
+        try:
+            data = sm.data_queue.get_nowait()
+        except queue.Empty:
+            await asyncio.sleep(0.003)
+            continue
+        processed_since_yield += 1
+        if processed_since_yield >= 32:
+            processed_since_yield = 0
+            # Give the independent stale-input watchdog scheduling priority
+            # even when many CSV samples are waiting to be drained.
+            await asyncio.sleep(0)
+        kind = data[0]
+        if kind == "link_ready":
+            if not handshake.started:
+                handshake.start(sm)
+                print("Sent MCU RA_THR and SA_FREQ; waiting for both ACKs.")
+            continue
+        if kind == "ack":
+            command, status, value = data[1:]
+            print(f"[MCU ACK] cmd=0x{command:02X}, status={status}, value={value}")
+            if handshake.accept_ack(command, status, value) and not ready.is_set():
+                # Any samples queued before the last ACK must not be
+                # recorded or used to trigger stimulation.
+                recorder.start(
+                    config=manifest_config,
+                    applied_settings={
+                        "raThreshold": handshake.expected[0x01],
+                        "saMaxFrequencyHz": handshake.expected[0x03],
+                        "acknowledged": True,
+                    },
+                )
+                ready.configured_ns = time.monotonic_ns()
+                ready.set()
+                print(f"[MCU] Configured; recording {recorder.recording_id}")
+            continue
+        if not ready.is_set():
+            continue
+        if kind == "tactile_rates":
+            recorder.record_tactile_rates(data[1])
+        elif kind == "taxel":
+            recorder.record_taxel(data[1], data[2], data[3], data[4])
+        elif kind == "events":
+            recorder.record_events(data[1], data[2])
+    raise ConnectionError("MCU serial reader stopped")
 
 
 async def stop_output(device, *, reason):
