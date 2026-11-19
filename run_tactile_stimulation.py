@@ -67,7 +67,13 @@ def requested_frequency(snapshot, taxel, receptor, *, max_hz=400):
     # treat it as OFF rather than silently increasing the requested rate.
     if value < 2.0:
         return 0
-    return max(2, min(max_hz, int(value + 0.5)))
+    # Upper device command clamp: any requested rate >400 Hz sends SF=400.
+    # Bench observation: commanding SF=400 yields ~401 pulses/s at the
+    # physical Matrix32 output. This ~1 Hz offset is accepted for now;
+    # do not compensate by sending an out-of-range command.
+    if value > max_hz:
+        return max_hz
+    return min(max_hz, int(value + 0.5))
 
 
 async def mcu_receiver(sm, config, recorder, ready, manifest_config):
