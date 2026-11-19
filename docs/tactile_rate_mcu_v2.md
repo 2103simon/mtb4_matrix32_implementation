@@ -104,6 +104,26 @@ The default encoding maximum is **150 Hz**, matching the former slider default; 
 - The `communication/mcu_configuration.py` handshake is separately unit-tested by `tests/test_mcu_configuration.py`. The serial sender now returns success/failure to allow early abort.
 - `stimulation_source` remains selection-only; this does not operate Matrix32.
 
+## Self-describing experiment recordings and analysis figures
+
+For every run successfully configured via both MCU ACKs, `read_mcu.py` now starts recording with a descriptive run ID:
+
+```text
+20261119_101112_ra5_sa200Hz_t7_rai
+```
+
+The ID contains the local acquisition start date/time, confirmed RA threshold (5), confirmed SA maximum (200 Hz), selected taxel (7), and selected encoding (`rai` or `saii`). Changing the configuration before the next run creates a different descriptive ID. The timestamp is assigned **after both successful ACKs**, when recording begins.
+
+The files in the configured `recordings_dir` use this exact prefix, for example:
+
+- `<run_id>_tactile_rates.csv` — all 12 raw taxels and unconstrained RA/SA rates.
+- `<run_id>_taxel.csv` and `<run_id>_events.csv` — legacy compatibility outputs (header-only with the rate-streaming MCU).
+- `<run_id>_settings.json` — versioned, frozen manifest with a copy of the entire experiment `config/config.json`, ACK-confirmed applied encoder values, recording start ISO timestamp, protocol description, recording ID and CSV filenames.
+
+The metadata is saved **with the data**, rather than inferred from whatever `config/config.json` contains when analysis is run later. `analyze_mcu_recording.py` loads the same manifest when available, prints the settings, annotates plot titles, and preserves the run ID in all figure filenames. For example: `analysis/20261119_101112_ra5_sa200Hz_t7_rai_traces.png` and `_traces_zoom.png`. The `--datetime` analysis argument accepts a **full run ID** (including suffix), while omitting it still selects the newest recording. Old timestamp-only recordings without a JSON manifest remain supported.
+
+The writer refuses to reuse an existing run ID instead of silently overwriting data. Run `python -m unittest discover -s tests -v` (includes `tests/test_recording_manifest.py`) to check metadata integrity and analysis naming. Changes are committed but not yet confirmed in a local user test session.
+
 ## Next increments
 
 - Measure whether 119 bytes/sample and diagnostic traffic introduce USB queueing at observed ~70 Hz.
