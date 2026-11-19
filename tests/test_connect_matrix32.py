@@ -2,8 +2,10 @@
 
 import asyncio
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from connect_matrix32 import run_connection
+from connect_matrix32 import check_pc_bluetooth, run_connection
 
 
 class FakeMatrix32:
@@ -37,8 +39,33 @@ class FakeMatrix32:
         raise AssertionError("Connection-only mode must not start stimulation")
 
 
+class BluetoothPreflightTest(unittest.TestCase):
+    @patch("connect_matrix32.subprocess.run")
+    @patch("connect_matrix32.check_bluetooth_service", return_value=False)
+    def test_service_inactive_aborts_before_adapter_check(self, service, run):
+        with self.assertRaisesRegex(RuntimeError, "service is unavailable"):
+            check_pc_bluetooth()
+        run.assert_not_called()
+
+    @patch("connect_matrix32.subprocess.run", return_value=SimpleNamespace(
+        returncode=0, stdout="Controller 12:34:56\\n  Powered: no\\n"
+    ))
+    @patch("connect_matrix32.check_bluetooth_service", return_value=True)
+    def test_adapter_powered_off(self, service, run):
+        with self.assertRaisesRegex(RuntimeError, "adapter is OFF"):
+            check_pc_bluetooth()
+
+    @patch("connect_matrix32.subprocess.run", return_value=SimpleNamespace(
+        returncode=0, stdout="Controller 12:34:56\\n  Powered: yes\\n"
+    ))
+    @patch("connect_matrix32.check_bluetooth_service", return_value=True)
+    def test_adapter_powered_on(self, service, run):
+        self.assertIsNone(check_pc_bluetooth())
+
+
+@patch("connect_matrix32.check_pc_bluetooth", return_value=None)
 class Matrix32ConnectionHoldTest(unittest.IsolatedAsyncioTestCase):
-    async def test_cancel_disconnects_without_stimulating(self):
+    async def test_cancel_disconnects_without_stimulating(self, bluetooth):
         device = FakeMatrix32()
         task = asyncio.create_task(run_connection(device, heartbeat_seconds=0.01))
         for _ in range(100):
@@ -52,7 +79,7 @@ class Matrix32ConnectionHoldTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(device.disconnect_calls, 1)
         self.assertEqual(device.stimulation_calls, [])
 
-    async def test_unexpected_disconnect_reports_error_and_cleans_up(self):
+    async def test_unexpected_disconnect_reports_error_and_cleans_up(self, bluetooth):
         device = FakeMatrix32()
         task = asyncio.create_task(run_connection(device, heartbeat_seconds=0.01))
         for _ in range(100):
@@ -66,7 +93,7 @@ class Matrix32ConnectionHoldTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(device.disconnect_calls, 1)
         self.assertEqual(device.stimulation_calls, [])
 
-    async def test_readiness_failure_disconnects_without_stimulating(self):
+    async def test_readiness_failure_disconnects_without_stimulating(self, bluetooth):
         device = FakeMatrix32(battery=None)
         with self.assertRaisesRegex(RuntimeError, "readiness"):
             await run_connection(device)
