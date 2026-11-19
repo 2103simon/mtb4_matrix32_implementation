@@ -74,7 +74,13 @@ class SelectionTests(unittest.TestCase):
         snap = sample(72.6, 300.3)
         self.assertEqual(requested_frequency(snap, 4, "ra_i"), 73)
         self.assertEqual(requested_frequency(snap, 4, "sa_ii"), 300)
-        self.assertEqual(requested_frequency(sample(800), 4, "ra_i"), 400)
+        # Matrix32 upper command clamp: 400 is the maximum sent, even
+        # though oscilloscope measurements indicate ~401 pulses/s at SF=400.
+        for requested in (400, 400.01, 401, 800, 10_000):
+            with self.subTest(requested=requested):
+                self.assertEqual(requested_frequency(sample(requested), 4, "ra_i"), 400)
+        self.assertEqual(requested_frequency(sample(399.6), 4, "ra_i"), 400)
+        self.assertEqual(requested_frequency(sample(399.4), 4, "ra_i"), 399)
         self.assertEqual(requested_frequency(sample(1.99), 4, "ra_i"), 0)
         self.assertEqual(requested_frequency(sample(0), 4, "ra_i"), 0)
 
