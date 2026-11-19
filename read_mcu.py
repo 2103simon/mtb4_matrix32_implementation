@@ -2,10 +2,12 @@ import argparse
 import os
 import json
 import queue
+import time
 from pathlib import Path
 from datetime import datetime
 
 from communication.serial_manager import SerialManager
+from communication.mcu_configuration import McuConfigurationHandshake, McuConfigurationError
 
 from processing.taxel_processing import TaxelProcessor
 from processing.event_processing import EventProcessor
@@ -62,6 +64,8 @@ def main():
     # ----------------------------------
 
     sm = SerialManager(config=config)
+    handshake = McuConfigurationHandshake(ra_threshold, sa_max_hz)
+    recording_started = False
 
     # ----------------------------------
     # 3. Initialize processing modules
@@ -97,11 +101,10 @@ def main():
 
     print(f"Connected to MCU on {port}")
 
-    # ----------------------------------
-    # 6. Start recording
-    # ----------------------------------
-
-    recorder.start()
+    # Wait for both parameter ACKs before creating recording files.
+    # Any tactile data received during configuration is intentionally dropped.
+    print("Waiting for first MCU telemetry before sending encoding settings...")
+    link_deadline = time.monotonic() + 15.0
 
     # ----------------------------------
     # 5. Main processing loop
@@ -110,12 +113,40 @@ def main():
     try:
 
         while sm.is_running() or not sm.data_queue.empty():
+            if not handshake.started and time.monotonic() >= link_deadline:
+                raise McuConfigurationError(
+                    "Timed out waiting for MCU telemetry; no recording started"
+                )
+            handshake.check_timeout()
 
             try:
-
                 data = sm.data_queue.get(timeout=0.1)
-
                 data_type = data[0]
+
+                # Do not record any data before successful ACKs of both
+                # encoding settings. SerialManager preserves packet order in
+                # its queue, so samples before the final ACK are discarded.
+                if data_type == "link_ready":
+                    if not handshake.started:
+                        print("MCU telemetry received. Applying encoding settings...")
+                        handshake.start(sm)
+                        print("Commands sent; awaiting RA_THR and SA_FREQ ACKs.")
+                    continue
+
+                if data_type == "ack":
+                    command_id, status, value = data[1:4]
+                    print(
+                        f"[ACK] cmd=0x{command_id:02X}, status={status}, value={value}"
+                    )
+                    if handshake.accept_ack(command_id, status, value):
+                        if not recording_started:
+                            recorder.start()
+                            recording_started = True
+                            print("Both MCU settings confirmed; recording started.")
+                    continue
+
+                if not recording_started:
+                    continue
 
                 if data_type == "tactile_rates":
                     snapshot = data[1]
@@ -172,30 +203,15 @@ def main():
 
                     print("[PC TIME]", raw_timestamp, pc_timestamp)
 
-                elif data_type == "ack":
-
-                    command_id = data[1]
-                    status = data[2]
-                    value = data[3]
-
-                    print(
-                        f"[ACK] {command_id}, {status}, {value}"
-                    )
-
-                elif data_type == "link_ready":
-
-                    print("MCU connection ready! Configuring encoding parameters...")
-                    sm.send_command(f"RA_THR={ra_threshold}")
-                    sm.send_command(f"SA_FREQ={sa_max_hz}")
-                    print("MCU configuration sent; waiting for ACKs.")
 
             except queue.Empty:
                 continue
 
     except KeyboardInterrupt:
-
         print("Stopping application...")
-
+    except McuConfigurationError as exc:
+        print(f"[MCU CONFIGURATION ERROR] {exc}")
+        raise
     finally:
 
         # we stop recording on keyboard interrupt
