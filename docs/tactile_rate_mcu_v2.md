@@ -142,6 +142,32 @@ The Matrix32 BLE code (`matrix32/device.py`, `matrix32/ble.py`) and `requirement
 
 `connect_matrix32.py` now checks the active Python environment's installed Bleak distribution **before scanning**, and stops with an installation instruction when the version differs from the validated `0.22.3`. Check your environment using `python -m pip show bleak`, and install the pinned version with `python -m pip install 'bleak==0.22.3'`. This check is intentionally scoped to the connection-only diagnostic; existing Matrix32 library code remains unchanged.
 
+## First combined tactile -> Matrix32 CH1 implementation
+
+`run_tactile_stimulation.py` combines the existing MCU telemetry/parser and ACK handshake with the verified Matrix32 BLE device object. It is **dry-run by default**, records all rate samples, and prints the selected frequency without enabling stimulation. The same `config/config.json` `stimulation_source.taxel` (0–11) and `stimulation_source.encoding` (`ra_i` / `sa_ii`) select the only rate forwarded to **Matrix32 CH1**.
+
+The new `config/stim_tactile_ch1.yaml` is an isolated *single-channel* setup. It intentionally starts with `sc: [0]` and `sw: [0]` to prevent inadvertent stimulation; before using `--arm`, set approved bench current and pulse-width values, and independently verify `sv`, `st`, pulse morphology and output wiring. No output parameters are automatically borrowed from the multi-channel `stim_config.yaml`.
+
+Run using the already-validated Matrix32 Python environment:
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python run_tactile_stimulation.py
+# Explicit output enabling only after safe CH1 parameters are configured:
+/home/icub/.virtualenvs/matrix32/bin/python run_tactile_stimulation.py --arm
+```
+
+Behavior:
+
+- Verify Bleak 0.22.3 and powered PC Bluetooth adapter; establish stable Matrix32 BLE and battery response; open MCU USB serial.
+- Send `RA_THR` and `SA_FREQ`, await **both exact successful MCU ACKs**, then start CSV and JSON manifest recording. The JSON contains the full MCU configuration **plus** Matrix32 CH1 configuration, source, arm flag and stale timeout.
+- Keep recording **every rate snapshot** through the normal queue; drive stimulation separately from `get_latest_rates_snapshot()` to avoid stale-sample replay.
+- Ignore any latest sample timestamped before the MCU configuration ACK gate.
+- For Matrix32, round the selected requested rate to whole Hz, clip to **400 Hz**, and treat anything below **2 Hz** as **OFF**. Matrix32 SF=1 is not used due to the previously documented START anomaly. These are device bounds, not a general physiological-safety guarantee.
+- `--arm` explicitly permits output. To START after a positive request, set CH1 SF to the selected fresh rate, require all seven configuration ACKs, recheck freshness, then call `device.start()`. Subsequent changed positive frequencies use `device.apply_live_frequency()` sequentially with the library's qualified ACK/guard transport. Each BLE update is completed before reading the latest next value.
+- Zero requested rate issues Matrix32 STOP. A separate 20-ms stale-data supervisor attempts STOP if output is running and MCU input has aged more than 250 ms (configurable via `--stale-ms`); it then aborts the run rather than automatically restarting. Any sensor/connection failure or Ctrl+C triggers a best-effort STOP and BLE disconnect in cleanup. **If BLE is lost, physical output state is unknown**; isolate output and verify physically.
+- This is a **bench-test increment**, not medically or clinically qualified stimulation. Confirm frequency, latency, output-off behavior and rapid-change behavior on the oscilloscope with a suitable dummy load before any other use.
+- Offline tests: `python -m unittest discover -s tests -p 'test_tactile_stimulation.py' -v`. The integration has **not been physically tested** and the tests have **not been executed** here.
+
 ## Next increments
 
 - Measure whether 119 bytes/sample and diagnostic traffic introduce USB queueing at observed ~70 Hz.
