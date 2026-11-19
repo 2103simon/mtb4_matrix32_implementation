@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from connect_matrix32 import check_pc_bluetooth, run_connection
+from connect_matrix32 import check_bleak_version, check_pc_bluetooth, run_connection
 
 
 class FakeMatrix32:
@@ -63,9 +63,21 @@ class BluetoothPreflightTest(unittest.TestCase):
         self.assertIsNone(check_pc_bluetooth())
 
 
+class BleakCompatibilityTest(unittest.TestCase):
+    @patch("connect_matrix32.version", return_value="3.0.2")
+    def test_incompatible_version_rejected(self, get_version):
+        with self.assertRaisesRegex(RuntimeError, "bleak==0.22.3"):
+            check_bleak_version()
+
+    @patch("connect_matrix32.version", return_value="0.22.3")
+    def test_validated_version_accepted(self, get_version):
+        self.assertIsNone(check_bleak_version())
+
+
+@patch("connect_matrix32.check_bleak_version", return_value=None)
 @patch("connect_matrix32.check_pc_bluetooth", return_value=None)
 class Matrix32ConnectionHoldTest(unittest.IsolatedAsyncioTestCase):
-    async def test_cancel_disconnects_without_stimulating(self, bluetooth):
+    async def test_cancel_disconnects_without_stimulating(self, bluetooth, bleak):
         device = FakeMatrix32()
         task = asyncio.create_task(run_connection(device, heartbeat_seconds=0.01))
         for _ in range(100):
@@ -79,7 +91,7 @@ class Matrix32ConnectionHoldTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(device.disconnect_calls, 1)
         self.assertEqual(device.stimulation_calls, [])
 
-    async def test_unexpected_disconnect_reports_error_and_cleans_up(self, bluetooth):
+    async def test_unexpected_disconnect_reports_error_and_cleans_up(self, bluetooth, bleak):
         device = FakeMatrix32()
         task = asyncio.create_task(run_connection(device, heartbeat_seconds=0.01))
         for _ in range(100):
@@ -93,7 +105,7 @@ class Matrix32ConnectionHoldTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(device.disconnect_calls, 1)
         self.assertEqual(device.stimulation_calls, [])
 
-    async def test_readiness_failure_disconnects_without_stimulating(self, bluetooth):
+    async def test_readiness_failure_disconnects_without_stimulating(self, bluetooth, bleak):
         device = FakeMatrix32(battery=None)
         with self.assertRaisesRegex(RuntimeError, "readiness"):
             await run_connection(device)
