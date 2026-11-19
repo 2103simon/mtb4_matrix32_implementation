@@ -106,6 +106,10 @@ class DataRecorder:
                     "tactile_rates": f"{timestamp}_tactile_rates.csv",
                     "taxel_legacy": f"{timestamp}_taxel.csv",
                     "events_legacy": f"{timestamp}_events.csv",
+                    **({
+                        "matrix32_commands": f"{timestamp}_matrix32_commands.jsonl",
+                    } if config.get("stimulation_control", {}).get("record")
+                    else {}),
                 },
             }
             settings_path = self.recording_dir / f"{timestamp}_settings.json"
