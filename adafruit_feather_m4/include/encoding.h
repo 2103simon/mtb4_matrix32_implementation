@@ -33,3 +33,13 @@ extern uint32_t refPeriod;
 // emits through addEvent() supplied by the owning event buffer in main.cpp.
 // Only loop() calls this function, never the CAN ISR.
 void mechanoreceptorEncoding(uint32_t currentTime);
+
+// Requested, UNCONSTRAINED rates for all 12 taxels.
+// Each output is uint32 centi-Hz (Hz * 100, rounded), no refractory cap.
+// The first call establishes the RA-I reference, so RA starts at zero.
+// Subsequent RA-I rates are threshold counts per complete sample interval.
+// Must only be called from the foreground loop, never the CAN ISR.
+void calculateTactileRates(const uint8_t taxels[NUM_TAXELS],
+                          uint32_t sampleDtMs,
+                          uint32_t raRateCentiHz[NUM_TAXELS],
+                          uint32_t saRateCentiHz[NUM_TAXELS]);
