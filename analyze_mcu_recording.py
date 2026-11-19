@@ -36,9 +36,10 @@ def choose_recording(data_dir, requested=None):
         raise FileNotFoundError(
             f"No *_tactile_rates.csv or *_taxel.csv recordings in {data_dir}"
         )
-    return max(candidates, key=lambda p: p.stat().st_mtime).name.split("_")[0] + "_" + (
-        max(candidates, key=lambda p: p.stat().st_mtime).name.split("_")[1]
-    )
+    latest = max(candidates, key=lambda p: p.stat().st_mtime)
+    suffix = ("_tactile_rates.csv" if latest.name.endswith("_tactile_rates.csv")
+              else "_taxel.csv")
+    return latest.name[:-len(suffix)]
 
 
 def _read_rows(path):
