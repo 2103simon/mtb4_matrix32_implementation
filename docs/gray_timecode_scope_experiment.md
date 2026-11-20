@@ -256,3 +256,92 @@ samples cannot be recovered. Aligning MCU and Matrix32 host logs
 requires a separately validated Nano-to-host clock/uncertainty model.
 The current script fails closed for missing/ambiguous frame matches or
 fit RMS > 100 µs, and reports observed Nano timing overruns.
+
+
+## 8. Nano / PC monotonic clock synchronization
+
+### Host clock domain
+
+`SerialManager` now passes the **same captured** `pc_arrival_monotonic_ns`
+into adaptive Feather `ClockCompensator` and the tactile-rate/legacy
+recording events. `time.time_ns()` is no longer used for drift fitting.
+The existing Feather initial correction of 3625 ppm is **not** reused for
+the Nano; each hardware clock requires separate parameters.
+
+### Stage 1: existing serial logs (no reflashing required)
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python \
+  oscilloscope/analyze_nano_clock.py \
+  data/recordings/20261120T101230327188Z_gray_ch2_multi
+```
+
+This writes `nano_host_clock.json` with `status=passive_drift_only`.
+The `passive` section is **NOT** a calibrated host-time mapping:
+`FRAME` timestamps and host serial reception times differ by variable
+USB/OS delays. In the November 20 trial, 283 serial frame observations
+over 28.2 s showed very large outliers, including nearly 1 s buffering
+delay, while the Nano reported zero timing overruns. A simple regression
+gave ~2584 ppm and ~243 ms RMS residual; this apparent slope must **not**
+be interpreted as actual Nano oscillator drift. Passive residuals over
+1 ms are flagged unreliable.
+
+### Stage 2: active four-timestamp Nano SYNC
+
+**Reflash the Nano Every PlatformIO project** after pulling these changes:
+the new firmware implements `SYNC <seq>`, returning
+`ACK SYNC <seq> RX_US <t2> TX_US <t3>`.
+The PC records `t1` immediately before serial write, and `t4`
+immediately after reading the full ACK line, using `time.monotonic_ns()`.
+No Matrix32 or Feather connection is required for this calibration.
+
+From the repository root, after flashing:
+
+```bash
+timeout 90s /home/icub/.virtualenvs/matrix32/bin/python -u \
+  oscilloscope/test_nano_clock_sync.py \
+  --duration-s 30 --sync-interval-s 0.25 --run
+```
+
+By default, this performs a **Nano-only** 30 s bench run, generating
+Gray frame logs and active SYNC measurements. It saves
+`nano_serial.jsonl`, `metadata.json`, and
+`nano_host_clock.json`. Detection of the Nano Every is implicit.
+It **only** starts/stops the Nano D7 reference generator; Matrix32
+remains OFF/disconnected.
+
+The four timestamps are used to fit
+`PC_monotonic_ns = a * Nano_unwrapped_us + b`.
+The fit uses weighted midpoint regression, with lower-delay exchanges
+receiving more weight. Each exchange provides a causal offset interval
+conditional on the fitted clock slope:
+`t1-a*t2 <= b <= t4-a*t3`.
+The interval midpoint is **not** a guaranteed unbiased clock offset if
+USB/OS delay is asymmetric; the fit is labeled
+`provisional_active_mapping`, not validated synchronization.
+Do not interpret its RMS residual as a complete timing uncertainty.
+
+For future Gray scope captures, the existing scope experiment now
+collects **12 SYNC exchanges before** the scope recordings and **4 after
+each** recording by default; this requires the updated Nano firmware.
+The scope experiment still accepts `--sync-count 0 --sync-per-record 0`
+for offline comparability with legacy firmware.
+
+After the SYNC-enabled scope experiment finishes, run the two offline
+tools **in this order**:
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python \
+  oscilloscope/align_gray_records.py data/recordings/<RUN>
+
+/home/icub/.virtualenvs/matrix32/bin/python \
+  oscilloscope/analyze_nano_clock.py data/recordings/<RUN>
+```
+
+The second report optionally composes
+`scope -> Nano micros() -> PC monotonic_ns` for every record's first and
+last sample. This does not alter the raw CSV data, recover gap samples,
+or prove physical Matrix32 output-edge timing. A validated delay/jitter
+budget is still required before interpreting microsecond-scale cross
+device timing. The existing stimulation pipeline is not modified to
+consume this experimental mapping.
