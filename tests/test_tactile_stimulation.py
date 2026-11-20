@@ -74,8 +74,7 @@ class FakeMatrix32:
             raise ValueError("SF=0 unsupported")
         self.config["sf"] = hz
         self.records.append(("live", hz))
-        return {"status": "OK", "new_frequency_hz": hz,
-                "experimental_zero_frequency": hz == 0}
+        return {"status": "OK", "new_frequency_hz": hz}
 
     async def apply_live_current(self, channel, current_command):
         if not self.running:
@@ -183,7 +182,7 @@ class LiveCurrentGuardTest(unittest.IsolatedAsyncioTestCase):
 
 
 class WorkerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_newest_sample_only_and_zero_stops(self):
+    async def test_newest_sample_only_and_zero_mutes_without_stop(self):
         serial = FakeSerial(sample(40))
         device = FakeMatrix32()
         ready = asyncio.Event()
@@ -200,21 +199,21 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(("live", 60), device.records)
             serial.snapshot = sample(0)
             await asyncio.sleep(0.05)
-            self.assertIn(("stop",), device.records)
+            self.assertEqual(device.records[-2:], [("current", 0), ("live", 2)])
+            self.assertNotIn(("stop",), device.records)
         finally:
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
 
-    async def test_opt_in_zero_current_sf2_then_restore(self):
+    async def test_default_zero_current_sf2_then_restore(self):
         serial = FakeSerial(sample(50))
         device = FakeMatrix32()
         ready = asyncio.Event()
         ready.configured_ns = 0
         ready.set()
         task = asyncio.create_task(frequency_worker(
-            serial, device, ready, 4, "ra_i", arm=True,
-            experimental_zero_current=True
+            serial, device, ready, 4, "ra_i", arm=True
         ))
         try:
             await asyncio.sleep(0.055)
@@ -235,15 +234,14 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await task
 
-    async def test_zero_current_when_started_at_sf2_does_not_repeat_sf(self):
+    async def test_default_zero_current_when_started_at_sf2_does_not_repeat_sf(self):
         serial = FakeSerial(sample(2))
         device = FakeMatrix32()
         ready = asyncio.Event()
         ready.configured_ns = 0
         ready.set()
         task = asyncio.create_task(frequency_worker(
-            serial, device, ready, 4, "ra_i", arm=True,
-            experimental_zero_current=True
+            serial, device, ready, 4, "ra_i", arm=True
         ))
         try:
             await asyncio.sleep(0.055)
