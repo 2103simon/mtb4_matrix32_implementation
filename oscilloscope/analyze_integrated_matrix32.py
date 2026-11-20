@@ -526,7 +526,7 @@ def write_markdown_report(root, report, *, record_index=1, per_record=False):
         f"**{mcu['samples']:,} MCU rate snapshots** "
         + ("within this record's estimated scope interval " if per_record
            else "recorded ")
-        f"({fmt(mcu['observed_update_rate_hz'], ' Hz')} median host-arrival "
+        + f"({fmt(mcu['observed_update_rate_hz'], ' Hz')} median host-arrival "
         f"cadence) for taxel {mcu['taxel']} / {mcu['encoding']}. "
         f"MCU requested output range: "
         f"{fmt(mcu['requested_rate_min_hz'], ' Hz', 0)} to "
