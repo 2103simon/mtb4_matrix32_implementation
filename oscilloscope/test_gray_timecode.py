@@ -306,7 +306,8 @@ def run(args, requested):
     root = args.output_root / run_id
     (root / "waveforms").mkdir(parents=True, exist_ok=False)
     metadata = {
-        "plan": requested, "run_id": run_id, "status": "started",
+        "plan": requested, "run_id": run_id, "run_dir": str(root),
+        "status": "started",
         "started_utc": utc(), "records": [],
         "clock_synchronization_verified": False,
         "sample_gap_free": False,
@@ -457,7 +458,7 @@ def main(argv=None):
     if not args.run:
         print("DRY RUN: no serial port or scope accessed.")
         return
-    run(args, requested)
+    return run(args, requested)
 
 
 if __name__ == "__main__":
