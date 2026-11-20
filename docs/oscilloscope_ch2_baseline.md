@@ -213,3 +213,11 @@ useful independent checks. No reconfiguration of Matrix32 is involved.
   -s tests -p 'test_scope_live.py' -v
 ```
 
+
+## 6. Nano Every Gray timecode (separate scope-only experiment)
+
+See [Gray timecode scope experiment](gray_timecode_scope_experiment.md)
+for the D7 firmware, CH2 + CH4 wiring, one-record and repeated-record
+commands, decode validation and known timing limits. This is separate from
+the Matrix32 stimulation path; do not attach a scope ground directly to
+stimulator electrodes.
