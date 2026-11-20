@@ -63,8 +63,13 @@ def verify(settings, args):
                 f"expected {args.trigger_position_pct}%, scope reports "
                 f"{actual_position}%"
             )
-    if int(float(settings["record_length"])) != args.points:
-        raise RuntimeError("Scope record length does not match requested points")
+    actual_points = int(float(settings["record_length"]))
+    if actual_points != args.points:
+        raise RuntimeError(
+            f"Scope record length mismatch: requested {args.points:,} points, "
+            f"scope reports {actual_points:,}. Select a supported record length; "
+            "acquisition was not started."
+        )
     if settings["acquisition_mode"].upper() not in ("SAM", "SAMP", "SAMPLE"):
         raise RuntimeError("Acquisition mode must be SAMPLE for a finite waveform")
     if settings["acquisition_stopafter"].upper() not in ("SEQ", "SEQU", "SEQUENCE"):
