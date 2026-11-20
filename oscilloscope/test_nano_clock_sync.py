@@ -51,10 +51,10 @@ def main(argv=None):
             metadata["nano_info"] = info
             if "FW GRAY_TC_V1" not in info or "PIN 7" not in info:
                 raise RuntimeError("Wrong Nano firmware; flash arduino_nano PlatformIO project")
-            running = False
+            start_attempted = False
             try:
+                start_attempted = True
                 metadata["start_ack"] = nano.command("START")
-                running = True
                 end = time.monotonic() + args.duration_s
                 metadata["sync_count"] = 0
                 while time.monotonic() < end:
@@ -65,8 +65,12 @@ def main(argv=None):
                         time.sleep(min(remaining, args.sync_interval_s))
             finally:
                 # Nano STOP only; not a Matrix32 emergency stop.
-                if running:
-                    metadata["stop_ack"] = nano.command("STOP")
+                if start_attempted:
+                    try:
+                        metadata["stop_ack"] = nano.command("STOP", timeout=2.0)
+                    except BaseException as stop_exc:
+                        metadata["nano_stop_error"] = repr(stop_exc)
+                        print(f"[NANO] STOP not acknowledged: {stop_exc}", flush=True)
         report = analyze_run(root)
         result_path = root / "nano_host_clock.json"
         result_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
