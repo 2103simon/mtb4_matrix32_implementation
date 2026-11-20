@@ -80,6 +80,7 @@ class TimecodeTests(unittest.TestCase):
         p = experiment.parser()
         args = p.parse_args(["--count", "1"])
         requested = experiment.plan(args, p)
+        self.assertIsNone(args.nano_port)  # Nano discovery is implicit.
         self.assertEqual(args.channels, [2])
         self.assertEqual(args.scales, {2: 2.0})
         self.assertEqual(args.trigger_channel, 2)
