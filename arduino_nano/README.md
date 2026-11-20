@@ -18,7 +18,7 @@ Close serial monitors or Python processes holding the Nano port. Discover it
 using `pio device list` or `ls -l /dev/serial/by-id/`, then:
 
 ```bash
-pio run -e nano_every -t upload --upload-port /dev/ttyACM0
+pio run -e nano_every -t upload --upload-port /dev/ttyACM1
 ```
 
 Replace `/dev/ttyACM0` with the correct Nano device. On some machines
@@ -32,7 +32,21 @@ pio device monitor -b 115200
 
 Firmware **does not start D7 pulses automatically**. Commands are
 `PING <seq>`, `INFO <seq>`, `START <seq>`, `STOP <seq>`, and `SYNC <seq>`.
-Each command returns a matching `ACK`. `SYNC` returns\n`ACK SYNC <seq> RX_US <micros_at_command_newline> TX_US <micros_before_reply>`.\nThe PC brackets the exchange with `time.monotonic_ns()` to estimate\nclock offset and drift. USB delay asymmetry remains an uncertainty.\nAt START the firmware
+Each command returns a matching `ACK`. `SYNC` returns
+`ACK SYNC <seq> RX_US <micros_at_command_newline> TX_US <micros_before_reply>`.
+The PC brackets the exchange with `time.monotonic_ns()` to estimate
+clock offset and drift. USB delay asymmetry remains an uncertainty.
+
+A second **binary CRC32 SYNC v1** request/ACK transport is available for
+controlled latency experiments. It uses 12-byte requests and 20-byte
+responses, with magic bytes `A5 5A`, version, message type, sequence
+number, Nano timestamps in the response, and IEEE CRC32 over the
+message body (little-endian fields). The ASCII Gray `FRAME` stream and
+legacy commands remain unchanged. See the protocol specification and
+A/B benchmark in `docs/gray_timecode_scope_experiment.md`.
+The extra transport is experimental; CRC32 protects frame integrity
+but cannot reveal asymmetric USB delays.
+At START the firmware
 generates a framed 16-bit Gray counter at 10 Hz on D7 while reporting
 the full counter over USB serial. Never run the serial monitor and
 Python experiment against the same port simultaneously.
@@ -40,7 +54,7 @@ Python experiment against the same port simultaneously.
 ## Bench wiring and experiments
 
 See [Gray timecode scope experiment](../docs/gray_timecode_scope_experiment.md)
-for the CH4 marker wiring, CH2 PROBE COMP trigger, single and repeated
+for the CH2 Nano D7 marker wiring, single and repeated
 oscilloscope capture commands, decoder, and timing limitations.
 This reference firmware must **not** be connected directly to Matrix32
 stimulation outputs or electrode grounds.
