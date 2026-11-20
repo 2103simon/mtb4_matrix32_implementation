@@ -53,6 +53,9 @@ def parser():
     p.add_argument("--sync-count", type=int, default=30,
                    help="Number of binary CRC32 sync exchanges before AND after recording")
     p.add_argument("--stale-ms", type=int, default=250)
+    p.add_argument("--controller-ready-timeout", type=float, default=45.0,
+                   help="Seconds to wait for Feather config and, with --arm, "
+                        "ACK-verified Matrix32 START before scope is armed")
     p.add_argument("--output-root", type=Path, default=Path("data/recordings"))
     p.add_argument("--label", default="integrated_matrix32_scope")
     return p
@@ -82,6 +85,9 @@ def plan(args, p):
         p.error("--sync-count must be 8..200")
     if not 50 <= args.stale_ms <= 2000:
         p.error("--stale-ms must be 50..2000")
+    if (not math.isfinite(args.controller_ready_timeout)
+            or not 5 <= args.controller_ready_timeout <= 120):
+        p.error("--controller-ready-timeout must be 5..120 seconds")
     # Explicitly reuse the shape that record_scope.configure/verify expects.
     args.channels = [1, 2]
     args.scales = {1: args.ch1_v_div, 2: 2.0}
@@ -105,6 +111,8 @@ def plan(args, p):
         "matrix32_armed": args.arm,
         "verified_dummy_load_operator_confirmation": bool(args.dummy_load_confirmed),
         "mcu_stale_timeout_ms": args.stale_ms,
+        "controller_ready_timeout_s": args.controller_ready_timeout,
+        "acquisition_order": "controller_ready_then_pre_sync_then_arm_scope",
         "no_person_connected": True,
         "clock_offset_calibrated": False,
         "sample_gap_free": False,
@@ -124,6 +132,11 @@ class StimulationChild:
         self.process = None
         self.log = None
         self.log_thread = None
+        self.mcu_ready = threading.Event()
+        self.matrix32_started = threading.Event()
+        self.mcu_ready_observed_ns = None
+        self.matrix32_started_observed_ns = None
+        self.start_failure = threading.Event()
 
     def start(self):
         if self.process is not None:
@@ -146,7 +159,17 @@ class StimulationChild:
         def relay():
             try:
                 for line in self.process.stdout:
+                    observed_ns = time.monotonic_ns()
                     self.log.write(line)
+                    if "[MCU] Configured; ready for live data." in line:
+                        self.mcu_ready_observed_ns = observed_ns
+                        self.mcu_ready.set()
+                    if line.startswith("[START] Matrix32 CH1:"):
+                        self.matrix32_started_observed_ns = observed_ns
+                        self.matrix32_started.set()
+                    if ("[ERROR]" in line or "[WARNING] Matrix32" in line
+                            or "[SHUTDOWN]" in line):
+                        self.start_failure.set()
                     if any(tag in line for tag in
                            ("[ERROR]", "[STOP]", "[START]", "[MCU]", "[BLE]",
                             "[SHUTDOWN]", "[WARNING]", "[RECORD]")):
@@ -165,6 +188,41 @@ class StimulationChild:
                 f"MCU/Matrix32 controller exited early with code "
                 f"{self.process.returncode}; see matrix32_runner.log"
             )
+
+    def wait_ready(self, timeout):
+        """Require MCU config ACKs, and actual BLE START return when armed.
+
+        stdout is observable host-side evidence of protocol completion, not
+        proof of electrical pulses. No scope capture on startup timeout.
+        """
+        if self.process is None:
+            raise RuntimeError("Controller has not been started")
+        deadline = time.monotonic() + timeout
+        expected = self.matrix32_started if self.arm else self.mcu_ready
+        while not expected.is_set():
+            self.check()
+            if self.start_failure.is_set():
+                raise RuntimeError(
+                    "Matrix32 controller reported failure while starting; "
+                    "see matrix32_runner.log"
+                )
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Controller not ready after {timeout:g}s: "
+                    + ("no ACK-verified Matrix32 START" if self.arm
+                       else "MCU configuration handshake incomplete")
+                    + "; see matrix32_runner.log"
+                )
+            expected.wait(timeout=min(0.05, max(0.001, deadline-time.monotonic())))
+        # Require the MCU configuration ACK indication in both modes.
+        if not self.mcu_ready.is_set():
+            raise RuntimeError("Matrix32 START reported without MCU handshake")
+        self.check()
+        return {
+            "mcu_configured_observed_monotonic_ns": self.mcu_ready_observed_ns,
+            "matrix32_start_observed_monotonic_ns": self.matrix32_started_observed_ns,
+            "startup_electrical_output_verified": False,
+        }
 
     def stop(self):
         if self.process is None:
@@ -258,27 +316,39 @@ def run(args, requested):
                     }
                     meta["records"].append(record)
                     epoch = record["clock_epoch"]
+                    # The scope is configured but explicitly STOPPED here.
+                    # Startup and BLE configuration can take multiple seconds;
+                    # do not let that startup consume the finite waveform.
+                    record["controller_started_host_monotonic_ns"] = time.monotonic_ns()
+                    record["controller_pid"] = child.start()
+                    print(f"[MATRIX32] Controller starting before scope arming; "
+                          f"{'ARMED BENCH OUTPUT' if args.arm else 'DRY RUN'}",
+                          flush=True)
+                    record["controller_ready"] = child.wait_ready(
+                        args.controller_ready_timeout
+                    )
+                    record["controller_ready_observed_monotonic_ns"] = time.monotonic_ns()
+                    print("[MATRIX32] MCU configured"
+                          + ("; Matrix32 START returned" if args.arm
+                             else "; dry-run controller ready")
+                          + "; preparing scope acquisition", flush=True)
+
+                    # Bracket capture using fresh, independent Nano SYNCs.
+                    # For safety, fail if the controller stops while syncing.
                     for _ in range(args.sync_count):
+                        child.check()
                         row = nano.binary_sync_exchange()
                         meta["sync_measurements"].append(row)
                         epoch["pre_sync_sequence_ids"].append(row["sequence_id"])
                     epoch["pre_sync_end_host_monotonic_ns"] = time.monotonic_ns()
+                    child.check()
                     print(f"[SYNC] {args.sync_count} CRC32 exchanges before arming",
                           flush=True)
                     atomic_json(root / "metadata.json", meta)
 
-                    def on_armed():
-                        # Do not connect/control Matrix32 before the scope
-                        # has confirmed that the fresh sequence is running.
-                        record["controller_started_host_monotonic_ns"] = time.monotonic_ns()
-                        record["controller_pid"] = child.start()
-                        print(f"[MATRIX32] Controller started; "
-                              f"{'ARMED BENCH OUTPUT' if args.arm else 'DRY RUN'}",
-                              flush=True)
-
                     record["arm_request_monotonic_ns"] = time.monotonic_ns()
                     record["acquisition"] = acquire(
-                        scope, args.acquire_timeout, on_armed=on_armed,
+                        scope, args.acquire_timeout,
                         on_progress=lambda _: child.check(),
                     )
                     record["acquisition_completed_monotonic_ns"] = time.monotonic_ns()
@@ -288,6 +358,7 @@ def run(args, requested):
                     )
                     verify(record["scope_settings_after_acquisition"], args)
                     for _ in range(args.sync_count):
+                        child.check()
                         row = nano.binary_sync_exchange()
                         meta["sync_measurements"].append(row)
                         epoch["post_sync_sequence_ids"].append(row["sequence_id"])
