@@ -53,8 +53,9 @@ resolved path for each:
 /home/icub/.virtualenvs/matrix32/bin/python -m communication.serial_ports
 ```
 
-`--nano-port auto` is the default. `config/config.json` now also
-uses `serial.port = "auto"` for the Feather M4. The detector inspects
+**Nano discovery is implicit:** omit `--nano-port` entirely.
+`config/config.json` uses `serial.port = null` for implicit
+Feather M4 discovery. The detector inspects
 pyserial USB descriptors without opening the devices, requires an
 unambiguous Nano Every / Feather M4 match, and fails with diagnostics
 rather than selecting another Arduino or serial adapter. Explicit
@@ -126,7 +127,7 @@ Dry run (does **not** open hardware):
 
 ```bash
 /home/icub/.virtualenvs/matrix32/bin/python oscilloscope/test_gray_timecode.py \
-  --nano-port auto --count 1
+  --count 1
 ```
 
 With automatic Nano discovery enabled:
@@ -134,7 +135,7 @@ With automatic Nano discovery enabled:
 ```bash
 timeout 120s /home/icub/.virtualenvs/matrix32/bin/python -u \
   oscilloscope/test_gray_timecode.py \
-  --nano-port auto --scope-device auto \
+  --scope-device auto \
   --points 100000 --time-div-us 20000 \
   --count 1 --label gray_ch2_single --run
 ```
@@ -145,8 +146,10 @@ phase (START or a data pulse), the record may include zero, one, or
 more complete Gray frames. A zero-frame result needs inspection of the
 recorded waveform and is not automatically a recording failure. The program reports decoded counters.
 
-If your Nano enumerates as `/dev/ttyUSB0` or another node, substitute
-that device. An existing serial monitor must be closed first.
+The Nano is discovered without specifying a path. If discovery fails,
+inspect USB descriptors and pass `--nano-port /dev/ttyACM1` (or the
+appropriate stable `/dev/serial/by-id/...` path). An existing serial
+monitor must be closed first.
 
 The run saves:
 
@@ -162,7 +165,7 @@ Once the single-record test succeeds:
 ```bash
 timeout 180s /home/icub/.virtualenvs/matrix32/bin/python -u \
   oscilloscope/test_gray_timecode.py \
-  --nano-port auto --scope-device auto \
+  --scope-device auto \
   --points 1000000 --time-div-us 200000 \
   --count 3 --label gray_ch2_multi --run
 ```
