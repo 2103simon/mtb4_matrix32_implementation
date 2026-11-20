@@ -1,6 +1,9 @@
 """Offline diagnostics for Nano/host clock estimator stability."""
 import unittest
+import sys
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from communication.clock_estimator_diagnostics import (
     diagnose_active_clock, _clock_intersection, _stratified_low_latency,
 )
