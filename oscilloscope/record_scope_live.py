@@ -47,6 +47,9 @@ def build_parser():
                    help="Number of fresh acquisition cycles (default 5)")
     p.add_argument("--acquire-timeout", type=float, default=15,
                    help="Per-record acquisition polling timeout in s (default 15)")
+    p.add_argument("--diagnose-trigger", action="store_true",
+                   help="Also poll TRIGger:STATE? and retain diagnostics on timeout; "
+                        "adds extra SCPI traffic")
     p.add_argument("--label", default="probe_comp_ch2")
     p.add_argument("--output-root", type=Path, default=Path("data/recordings"))
     p.add_argument("--run", action="store_true",
@@ -95,6 +98,7 @@ def validate_args(args, parser):
         "points": args.points,
         "count": args.count,
         "acquire_timeout_s": args.acquire_timeout,
+        "diagnose_trigger": args.diagnose_trigger,
         "nominal_waveform_span_s": 10 * args.time_div_us * 1e-6,
         "nominal_sample_interval_s": 10 * args.time_div_us * 1e-6 / args.points,
         "scope_sample_clock_synchronized_to_host": False,
@@ -113,7 +117,15 @@ def acquire_one(f, args, *, index, root, prev=None):
     try:
         # Freshness is procedural: acquire() STOPs then RUNs, confirms RUN,
         # and waits for STOP after the trigger. It does not prove sample uniqueness.
-        record["acquisition"] = acquire(f, args.acquire_timeout)
+        def diagnostic_progress(snapshot):
+            # Keep evidence even when acquire() times out. No extra file
+            # writes during polling; record JSON is persisted in finally.
+            record["acquisition_progress"] = snapshot
+
+        record["acquisition"] = acquire(
+            f, args.acquire_timeout,
+            on_progress=diagnostic_progress if args.diagnose_trigger else None
+        )
         record["acquisition_observed_complete_monotonic_ns"] = time.monotonic_ns()
         if not record["acquisition"]["seen_running"]:
             raise RuntimeError("Scope did not observe fresh acquisition RUN")
@@ -145,6 +157,18 @@ def acquire_one(f, args, *, index, root, prev=None):
     except BaseException as exc:
         record["status"] = "failed"
         record["error"] = f"{type(exc).__name__}: {exc}"
+        if "acquisition_progress" in record:
+            progress = record["acquisition_progress"]
+            record["diagnostic_summary"] = {
+                "elapsed_s": progress.get("elapsed_s"),
+                "last_acquisition_state": (
+                    progress["acquisition_state_observations"][-1]["value"]
+                    if progress.get("acquisition_state_observations") else None),
+                "last_trigger_state": (
+                    progress["trigger_state_observations"][-1]["value"]
+                    if progress.get("trigger_state_observations") else None),
+                "first_trigger_observation": progress.get("first_trigger_observation"),
+            }
         raise
     finally:
         record["cycle_end_monotonic_ns"] = time.monotonic_ns()
