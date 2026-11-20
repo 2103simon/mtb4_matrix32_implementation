@@ -141,6 +141,40 @@ class IntegratedAnalysisTests(unittest.TestCase):
         self.assertEqual(rows[1]["compatible_windows"], 1)
         self.assertEqual(rows[2]["assessment"], "not_testable")
 
+    def test_dynamic_pulse_tracking_many_fast_acks(self):
+        from matrix32_dynamic_frequency import analyze_dynamic_cycles
+        base = 300_000_000_000
+        mapping = {"first_sample_pc_monotonic_ns_est": base,
+                   "last_sample_pc_monotonic_ns_est": base+2_000_000_000}
+        # Exactly 100 Hz physical output but update ACK after every 40 ms.
+        # Such a run cannot satisfy 1-second settled window requirements.
+        states = []
+        for j in range(50):
+            states.append({"pc_monotonic_ns": base+j*40_000_000,
+                           "expected_hz": 100,
+                           "output_active_assumed": True})
+        pulses = np.arange(.015, 2, .01)
+        result = analyze_dynamic_cycles(pulses, states, mapping, 0, 2)
+        self.assertGreater(result["classified"], 100)
+        self.assertEqual(result["discrepant"], 0)
+        self.assertAlmostEqual(result["compatibility_fraction"], 1.0)
+        self.assertGreater(result["not_comparable"], 0)
+
+    def test_dynamic_tracking_discrepancy_and_missing_map(self):
+        from matrix32_dynamic_frequency import analyze_dynamic_cycles
+        base = 500_000_000_000
+        states = [{"pc_monotonic_ns": base, "expected_hz": 100,
+                   "output_active_assumed": True}]
+        mapping = {"first_sample_pc_monotonic_ns_est": base,
+                   "last_sample_pc_monotonic_ns_est": base+2_000_000_000}
+        pulses = np.arange(.1, 1.9, .02)  # Physical 50 Hz, ACK 100 Hz.
+        detected = analyze_dynamic_cycles(pulses, states, mapping, 0, 2)
+        self.assertGreater(detected["discrepant"], 80)
+        self.assertEqual(detected["compatible"], 0)
+        unknown = analyze_dynamic_cycles(pulses, states, None, 0, 2)
+        self.assertEqual(unknown["classified"], 0)
+        self.assertEqual(unknown["not_comparable"], len(pulses)-1)
+
     def test_no_clock_map_refuses_ack_comparison(self):
         rows = [{"center_scope_s": 2.0, "window_s": 1,
                  "physical_rate_hz": 78.0}]
@@ -187,6 +221,17 @@ class IntegratedAnalysisTests(unittest.TestCase):
                     "assessment": "compatible_provisional",
                 }],
             },
+            "dynamic_tracking": {
+                "complete_intervals": 100, "classified": 20,
+                "compatible": 15, "discrepant": 5,
+                "not_comparable": 80, "compatibility_fraction": .75,
+                "median_absolute_error_hz": 3.5,
+                "per_frequency": [{
+                    "ack_hz": 78, "cycle_intervals": 20,
+                    "compatible": 15, "discrepant": 5,
+                    "median_measured_hz": 79.,
+                }],
+            },
             "clock_mapping": {"status": "unqualified", "scope_rms_us": 111.6,
                               "nano_pc_rms_us": 200.},
             "warnings": ["Clock is provisional"],
@@ -197,7 +242,10 @@ class IntegratedAnalysisTests(unittest.TestCase):
             path = Path(write_markdown_report(root, report))
             text = path.read_text()
             self.assertIn("compatible_provisional", text)
-            self.assertIn("matrix32_frequency_comparison.png", text)
+            self.assertIn("record_00001/matrix32_frequency_comparison.png", text)
+            self.assertIn("record_00001/matrix32_dynamic_tracking.png", text)
+            self.assertIn("Did physical pulse frequency follow", text)
+            self.assertIn("75.0%", text)
             self.assertIn("integrated_overview.png", text)
             self.assertIn("matrix32_pulse_zoom.png", text)
             self.assertIn("unqualified", text)
