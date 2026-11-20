@@ -484,6 +484,8 @@ def main():
                         help="Explicitly enable ACK-verified CH1 stimulation; otherwise DRY RUN")
     parser.add_argument("--record", action="store_true",
                         help="Save all MCU samples and timestamped Matrix32 commands/ACKs")
+    parser.add_argument("--recordings-dir", type=Path, default=None,
+                        help="Override recording output directory (for integrated scope sessions)")
     parser.add_argument("--stale-ms", type=int, default=250,
                         help="Stop output when no tactile sample arrives for this many ms (default 250)")
     args = parser.parse_args()
@@ -491,6 +493,8 @@ def main():
         parser.error("--stale-ms must be between 50 and 2000")
     with MCU_CONFIG.open(encoding="utf-8") as file:
         config = json.load(file)
+    if args.recordings_dir is not None:
+        config["recordings_dir"] = str(args.recordings_dir)
     stim_config = build_stim_config(config)
     print(
         f"[CONFIG] Fixed Matrix32 CH1: SC={stim_config['sc'][0]}, "
