@@ -370,7 +370,7 @@ class SerialManager():
                 raw_timestamp_ms = struct.unpack('>I', payload[0:4])[0]
                 taxel_values = list(payload[4:16])
                 needs_pc_time = self._emit_pc_receive_time or self._capture_pc_receive_time_for_compensation
-                pc_receive_ns = time.time_ns() if needs_pc_time else None
+                pc_receive_ns = pc_arrival_monotonic_ns if needs_pc_time else None
                 corrected_timestamp_ms = self._clock_compensator.compensate(
                     raw_timestamp_ms,
                     pc_receive_ns=pc_receive_ns,
@@ -406,7 +406,7 @@ class SerialManager():
                 sa_rates_hz = [v / 100.0 for v in struct.unpack_from('>12I', payload, 64)]
                 needs_pc_time = (self._emit_pc_receive_time
                                  or self._capture_pc_receive_time_for_compensation)
-                pc_receive_ns = time.time_ns() if needs_pc_time else None
+                pc_receive_ns = pc_arrival_monotonic_ns if needs_pc_time else None
                 corrected_timestamp_ms = self._clock_compensator.compensate(
                     raw_timestamp_ms,
                     pc_receive_ns=pc_receive_ns,
