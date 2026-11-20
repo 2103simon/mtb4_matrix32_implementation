@@ -11,6 +11,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from communication.clock_estimator_diagnostics import diagnose_active_clock
 from communication.clock_sync import (
     active_clock_fit, nano_us_to_host_ns, passive_diagnostics,
     read_active_exchanges,
@@ -40,6 +41,12 @@ def analyze_run(run_dir):
         result["active_error"] = str(exc)
         return result
     result["active"] = fit
+    try:
+        result["estimator_diagnostics"] = diagnose_active_clock(exchanges)
+    except ValueError as exc:
+        result["estimator_diagnostics"] = {
+            "status": "not_qualified", "reason": str(exc),
+        }
     result["status"] = "provisional_active_mapping"
     align_path = run_dir / "gray_alignment.json"
     if align_path.exists():
@@ -83,6 +90,21 @@ def main(argv=None):
               f"RMS {active['rms_residual_us']:.1f} us, "
               f"best exchange halfwidth "
               f"{active['best_exchange_offset_halfwidth_us']:.1f} us")
+        diagnostics = result.get("estimator_diagnostics", {})
+        if diagnostics.get("status") == "diagnostic_only_no_production_fit_replacement":
+            print(f"[ESTIMATOR] Stratified low-delay drift "
+                  f"{diagnostics['stratified_low_latency']['drift_ppm_nano_to_host']:.1f} ppm; "
+                  f"sensitivity {diagnostics['absolute_slope_sensitivity_ppm']:.1f} ppm")
+            spread = diagnostics["window_drift_range_ppm"]
+            print(f"[ESTIMATOR] 3-window drift range "
+                  f"{spread:.1f} ppm" if spread is not None
+                  else "[ESTIMATOR] Windows not qualified")
+            all_constraint = diagnostics["offset_constraints"][
+                "all_exchanges_conditional_on_baseline_slope"
+            ]
+            print(f"[ESTIMATOR] Offset constraints compatible: "
+                  f"{all_constraint['feasible']}; "
+                  f"{len(diagnostics['warnings'])} warnings")
     elif result.get("active_error"):
         print(f"[ACTIVE] Not qualified: {result['active_error']}")
     print(f"[SCOPE] {len(result['scope_records'])} provisional host-time records")
