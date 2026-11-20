@@ -146,9 +146,10 @@ def plan(args, p):
         p.error("--count must be 1..50")
     if args.points < 2 or args.points > 20000000:
         p.error("--points must be 2..20000000")
-    if not (math.isfinite(args.time_div_us) and args.time_div_us > 0
-            and 10 * args.time_div_us * 1e-6 >= 0.2):
-        p.error("timebase must produce >=200 ms window")
+    # Compare the user-provided timebase directly. Multiplying by 1e-6
+    # produces 0.19999999999999998 for the valid 20,000 us/div case.
+    if not (math.isfinite(args.time_div_us) and args.time_div_us >= 20000):
+        p.error("timebase must produce >=200 ms window (>=20000 us/div)")
     if not math.isfinite(args.acquire_timeout) or not 0 < args.acquire_timeout <= 120:
         p.error("invalid --acquire-timeout")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.label):
