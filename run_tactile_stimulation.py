@@ -442,7 +442,7 @@ async def run(config, stim_config=None, *, arm, record=False,
         sm.start_comm(config["serial"]["port"])
         if not sm.is_running():
             raise ConnectionError("Failed to open MCU serial connection")
-        print(f"[MCU] Connected: {config['serial']['port']}")
+        print(f"[MCU] Connected: {sm.connected_port or config['serial']['port']}")
         async with asyncio.TaskGroup() as group:
             group.create_task(mcu_receiver(sm, config, capture, ready))
             group.create_task(frequency_worker(sm, device, ready, taxel, receptor, arm=arm,
