@@ -10,6 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "oscilloscope"))
 from analyze_gray_epoch_experiment import analyze
 from test_gray_timecode import parser, plan
+from record_scope import configure, verify
 # Explicitly load the bench entrypoint under a distinct module name.
 # unittest imports THIS test file as "test_gray_epoch_pause", otherwise a
 # normal import of that name resolves back to this partially loaded file.
@@ -88,6 +89,58 @@ def make_recording(root, *, broken_post=False):
 
 
 class EpochExperimentTests(unittest.TestCase):
+    def test_left_edge_trigger_scpi_order_and_readback(self):
+        p = parser()
+        args = p.parse_args([])
+        plan(args, p)
+        self.assertEqual(args.trigger_position_pct, 0)
+        with patch("record_scope.write") as write:
+            configure(None, args)
+        commands = [call.args[1] for call in write.call_args_list]
+        self.assertLess(commands.index("HORizontal:RECOrdlength 100000"),
+                        commands.index("HORizontal:POSition 0"))
+        self.assertLess(commands.index("HORizontal:SCALe 0.02"),
+                        commands.index("HORizontal:POSition 0"))
+        self.assertEqual(
+            commands[commands.index("HORizontal:POSition 0")-1],
+            "HORizontal:DELay:MODe OFF",
+        )
+        settings = {
+            "identity": "TEKTRONIX,MDO4104B-6",
+            "time_div_s": "0.02",
+            "record_length": "100000",
+            "acquisition_mode": "SAMple",
+            "acquisition_stopafter": "SEQuence",
+            "fast_acquisition": "OFF",
+            "trigger_mode": "NORM",
+            "trigger_source": "CH2",
+            "trigger_slope": "RIS",
+            "trigger_level_v": "1.0",
+            "horizontal_delay_mode": "OFF",
+            "trigger_position_pct": "0",
+            "ch2_v_div": "2.0",
+            "ch2_enabled": "ON",
+        }
+        verify(settings, args)
+        settings["trigger_position_pct"] = "50"
+        with self.assertRaisesRegex(RuntimeError, "Horizontal trigger position"):
+            verify(settings, args)
+        settings["trigger_position_pct"] = "0"
+        settings["horizontal_delay_mode"] = "ON"
+        with self.assertRaisesRegex(RuntimeError, "Horizontal delay"):
+            verify(settings, args)
+
+    def test_trigger_position_override_and_bad_values(self):
+        p = parser()
+        args = p.parse_args(["--trigger-position-pct", "50"])
+        plan(args, p)
+        self.assertEqual(args.trigger_position_pct, 50)
+        for invalid in ("-1", "101", "nan"):
+            with self.subTest(value=invalid):
+                args = p.parse_args(["--trigger-position-pct", invalid])
+                with self.assertRaises(SystemExit):
+                    plan(args, p)
+
     def test_three_independent_clock_fits(self):
         with tempfile.TemporaryDirectory() as td:
             scope_alignment = make_recording(td)
@@ -131,6 +184,7 @@ class EpochExperimentTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--count")+1], "3")
         self.assertEqual(argv[argv.index("--pause-between-s")+1], "60")
         self.assertEqual(argv[argv.index("--time-div-us")+1], "2000000")
+        self.assertEqual(argv[argv.index("--trigger-position-pct")+1], "0")
         self.assertIn("--per-record-epochs", argv)
         self.assertNotIn("--run", argv)
 
@@ -145,6 +199,8 @@ class EpochExperimentTests(unittest.TestCase):
         requested = plan(a, p)
         self.assertAlmostEqual(requested["nominal_window_s"], 20)
         self.assertEqual(requested["count"], 3)
+        self.assertEqual(requested["trigger_position_pct"], 0.0)
+        self.assertEqual(a.trigger_position_pct, 0.0)
         self.assertTrue(requested["per_record_epochs"])
         self.assertEqual(requested["pause_between_s"], 60)
 
