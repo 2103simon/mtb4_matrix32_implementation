@@ -431,10 +431,9 @@ Compare, replacing the two paths with the generated run directories:
   --output data/recordings/nano_sync_transport_comparison.json
 ```
 
-The text transport remains the default until the binary benchmark is
-validated. For a Gray scope acquisition, use `--sync-transport binary`
-to opt into this experimental transport while preserving all CH2
-waveform processing.
+The CRC32 binary transport is now the default following the 2026-11-20
+A/B bench run; text SYNC remains available as a compatibility override. For a Gray scope acquisition, no transport argument is required;
+use `--sync-transport text` only for legacy experiments.
 
 **Interpretation:** A smaller RTT, reduced jitter or smaller fit RMS
 would be a measurable improvement, but without independent timing
