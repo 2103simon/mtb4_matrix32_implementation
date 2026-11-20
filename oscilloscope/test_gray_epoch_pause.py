@@ -40,15 +40,16 @@ def main(argv=None):
         alignment, report = analyze(root)
         atomic_json(root / "gray_alignment.json", alignment)
         atomic_json(root / "epoch_clock_analysis.json", report)
-        print(f"[EPOCH] {report['qualified_provisional_records']} of "
-              f"{len(report['records'])} records with provisional local fits",
-              flush=True)
+        print(f"[EPOCH] {report['qualified_provisional_records']} provisional, "
+              f"{report['exploratory_local_fit_records']} exploratory of "
+              f"{len(report['records'])} local fits", flush=True)
         for row in report["records"]:
             fit = row.get("fit")
             metric = (f"{fit['drift_ppm_nano_to_host']:.1f} ppm, "
                       f"RMS {fit['rms_residual_us']:.1f} us"
                       if fit else "no local clock fit")
-            print(f"[EPOCH {row['record_index']}] {row['status']}: {metric}",
+            print(f"[EPOCH {row['record_index']}] {row['status']}: "
+                  f"scope RMS {row['scope_edge_fit_rms_us']:.1f} us, {metric}",
                   flush=True)
             for warning in row["warnings"]:
                 print(f"  [WARN] {warning}", flush=True)
