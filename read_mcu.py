@@ -91,7 +91,7 @@ def main():
     # 4. Start serial communication
     # ----------------------------------
 
-    port = config["serial"]["port"]
+    port = config.get("serial", {}).get("port")
 
     sm.start_comm(port)
 
