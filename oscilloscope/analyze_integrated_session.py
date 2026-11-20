@@ -350,6 +350,13 @@ def analyze_session(root, meta, *, threshold_v=2, deadtime_ms=1,
     root = Path(root)
     records = record_boundaries(meta.get("records", []))
     mcu_dir = root / "mcu_matrix32"
+    mcu_files = sorted(mcu_dir.glob("*_tactile_rates.csv"))
+    if len(mcu_files) != 1:
+        raise ValueError(
+            f"Expected exactly one continuous MCU rate recording per integrated "
+            f"session, found {len(mcu_files)}. Refusing to silently select a "
+            f"latest file or concatenate distinct MCU recordings."
+        )
     rid = choose_recording(mcu_dir)
     mcu = load_recordings(mcu_dir, rid)
     if mcu["mode"] != "rates" or "taxel_pc_ns" not in mcu:
