@@ -112,6 +112,78 @@ def _stratified_low_latency(exchanges, base_slope, *,
     return selected
 
 
+def _holdout_checks(exchanges, *, folds=3, min_samples=8, min_span_s=5.0):
+    """Chronological blocked holdout predictions using disjoint test records.
+
+    Fit on other blocks and assess signed midpoint error on the held-out
+    block. Midpoint error is NOT an absolute clock-offset error: transport
+    asymmetry remains and can be time-dependent.
+    """
+    if folds < 2:
+        raise ValueError("Need at least two holdout folds")
+    tests = []
+    n = len(exchanges)
+    for index in range(folds):
+        lo, hi = index*n//folds, (index+1)*n//folds
+        held_out = exchanges[lo:hi]
+        training = exchanges[:lo] + exchanges[hi:]
+        if not held_out:
+            continue
+        try:
+            fit = active_clock_fit(training, min_samples=min_samples,
+                                   min_span_s=min_span_s)
+        except ValueError as exc:
+            tests.append({"fold": index+1, "status": "not_qualified",
+                          "test_count": len(held_out), "reason": str(exc)})
+            continue
+        anchor_nano = fit["anchor_nano_us"]
+        anchor_host = fit["anchor_host_monotonic_ns"]
+        slope = fit["slope_host_ns_per_nano_us"]
+        offset = fit["relative_offset_ns"]
+        errors_us = []
+        for row in held_out:
+            nano_mid = (row["t2_nano_us"] + row["t3_nano_us"])/2
+            # Subtract host anchor before float conversion to avoid
+            # precision loss for large monotonic timestamps.
+            observed_rel_ns = ((row["t1_host_ns"]-anchor_host)
+                               + (row["t4_host_ns"]-anchor_host))/2
+            predicted_rel_ns = slope*(nano_mid-anchor_nano) + offset
+            errors_us.append((observed_rel_ns-predicted_rel_ns)/1000)
+        rms = math.sqrt(sum(v*v for v in errors_us)/len(errors_us))
+        tests.append({
+            "fold": index+1, "status": "qualified",
+            "train_count": len(training), "test_count": len(held_out),
+            "train_span_s": fit["span_s"],
+            "train_drift_ppm": fit["drift_ppm_nano_to_host"],
+            "test_midpoint_rms_us": rms,
+            "test_midpoint_bias_us": statistics.mean(errors_us),
+            "test_midpoint_max_abs_us": max(map(abs, errors_us)),
+        })
+    qualified = [x for x in tests if x["status"] == "qualified"]
+    return {
+        "folds": tests,
+        "qualified_fold_count": len(qualified),
+        "worst_holdout_midpoint_rms_us": (
+            max(x["test_midpoint_rms_us"] for x in qualified)
+            if qualified else None
+        ),
+        "max_abs_holdout_midpoint_bias_us": (
+            max(abs(x["test_midpoint_bias_us"]) for x in qualified)
+            if qualified else None
+        ),
+        "holdout_train_drift_range_ppm": (
+            max(x["train_drift_ppm"] for x in qualified)
+            - min(x["train_drift_ppm"] for x in qualified)
+            if len(qualified) >= 2 else None
+        ),
+        "interpretation": (
+            "Blocked held-out midpoint predictions test time-generalization "
+            "within the recording, not physical offset accuracy; asymmetric "
+            "USB delays affect both training and test observations."
+        ),
+    }
+
+
 def diagnose_active_clock(exchanges, *,
                           min_samples=8, min_span_s=5.0,
                           bins=6, keep_fraction=0.25):
@@ -141,6 +213,9 @@ def diagnose_active_clock(exchanges, *,
         anchor_host_ns=robust["anchor_host_monotonic_ns"])
     windows = _window_fits(exchanges, 3, min_samples=min_samples,
                            min_span_s=min_span_s)
+    holdout = _holdout_checks(exchanges, folds=3,
+                              min_samples=min_samples,
+                              min_span_s=min_span_s)
     good = [row["drift_ppm_nano_to_host"] for row in windows
             if row["status"] == "qualified"]
     delay = sorted(transport_delay_ns(row, slope)/1000 for row in exchanges)
@@ -165,6 +240,7 @@ def diagnose_active_clock(exchanges, *,
             - baseline["drift_ppm_nano_to_host"]
         ),
         "chronological_window_fits": windows,
+        "blocked_holdout_validation": holdout,
         "window_drift_range_ppm": (
             max(good)-min(good) if len(good) >= 2 else None
         ),
@@ -196,6 +272,15 @@ def diagnose_active_clock(exchanges, *,
     if not selected_intersection["feasible"]:
         result["warnings"].append(
             "Low-latency fitted slope yields no common causal offset interval."
+        )
+    if holdout["qualified_fold_count"] < 3:
+        result["warnings"].append(
+            "Not all blocked holdout folds qualified; prediction stability unverified."
+        )
+    if (holdout["max_abs_holdout_midpoint_bias_us"] is not None
+            and holdout["max_abs_holdout_midpoint_bias_us"] > 1000):
+        result["warnings"].append(
+            "Held-out midpoint bias exceeds 1 ms; clock mapping may not generalize."
         )
     if len(good) < 2:
         result["warnings"].append(
