@@ -27,7 +27,32 @@ def main(argv=None):
         "--sync-transport", "binary",
         "--label", "gray_epoch_pause_30s",
     ]
-    return gray_main(defaults + list(argv))
+    result = gray_main(defaults + list(argv))
+    if result is not None and result.get("status") == "complete":
+        # Analyze ONLY after the scope and serial session have fully closed.
+        from pathlib import Path
+        from analyze_gray_epoch_experiment import analyze
+        from record_scope import atomic_json
+
+        root = Path(result["run_dir"])
+        print(f"[EPOCH] Offline analysis of {root}", flush=True)
+        alignment, report = analyze(root)
+        atomic_json(root / "gray_alignment.json", alignment)
+        atomic_json(root / "epoch_clock_analysis.json", report)
+        print(f"[EPOCH] {report['qualified_provisional_records']} of "
+              f"{len(report['records'])} records with provisional local fits",
+              flush=True)
+        for row in report["records"]:
+            fit = row.get("fit")
+            metric = (f"{fit['drift_ppm_nano_to_host']:.1f} ppm, "
+                      f"RMS {fit['rms_residual_us']:.1f} us"
+                      if fit else "no local clock fit")
+            print(f"[EPOCH {row['record_index']}] {row['status']}: {metric}",
+                  flush=True)
+            for warning in row["warnings"]:
+                print(f"  [WARN] {warning}", flush=True)
+        print(f"[EPOCH] Saved {root / 'epoch_clock_analysis.json'}", flush=True)
+    return result
 
 
 if __name__ == "__main__":
