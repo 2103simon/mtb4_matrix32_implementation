@@ -234,3 +234,62 @@ The 20261120T144806568426Z initial integrated session reported
 record was correctly marked **unqualified under the original
 100 us Gray-fit threshold**. This does not prevent diagnostic
 visualization or count-based CH1 waveform analysis.
+
+
+## Human-readable Markdown report and expected-versus-measured output frequency
+
+Running `oscilloscope/analyze_integrated_matrix32.py` now writes **both**
+`analysis/integrated_summary.json` and
+`analysis/integrated_report.md`, plus three embedded PNG figures:
+
+- `integrated_overview.png`: CH1 min/max envelope, candidate event
+  density, the selected MCU taxel, requested rate and BLE markers.
+- `matrix32_pulse_zoom.png`: un-decimated CH1 biphasic waveform detail.
+- `matrix32_frequency_comparison.png`: sliding-window measured CH1
+  positive-phase event rate and the expected BLE ACK-indicated SF setting
+  (only settled intervals, placed on the provisional scope/host map).
+
+The Markdown report includes recording metadata, MCU sampling statistics,
+physical pulse counts and spacing, the command/ACK event table, a
+per-second subset of measured/expected/transition-status windows
+(including *all detected discrepant windows*), clock-quality warnings,
+and image links relative to the report so it can render on GitHub.
+
+The physical event detector has a default **2 V** positive threshold,
+hysteresis and a **1 ms** minimum pulse separation; these parameters are
+diagnostic, not a validated full biphasic-cycle detector. The physical
+sliding-window count defaults to a **1 s** window stepped every
+**0.25 s**. A 1-second count has approximately 1 Hz quantization.
+You can adjust these values for a pulse train whose amplitude/rate
+requires a different threshold:
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python -u \
+  oscilloscope/analyze_integrated_matrix32.py \
+  --frequency-window-s 1 --frequency-step-s 0.25 \
+  --frequency-tolerance-hz 3 \
+  --frequency-tolerance-fraction 0.05 \
+  --threshold-v 2 --deadtime-ms 1
+```
+
+**Expected rate uses only protocol success evidence**: initial
+`configuration_ack` plus `start_write_completed`; later
+`sf_ack` events with status `OK`; `sc_ack` with current 0
+mutes the physical expected pulse count; STOP disables the expectation.
+Pure request events (`sf_requested`) and failed ACKs are not used as
+successful frequency transitions. A sliding window is **not comparable**
+if a change occurs within the window or 0.5 seconds of its edges,
+if a START/ACK is missing, or if the scope-to-host mapping is missing.
+In stable intervals the tolerance is
+`max(3 Hz, 5% of ACK frequency, 1/window_seconds Hz)`.
+Outputs are `compatible_provisional`, `discrepant_provisional`,
+or `not_comparable`.
+
+**Caution:** ACK timestamps indicate the host observed a protocol
+response; they do not prove when a physical SF change happened.
+The scope↔Nano↔PC time map is not absolutely calibrated and can be
+marked unqualified. Consequently even 'compatible' is a **provisional
+consistency check, not verified electrical latency or perfect tracking**.
+Independent CH1 waveforms remain the source of physical frequency
+evidence. The report retains every comparison window in JSON and a
+readable subset plus all discrepancies in Markdown.
