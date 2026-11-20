@@ -53,6 +53,16 @@ class PortDiscoveryTests(unittest.TestCase):
     def test_explicit_override(self):
         self.assertEqual(resolve_port("/dev/ttyACM9", "nano", ports=[]), "/dev/ttyACM9")
 
+    def test_omitted_port_uses_identity_and_no_auto_sentinel(self):
+        self.assertEqual(resolve_port(None, "nano", ports=[self.nano, self.feather]),
+                         "/dev/ttyACM1")
+        self.assertEqual(resolve_port(None, "feather", ports=[self.nano, self.feather]),
+                         "/dev/ttyACM0")
+        with self.assertRaisesRegex(ValueError, "Omit the serial port"):
+            resolve_port("auto", "nano", ports=[self.nano])
+        with self.assertRaises(ValueError):
+            resolve_port("", "feather", ports=[self.feather])
+
     def test_missing_device_has_diagnostics(self):
         with self.assertRaisesRegex(PortDiscoveryError, "Available ports"):
             resolve_port(None, "feather", ports=[self.nano])
