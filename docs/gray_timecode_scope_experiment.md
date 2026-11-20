@@ -685,3 +685,58 @@ Otherwise it is **unqualified**, preserving raw evidence and warnings.
 These are exploratory diagnostic thresholds, **not** a claim of
 microsecond-accurate host synchronization. USB asymmetry still limits
 absolute offset accuracy even when an epoch fit passes all checks.
+
+
+## 13. Left-edge trigger positioning: 0% pretrigger (2026-11-20)
+
+The Gray scope experiment now requests **0% horizontal trigger position**
+rather than the previous 50% default. The specialized three-epoch
+benchmark explicitly passes `--trigger-position-pct 0`, and
+`oscilloscope/test_gray_timecode.py` now accepts that option directly
+(default 0; `--trigger-position-pct 50` restores centered triggering).
+
+This mirrors the reviewed implementation in
+`2103simon/matrix32_nerve_stimulation`:
+`experiments/record_scope.py` and
+`experiments/reports/S02/S02_FREQUENCY_RELIABILITY_PROTOCOL.md`.
+
+To avoid timebase/record-length writes silently restoring the
+trigger location, the existing `record_scope.configure()` writes in
+this order:
+
+1. `HORizontal:RECOrdlength ...` and `HORizontal:SCALe ...`
+2. `HORizontal:DELay:MODe OFF`
+3. `HORizontal:POSition 0`
+
+The script queries and verifies **both** delay mode and trigger position
+before arming. It now also queries and verifies the same settings after
+every acquisition. Unexpected readback causes a clear error; it is
+never treated as a valid post-trigger recording.
+
+0% is a **requested** left-edge trigger location, not independently
+validated zero pretrigger samples. Inspect the exported `WFMPRE:XZEro`,
+`WFMPRE:XINcr`, `WFMPRE:PT_Off` and actual first/last waveform
+times in each channel transfer to confirm post-trigger coverage;
+Tektronix may retain a small hardware pretrigger region.
+
+**Earlier three-record run:** the 20261120T135543788604Z acquisition
+captured all three nominal 20-second waveforms successfully before
+offline alignment stopped at record 1's 125.3 us Gray edge-fit RMS,
+above the intentionally strict 100 us threshold. This does **not**
+invalidate the raw captures, and the trigger change does **not**
+retroactively repair that alignment residual. To examine those
+older recordings at a deliberately relaxed diagnostic threshold,
+the offline analyzer supports `--max-scope-rms-us 150`; any resulting
+clock fit must be reported as exploratory and not used to claim the
+100 us standard was met.
+
+The normal three-record bench command remains:
+
+```bash
+timeout 900s /home/icub/.virtualenvs/matrix32/bin/python -u \
+  oscilloscope/test_gray_epoch_pause.py --run
+```
+
+Expected plan includes `trigger_position_pct: 0.0` and the
+20-second nominal window (2 s/div). The Arduino firmware and Nano
+clock estimation do not need modification or reflashing.
