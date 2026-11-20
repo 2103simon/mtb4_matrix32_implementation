@@ -95,11 +95,79 @@ external watchdog in first tests, e.g. prefix the command with
 length/timebase settings, inspect the error and actual scope readback
 before adjusting the request.
 
-## Next experiment
+## 4. Repeated finite acquisitions (next experiment)
 
-Only after the above succeeds on CH2, add a separate scope-only loop
-that repeats fresh finite acquisitions and measures acquisition time,
-transfer time, and uncovered dead time. Separate files must not be
-misrepresented as one gap-free waveform. The earlier reference also
-used an **Arduino Nano CH4 marker**; reserve another scope channel for
-that hardware timing reference when we later align to BLE/MCU logs.
+The initial CH2 PROBE COMP triggered capture was successfully performed on
+2026-11-20: `/dev/usbtmc3`, serial C010233, 10,000 samples, binary transfer
+succeeded. The following **new recorder** has not yet been tried on hardware.
+
+Run a **dry run**, without opening USB or creating any files:
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python oscilloscope/record_scope_live.py \
+  --channel 2 --scale 1 --time-div-us 2000 --points 10000 \
+  --trigger-edge rising --trigger-level 1 --trigger-position-pct 50 \
+  --count 5 --label probe_comp_ch2_live
+```
+
+Then record **five separately triggered finite waveforms**:
+
+```bash
+timeout 120s /home/icub/.virtualenvs/matrix32/bin/python -u \
+  oscilloscope/record_scope_live.py \
+  --device auto --channel 2 --scale 1 --time-div-us 2000 \
+  --points 10000 --trigger-edge rising --trigger-level 1 \
+  --trigger-position-pct 50 --count 5 \
+  --label probe_comp_ch2_live --run
+```
+
+The program reuses the already verified `record_scope.configure()`,
+`record_scope.acquire()`, and `tek_mdo_usb.capture()` routines.
+It first checks `*IDN?` and the configured settings; then repeats
+**STOP -> single SEQUENCE RUN -> observe acquisition STOP -> CURVE? binary
+download -> save CSV -> next STOP/RUN**. Unlike the earlier single capture
+it does not involve Matrix32 stimulation at all.
+
+Output is in `data/recordings/<UTC-run>_probe_comp_ch2_live/`:
+
+- `waveforms/record_00001_ch2.csv`, `record_00002_ch2.csv`, etc.:
+  independent scope-relative `time_s,voltage_v,raw` records.
+- `record_00001.json`, etc.: per-record host monotonic bounds for
+  RUN/write, acquisition-state polling, CURVE? download and waveform
+  validation; record length/sample interval and sha256.
+- `summary.json`: scope identity, configuration, record filenames,
+  durations and success/failure status. It is updated after each
+  successful acquisition and on clean termination/failure.
+
+**Interpretation:** `cycle_duration_s` is *host end-to-end time*,
+including scope SCPI polling, USB transfer, CSV creation and validation.
+`transfer_duration_s` also includes the CSV write/validation and is
+**not solely USB transport time**. `scope_window_s` is the span of
+one downloaded waveform measured from WFMPRE. The ratio of recorded
+waveform spans to host elapsed time is only a **nominal capture
+utilization indicator**; neither actual pulse sampling duty cycle
+nor physical sample-to-sample gaps are established by these fields.
+Each waveform's trigger-relative time axis starts anew. Even an
+identical CSV hash does not prove stale data, since a periodic
+calibration waveform can reproduce identical records. Recording cannot
+be described as gap-free or time-aligned to the host.
+
+These Linux USBTMC operations can block indefinitely in the kernel.
+Always use an OS-level `timeout` during initial runs. A forced
+SIGTERM may prevent the final summary write; previously completed
+records remain saved. If `/dev/usbtmcN` is root-only, apply a narrow
+udev permission rule or temporarily run through `sudo` with the same
+Python interpreter, accounting for root-owned output.
+
+**Future work:** measure how much wall time is spent in acquisition,
+transfer and CSV conversion; optimize storage only after measuring.
+We can later record a separate **Arduino Nano marker** on another
+scope channel to relate trigger-relative times to BLE/MCU host times.
+
+### Offline regression tests
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python -m unittest discover \
+  -s tests -p 'test_scope_live.py' -v
+```
+
