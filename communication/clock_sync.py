@@ -71,6 +71,11 @@ def passive_diagnostics(serial_log):
         points.append((edge + wraps*MOD32, int(recv), 1.0))
     report = _regression(points)
     report["method"] = "passive_one_way_serial_receive"
+    report["drift_quality"] = (
+        "unreliable_due_to_serial_latency_variation"
+        if report["rms_residual_us"] > 1000
+        else "exploratory_only"
+    )
     report["offset_calibrated"] = False
     report["host_clock_synchronized"] = False
     report["warning"] = (
