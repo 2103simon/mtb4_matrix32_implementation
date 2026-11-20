@@ -264,8 +264,281 @@ def make_plots(root, t, volts, starts, mcu, events, mapping,
     return [str(full), str(zoom)]
 
 
+
+def sliding_physical_rates(starts, t_start, t_end, window_s=1.0, step_s=0.25):
+    """Non-overlapping count uncertainty is ~1/window Hz; return centered windows.
+
+    Windows are never permitted to extend past the saved waveform bounds.
+    """
+    if not (math.isfinite(window_s) and math.isfinite(step_s)
+            and window_s > 0 and step_s > 0 and t_end > t_start):
+        raise ValueError("Invalid sliding-window parameters")
+    if t_end - t_start < window_s:
+        return []
+    starts = np.sort(np.asarray(starts, dtype=float))
+    first = float(t_start)
+    centers = np.arange(first + window_s/2, t_end - window_s/2 + 1e-10, step_s)
+    left = np.searchsorted(starts, centers - window_s/2, side="left")
+    right = np.searchsorted(starts, centers + window_s/2, side="left")
+    return [{"center_scope_s": float(c), "window_s": float(window_s),
+             "physical_positive_events": int(n),
+             "physical_rate_hz": float(n / window_s)}
+            for c, n in zip(centers, right - left)]
+
+
+def acknowledged_frequency_states(events):
+    """Extract protocol state from acknowledgments, NOT request timestamps.
+
+    Initial frequency is accepted on 'configuration_ack' but only becomes
+    running on 'start_write_completed'. SF=2 after SC=0 is output-muted,
+    never evidence of 2 Hz pulses. Unknown after STOP/lost connection.
+    """
+    ordered = sorted((e for e in events if "pc_monotonic_ns" in e),
+                     key=lambda e: int(e["pc_monotonic_ns"]))
+    states = []
+    initial = None
+    running = False
+    muted = False
+    frequency = None
+    for event in ordered:
+        name = event.get("event")
+        timestamp = int(event["pc_monotonic_ns"])
+        if name == "configuration_ack" and event.get("verified") is True:
+            initial = event.get("frequency_hz")
+        elif name == "start_write_completed":
+            frequency = event.get("frequency_hz", initial)
+            running = frequency is not None
+            muted = False
+            if running:
+                states.append({"pc_monotonic_ns": timestamp, "expected_hz": int(frequency),
+                               "source": name, "output_active_assumed": True})
+        elif name == "sf_ack" and event.get("status") == "OK":
+            frequency = event.get("frequency_hz")
+            if running and not muted and frequency is not None:
+                states.append({"pc_monotonic_ns": timestamp,
+                               "expected_hz": int(frequency), "source": name,
+                               "output_active_assumed": True})
+        elif name == "sc_ack" and event.get("status") == "OK":
+            if event.get("current_command") == 0:
+                muted = True
+                if running:
+                    states.append({"pc_monotonic_ns": timestamp, "expected_hz": 0,
+                                   "source": "sc_ack_muted", "output_active_assumed": False})
+            elif running:
+                muted = False
+                if frequency is not None:
+                    states.append({"pc_monotonic_ns": timestamp,
+                                   "expected_hz": int(frequency), "source": "sc_ack_restored",
+                                   "output_active_assumed": True})
+        elif name in ("stop_write_completed", "shutdown_stop_write_completed"):
+            running = False
+            states.append({"pc_monotonic_ns": timestamp, "expected_hz": 0,
+                           "source": name, "output_active_assumed": False})
+        elif name in ("ble_lost", "stop_failed", "stop_unavailable", "start_failed"):
+            running = False
+            states.append({"pc_monotonic_ns": timestamp, "expected_hz": None,
+                           "source": name, "output_active_assumed": False})
+    return states
+
+
+def compare_physical_with_acks(windows, states, mapping, t_start, t_end,
+                               tolerance_hz=3.0, tolerance_fraction=0.05):
+    """Tentative comparison only for settled ACK states over whole windows.
+
+    Reject windows crossing ANY ACK transition; a 0.5s guard on either
+    side helps avoid interpreting BLE command propagation as instant.
+    A valid clock mapping is required; unqualified fits stay provisional.
+    """
+    result = []
+    state_ns = np.asarray([s["pc_monotonic_ns"] for s in states], dtype=np.int64)
+    for window in windows:
+        row = dict(window)
+        row.update({"ack_expected_hz": None, "difference_hz": None,
+                    "assessment": "not_comparable"})
+        if mapping is None or not len(state_ns):
+            row["reason"] = "no scope-to-host mapping or ACK states"
+            result.append(row)
+            continue
+        # Invert the linear affine estimate using integer anchor differences.
+        mid = window["center_scope_s"]
+        half = window["window_s"] / 2
+        h0 = mapping["first_sample_pc_monotonic_ns_est"]
+        h1 = mapping["last_sample_pc_monotonic_ns_est"]
+        def host_at(scope_s):
+            return int(round(h0 + (scope_s - t_start) / (t_end - t_start)
+                             * (h1-h0)))
+        begin = host_at(mid-half)
+        end = host_at(mid+half)
+        center = host_at(mid)
+        preceding = int(np.searchsorted(state_ns, center, side="right")) - 1
+        if preceding < 0:
+            row["reason"] = "no prior START/ACK evidence"
+            result.append(row)
+            continue
+        state = states[preceding]
+        if state["expected_hz"] is None:
+            row["reason"] = "unknown output state"
+            result.append(row)
+            continue
+        # Require the same state through the full window and 0.5s before
+        # and after; don't classify a transition-containing window.
+        guard_ns = 500_000_000
+        prior_t = int(state_ns[preceding])
+        next_t = (int(state_ns[preceding+1])
+                  if preceding+1 < len(state_ns) else None)
+        if prior_t > begin - guard_ns or (next_t is not None
+                and next_t < end + guard_ns):
+            row["reason"] = "ACK transition near window; unsettled"
+            result.append(row)
+            continue
+        expected = int(state["expected_hz"])
+        difference = row["physical_rate_hz"] - expected
+        tolerance = max(float(tolerance_hz), expected*tolerance_fraction,
+                        1.0/window["window_s"])
+        row.update({"ack_expected_hz": expected,
+                    "difference_hz": float(difference),
+                    "tolerance_hz": float(tolerance),
+                    "ack_source": state["source"],
+                    "assessment": ("compatible_provisional" if abs(difference) <= tolerance
+                                   else "discrepant_provisional")})
+        result.append(row)
+    return result
+
+
+def plot_frequency_comparison(root, windows, compared, mapping):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(14, 4.5), layout="constrained")
+    x = [w["center_scope_s"] for w in windows]
+    measured = [w["physical_rate_hz"] for w in windows]
+    ax.plot(x, measured, label="CH1 measured positive-phase rate (sliding count)")
+    if mapping:
+        comparable = [w for w in compared if w["ack_expected_hz"] is not None]
+        if comparable:
+            ax.step([w["center_scope_s"] for w in comparable],
+                    [w["ack_expected_hz"] for w in comparable],
+                    where="mid", label="BLE ACK-indicated SF (provisional placement)")
+            mismatches = [w for w in comparable
+                          if w["assessment"] == "discrepant_provisional"]
+            if mismatches:
+                ax.scatter([w["center_scope_s"] for w in mismatches],
+                           [w["physical_rate_hz"] for w in mismatches],
+                           marker="x", label="Discrepant settled window")
+    ax.set_xlabel("Time in scope waveform (s)")
+    ax.set_ylabel("Frequency (Hz)")
+    ax.set_ylim(bottom=0)
+    ax.set_title("Measured CH1 vs ACK-indicated SF — provisional time mapping")
+    ax.grid(alpha=0.25)
+    ax.legend()
+    output = root / "analysis" / "matrix32_frequency_comparison.png"
+    fig.savefig(output, dpi=150)
+    plt.close(fig)
+    return str(output)
+
+
+def write_markdown_report(root, report):
+    """Publish an entirely offline human-readable report beside JSON."""
+    out = root / "analysis" / "integrated_report.md"
+    scope, mcu, pulses = report["scope"], report["mcu"], report["scope"]["pulse_detection"]
+    frequency = report["frequency_comparison"]
+    def fmt(value, suffix="", precision=2):
+        return "not available" if value is None else f"{value:.{precision}f}{suffix}"
+    lines = [
+        f"# Integrated Matrix32 recording — {report['run_id']}", "",
+        "> **Exploratory, bench-only analysis.** BLE acknowledgments confirm a protocol response, "
+        "not electrical output timing. Cross-clock alignment is provisional; USB asymmetry "
+        "is not calibrated. Do not use reported frequency agreement to claim precise latency.",
+        "", "## Overview", "",
+        "| Measurement | Value |", "| --- | ---: |",
+        f"| Acquisition status | {report['recording_status']} |",
+        f"| CH1 waveform duration | {fmt(scope['duration_s'], ' s', 3)} |",
+        f"| CH1 samples | {scope['samples']:,} |",
+        f"| CH1 voltage range | {fmt(scope['ch1_min_v'], ' V')} to {fmt(scope['ch1_max_v'], ' V')} |",
+        f"| Gray frames (CH2) | {scope['gray_frames']} |",
+        f"| Candidate positive CH1 events | {pulses['positive_rising_events']:,} |",
+        f"| Median local CH1 rate | {fmt(pulses['median_instantaneous_rate_hz'], ' Hz')} |",
+        f"| Median CH1 interval | {fmt(pulses['median_interevent_ms'], ' ms', 3)} |",
+        f"| MCU rate snapshots | {mcu['samples']:,} |",
+        f"| MCU arrival cadence | {fmt(mcu['observed_update_rate_hz'], ' Hz')} |",
+        f"| Selected taxel / encoding | {mcu['taxel']} / {mcu['encoding']} |",
+        f"| MCU requested rate | {fmt(mcu['requested_rate_min_hz'], ' Hz')} to "
+        f"{fmt(mcu['requested_rate_max_hz'], ' Hz')} |",
+        f"| Matrix32 BLE trace events | {report['matrix32_commands']['events']:,} |",
+        "", "## Physical frequency versus command acknowledgments", "",
+        f"Sliding count window **{fmt(frequency['window_s'], ' s')}** stepped by "
+        f"**{fmt(frequency['step_s'], ' s')}**. An event is a rising CH1 "
+        f"positive-phase threshold crossing above {fmt(pulses['positive_threshold_v'], ' V')}. "
+        "The measured rate is events/window duration, quantized at 1/window seconds. "
+        "This is not a guaranteed biphasic-cycle detector.",
+        "",
+        "Expected rates are sourced from the **ACK-verified initial configuration and START**, "
+        "followed by successful `sf_ack` updates. Requested-only `sf_requested` events "
+        "are not counted as accepted changes. `sc_ack` with current=0 is treated as muted. "
+        "A settled window must be clear of ACK transitions by 0.5 s at each end.",
+        "",
+        f"| Settled windows comparable | {frequency['comparable_windows']} |",
+        f"| Compatible (provisional) | {frequency['compatible_windows']} |",
+        f"| Discrepant (provisional) | {frequency['discrepant_windows']} |",
+        f"| Not comparable | {frequency['not_comparable_windows']} |",
+        f"| Tolerance | max({fmt(frequency['tolerance_hz'], ' Hz')}, "
+        f"{fmt(100*frequency['tolerance_fraction'], '%')}, count quantization) |",
+        "", "![Measured and acknowledged frequency](matrix32_frequency_comparison.png)", "",
+        "| Scope time (s) | CH1 measured (Hz) | ACK-indicated SF (Hz) | Difference (Hz) | Assessment |",
+        "| ---: | ---: | ---: | ---: | --- |",
+    ]
+    # One row per second (or an anomalous window) keeps the report readable.
+    selection = [w for i, w in enumerate(frequency["windows"]) if
+                 i % max(1, round(1/frequency["step_s"])) == 0
+                 or w["assessment"] == "discrepant_provisional"]
+    for w in selection:
+        lines.append(
+            f"| {w['center_scope_s']:.2f} | {w['physical_rate_hz']:.1f} | "
+            f"{fmt(w['ack_expected_hz'], precision=1)} | "
+            f"{fmt(w['difference_hz'], precision=1)} | "
+            f"{w['assessment']} |"
+        )
+    if not selection:
+        lines.append("| — | — | — | — | No measurable windows |")
+    lines.extend([
+        "", "Individual windows with a near-boundary ACK transition are intentionally "
+        "reported **not comparable**. Agreement is **provisional**, even when "
+        "the clock fit passed the original Gray RMS criterion.",
+        "", "## Commands and recorded evidence", "",
+        "| BLE trace event | Count |", "| --- | ---: |",
+    ])
+    for event, count in sorted(report["matrix32_commands"]["counts_by_event"].items()):
+        lines.append(f"| `{event}` | {count} |")
+    clock = report["clock_mapping"]
+    lines += [
+        "", "## Timing / limitations", "",
+        f"- Clock qualification: **{clock['status'] if clock else 'not available'}**.",
+        f"- Scope-to-Nano RMS: **{fmt(clock.get('scope_rms_us') if clock else None, ' µs')}**.",
+        f"- Nano-to-PC fit RMS: **{fmt(clock.get('nano_pc_rms_us') if clock else None, ' µs')}**.",
+        "- The Nano USB one-way offset remains uncalibrated; the expected-vs-measured "
+        "time overlay is therefore exploratory, not an absolute timing guarantee.",
+        "- The 44.5 Hz MCU update cadence and Matrix32 physical pulse frequency "
+        "are different quantities.",
+        "", "## Figures", "",
+        "### CH1 waveform, physical event density, MCU sensor and requested rate",
+        "![Integrated overview](integrated_overview.png)", "",
+        "### Detailed biphasic output voltage",
+        "![CH1 pulse zoom](matrix32_pulse_zoom.png)", "",
+        "## Files", "",
+        "- Machine-readable results: [integrated_summary.json](integrated_summary.json)",
+        f"- Waveform: [CH1](../{scope['ch1_path']}), [CH2](../{scope['ch2_path']})",
+        "", "## Warnings", "",
+    ]
+    lines.extend(f"- {warning}" for warning in report["warnings"])
+    lines.append("")
+    out.write_text("\n".join(lines), encoding="utf-8")
+    return str(out)
+
+
 def summarize(root, meta, *, threshold_v=2, deadtime_ms=1, taxel=None,
-              zoom_start=None, zoom_sec=0.5, show=False):
+              zoom_start=None, zoom_sec=0.5, show=False,
+              frequency_window_s=1.0, frequency_step_s=0.25,
+              frequency_tolerance_hz=3.0, frequency_tolerance_fraction=0.05):
     if len(meta.get("records", [])) != 1:
         raise ValueError("Expected exactly one integrated scope record")
     rec = meta["records"][0]
@@ -300,6 +573,16 @@ def summarize(root, meta, *, threshold_v=2, deadtime_ms=1, taxel=None,
     event_files = list(data_dir.glob("*_matrix32_commands.jsonl"))
     events = read_events(event_files[0]) if len(event_files) == 1 else []
     counts = Counter(row.get("event", "?") for row in events)
+    windows = sliding_physical_rates(
+        starts, float(t[0]), float(t[-1]), frequency_window_s,
+        frequency_step_s,
+    )
+    ack_states = acknowledged_frequency_states(events)
+    comparisons = compare_physical_with_acks(
+        windows, ack_states, mapping, float(t[0]), float(t[-1]),
+        frequency_tolerance_hz, frequency_tolerance_fraction,
+    )
+    assessments = Counter(w["assessment"] for w in comparisons)
     report = {
         "schema_version": 1,
         "run_id": meta["run_id"],
@@ -338,6 +621,20 @@ def summarize(root, meta, *, threshold_v=2, deadtime_ms=1, taxel=None,
             "physical_output_verified_off": False,
         },
         "clock_mapping": mapping,
+        "frequency_comparison": {
+            "window_s": frequency_window_s,
+            "step_s": frequency_step_s,
+            "tolerance_hz": frequency_tolerance_hz,
+            "tolerance_fraction": frequency_tolerance_fraction,
+            "acknowledged_states": ack_states,
+            "windows": comparisons,
+            "comparable_windows": (assessments["compatible_provisional"]
+                                   + assessments["discrepant_provisional"]),
+            "compatible_windows": assessments["compatible_provisional"],
+            "discrepant_windows": assessments["discrepant_provisional"],
+            "not_comparable_windows": assessments["not_comparable"],
+            "cross_clock_agreement_verified": False,
+        },
         "warnings": [
             "Positive CH1 threshold events are candidate physical pulse phases, "
             "not an independently verified complete biphasic cycle count.",
@@ -353,7 +650,12 @@ def summarize(root, meta, *, threshold_v=2, deadtime_ms=1, taxel=None,
     report["plots"] = make_plots(
         root, t, v, starts, mcu, events, mapping, taxel, zoom_start, zoom_sec
     )
+    report["plots"].append(
+        plot_frequency_comparison(root, windows, comparisons, mapping)
+    )
+    report["markdown_report"] = str(root / "analysis" / "integrated_report.md")
     atomic_json(root / "analysis" / "integrated_summary.json", report)
+    write_markdown_report(root, report)
     print(f"[INTEGRATED] {root.name}")
     print(f"[SCOPE] CH1 {len(t):,} samples, {t[-1]-t[0]:.3f}s, "
           f"range {v.min():.2f}..{v.max():.2f}V; "
@@ -371,6 +673,11 @@ def summarize(root, meta, *, threshold_v=2, deadtime_ms=1, taxel=None,
           + (f"; arrival cadence {report['mcu']['observed_update_rate_hz']:.2f} Hz"
              if len(d) else ""))
     print(f"[BLE] {len(events)} trace events: {dict(counts)}")
+    freq = report["frequency_comparison"]
+    print(f"[FREQUENCY] {freq['comparable_windows']} settled windows: "
+          f"{freq['compatible_windows']} compatible, "
+          f"{freq['discrepant_windows']} discrepant (PROVISIONAL); "
+          f"{freq['not_comparable_windows']} not comparable")
     if mapping is None:
         print("[CLOCK] No valid saved scope->host fit; MCU/scope plotted on "
               "SEPARATE axes, not synchronized")
@@ -381,6 +688,7 @@ def summarize(root, meta, *, threshold_v=2, deadtime_ms=1, taxel=None,
     for path in report["plots"]:
         print(f"[PLOT] {path}")
     print(f"[SUMMARY] {root / 'analysis' / 'integrated_summary.json'}")
+    print(f"[REPORT] {root / 'analysis' / 'integrated_report.md'}")
     if show:
         # PNGs have been saved; interactive viewers can open files separately.
         print("[INFO] Use your image viewer to open the saved PNG plots.")
@@ -398,6 +706,12 @@ def main(argv=None):
     p.add_argument("--deadtime-ms", type=float, default=1.0)
     p.add_argument("--zoom-start-s", type=float, default=None)
     p.add_argument("--zoom-sec", type=float, default=0.5)
+    p.add_argument("--frequency-window-s", type=float, default=1.0,
+                   help="Sliding measured pulse-rate window (default 1 s)")
+    p.add_argument("--frequency-step-s", type=float, default=0.25,
+                   help="Sliding rate update step (default 0.25 s)")
+    p.add_argument("--frequency-tolerance-hz", type=float, default=3.0)
+    p.add_argument("--frequency-tolerance-fraction", type=float, default=0.05)
     p.add_argument("--show", action="store_true",
                    help="Print saved PNG filenames; no GUI is opened")
     args = p.parse_args(argv)
@@ -406,11 +720,23 @@ def main(argv=None):
             and math.isfinite(args.zoom_sec) and args.zoom_sec > 0
             and (args.zoom_start_s is None or math.isfinite(args.zoom_start_s))):
         p.error("Threshold, deadtime and zoom range must be finite and valid")
+    if not (0 < args.frequency_window_s <= 10
+            and 0 < args.frequency_step_s <= args.frequency_window_s
+            and math.isfinite(args.frequency_window_s)
+            and math.isfinite(args.frequency_step_s)
+            and math.isfinite(args.frequency_tolerance_hz)
+            and args.frequency_tolerance_hz > 0
+            and math.isfinite(args.frequency_tolerance_fraction)
+            and 0 <= args.frequency_tolerance_fraction <= 1):
+        p.error("Invalid sliding-rate window or frequency tolerance")
     root, meta = choose_run(args.output_root, args.run_dir)
     return summarize(root, meta, threshold_v=args.threshold_v,
                      deadtime_ms=args.deadtime_ms, taxel=args.taxel,
                      zoom_start=args.zoom_start_s, zoom_sec=args.zoom_sec,
-                     show=args.show)
+                     show=args.show, frequency_window_s=args.frequency_window_s,
+                     frequency_step_s=args.frequency_step_s,
+                     frequency_tolerance_hz=args.frequency_tolerance_hz,
+                     frequency_tolerance_fraction=args.frequency_tolerance_fraction)
 
 
 if __name__ == "__main__":
