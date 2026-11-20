@@ -617,8 +617,8 @@ timeout 900s /home/icub/.virtualenvs/matrix32/bin/python -u \
   oscilloscope/test_gray_epoch_pause.py --run
 ```
 
-Default plan: **three nominally 30-second, 1,000,000-sample finite
-oscilloscope records** (3 s/div, CH2 trigger at +1 V), **60 seconds
+Default plan: **three nominally 20-second, 1,000,000-sample finite
+oscilloscope records** (2 s/div, CH2 trigger at +1 V), **60 seconds
 of deliberate pause after each completed transfer except the last**,
 and **30 binary SYNC measurements immediately before arming and 30
 immediately after the acquisition completes** for each record. No SYNC
@@ -626,16 +626,14 @@ messages are sent during the acquisition. The host reader still records
 the ongoing Nano `FRAME` messages. The sync time windows bracket each
 record; per-record fits use only that record's 60 SYNC exchanges.
 
-**Hardware qualification:** 3 s/div and a 1M-point record length are
-requested, not assumed supported. The code refuses acquisition if the
-Tektronix scope does not confirm both settings. If the scope rounds
-3 s/div to another supported step, use an explicit override such as
-`--time-div-us 2000000` for a 20 s record (same sample count), rather
-than ignoring the failed verification. Always inspect the actual saved
-waveform preamble and time span. At 30 s / 1M samples the nominal 30 us
-sample spacing gives approximately 33 samples for the narrowest 1 ms
-Gray pulse, adequate for a first decoder attempt but coarser than
-the prior 2 us marker experiment.
+**Hardware qualification:** The MDO4104B-6 rejected the original
+3 s/div request by reporting 2 s/div. The revised 2 s/div default
+requests a nominal 20 s record, with the same 1M-point sample count.
+The code still verifies both actual scope settings before capturing.
+Inspect the saved waveform preamble and span rather than assuming the
+nominal values. At 20 s / 1M samples, the nominal 20 us sample spacing
+gives approximately 50 samples for a 1 ms Gray pulse; this is coarser
+than the prior 2 us marker experiment.
 
 The pause starts **after waveform transfer/decoding**, before the next
 pre-SYNC batch. The scope acquisition is not continuous between these
