@@ -236,7 +236,7 @@ def parser():
                    help="200 ms span by default; >=1 complete 100 ms frame")
     p.add_argument("--acquire-timeout", type=float, default=15)
     p.add_argument("--sync-transport", choices=("text", "binary"),
-                   default="text", help="Experimental binary CRC32 or legacy text SYNC")
+                   default="binary", help="CRC32 binary default; text for legacy comparison")
     p.add_argument("--sync-count", type=int, default=12,
                    help="Initial SYNC exchanges (0 for old firmware)")
     p.add_argument("--sync-per-record", type=int, default=4,
