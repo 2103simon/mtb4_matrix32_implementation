@@ -534,7 +534,7 @@ def write_markdown_report(root, report):
         "", "### Time-resolved frequency check", "",
         "| Scope time (s) | CH1 measured (Hz) | ACK-indicated SF (Hz) | Difference (Hz) | Assessment |",
         "| ---: | ---: | ---: | ---: | --- |",
-    ]
+    ])
     # One row per second (or an anomalous window) keeps the report readable.
     selection = [w for i, w in enumerate(frequency["windows"]) if
                  i % max(1, round(1/frequency["step_s"])) == 0
