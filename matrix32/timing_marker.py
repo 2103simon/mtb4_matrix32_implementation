@@ -50,17 +50,15 @@ class SerialTimingMarker:
 
     def __init__(
         self,
-        port,
+        port=None,
         *,
         baudrate=DEFAULT_BAUDRATE,
         ack_timeout_s=DEFAULT_ACK_TIMEOUT_S,
         serial_factory=None,
     ):
-        if not port:
-            raise ValueError("Timing-marker serial port is required")
         if not 0 < float(ack_timeout_s) <= 2.0:
             raise ValueError("Timing-marker ACK timeout must be >0 and <=2 seconds")
-        self.port = str(port)
+        self.port = port
         self.baudrate = int(baudrate)
         self.ack_timeout_s = float(ack_timeout_s)
         self._serial_factory = serial_factory
@@ -80,6 +78,8 @@ class SerialTimingMarker:
                 ) from exc
             factory = serial.Serial
 
+        if self.port is None:
+            self.port = discover_timing_marker_port()
         self.serial = factory(
             self.port,
             self.baudrate,
