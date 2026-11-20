@@ -13,9 +13,13 @@ from pathlib import Path
 import queue
 import re
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
+
+# Allow direct invocation as python oscilloscope/test_gray_timecode.py.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from decode_gray_timecode import decode_csv
 from record_scope import (
@@ -183,7 +187,7 @@ def run(args, requested):
     }
     git = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
     metadata["git_commit"] = git.stdout.strip() if git.returncode == 0 else None
-    nano_started = False
+    nano_start_attempted = False
     try:
         port = (discover_timing_marker_port() if args.nano_port == "auto"
                 else args.nano_port)
@@ -199,8 +203,8 @@ def run(args, requested):
                 nano.command("STOP")
             # No automatic retry of START: ambiguous response may mean
             # generator already started. Preserve serial log on failure.
+            nano_start_attempted = True
             metadata["start_ack"] = nano.command("START")
-            nano_started = True
             print(f"[NANO] Gray-code timebase running ({metadata['start_ack']})",
                   flush=True)
             try:
@@ -250,7 +254,7 @@ def run(args, requested):
                             atomic_json(root / "metadata.json", metadata)
                 metadata["status"] = "complete"
             finally:
-                if nano_started:
+                if nano_start_attempted:
                     try:
                         metadata["stop_ack"] = nano.command("STOP", timeout=2.0)
                     except BaseException as exc:
