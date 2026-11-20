@@ -266,13 +266,17 @@ async def frequency_worker(sm, device, ready, taxel, receptor, *, arm,
                 continue  # Never START with no positive sensor request.
             if experimental_zero_current:
                 if not muted_current:
+                    # Operator bench result (2026-11-20): no CH1 pulses were
+                    # visible on the oscilloscope with SC1=0/SF=2.
+                    # This does not prove physical zero current for every
+                    # load, scope sensitivity or Matrix32 configuration.
                     # SC=0 MUST precede SF=2: no intentional rate increase
                     # while the original current is still configured.
                     await send_live_current(
                         device, 0, capture=capture, source_sample_ns=sample_ns
                     )
                     muted_current = True
-                    print("[SC ACK] SC1=0 accepted; electrical output UNVERIFIED")
+                    print("[SC ACK] SC1=0 accepted (no visible pulses in prior bench test; verify scope)")
                     if device.config["sf"] != 2:
                         if capture is not None:
                             capture.emit("sf_requested", frequency_hz=2,
