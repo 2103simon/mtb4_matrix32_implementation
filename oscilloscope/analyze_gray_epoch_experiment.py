@@ -36,7 +36,11 @@ def analyze(run_dir, *, max_scope_rms_us=100.0, max_host_rms_us=1000.0):
     if not records:
         raise ValueError("No oscilloscope records in metadata")
     frames = read_nano_frames(root / "nano_serial.jsonl")
-    alignment = build_alignment(meta, frames, max_rms_us=max_scope_rms_us)
+    # Preserve all valid Gray matches even when RMS quality is insufficient.
+    # Invalid counters/ambiguous matching still fail closed.
+    alignment = build_alignment(
+        meta, frames, max_rms_us=max_scope_rms_us, strict=False
+    )
     exchanges = read_active_exchanges(root / "nano_serial.jsonl")
     by_seq = {entry["seq"]: entry for entry in exchanges}
     if len(by_seq) != len(exchanges):
@@ -78,6 +82,12 @@ def analyze(run_dir, *, max_scope_rms_us=100.0, max_host_rms_us=1000.0):
             "sync_sequence_ids": ids,
             "status": "unqualified",
             "scope_edge_fit_rms_us": scope["clock_fit"]["edge_fit_rms_us"],
+            "scope_edge_fit_rms_threshold_us": max_scope_rms_us,
+            "scope_edge_fit_rms_below_threshold": scope[
+                "edge_fit_rms_below_threshold"],
+            "scope_edge_fit_rms_below_original_100us": (
+                scope["clock_fit"]["edge_fit_rms_us"] <= 100.0
+            ),
             "nominal_scope_capture_s": (
                 scope["nano_time_at_last_sample_s"]
                 - scope["nano_time_at_first_sample_s"]
@@ -105,6 +115,11 @@ def analyze(run_dir, *, max_scope_rms_us=100.0, max_host_rms_us=1000.0):
             entry["last_sample_host_monotonic_ns_est"] = round(
                 nano_us_to_host_ns(scope["nano_time_at_last_sample_s"]*1e6, fit)
             )
+            if not scope["edge_fit_rms_below_threshold"]:
+                entry["warnings"].append(
+                    f"Scope edge-fit RMS {entry['scope_edge_fit_rms_us']:.1f} us "
+                    f"exceeds analysis threshold {max_scope_rms_us:.1f} us"
+                )
             if not intersection["feasible"]:
                 entry["warnings"].append(
                     "No common causal offset at local fitted slope"
@@ -119,6 +134,12 @@ def analyze(run_dir, *, max_scope_rms_us=100.0, max_host_rms_us=1000.0):
                 )
             if entry["warnings"]:
                 entry["status"] = "unqualified"
+            elif not entry["scope_edge_fit_rms_below_original_100us"]:
+                entry["status"] = "exploratory_local_fit"
+                entry["warnings"].append(
+                    "Exceeds original 100 us Gray alignment criterion; "
+                    "diagnostic fit accepted only using relaxed analysis threshold"
+                )
             else:
                 entry["status"] = "provisional_local_fit"
         except ValueError as exc:
@@ -134,10 +155,18 @@ def analyze(run_dir, *, max_scope_rms_us=100.0, max_host_rms_us=1000.0):
             "decoded_frames_total": alignment["decoded_frames_total"],
             "scope_record_count": alignment["source_record_count"],
             "all_fit_rms_below_threshold": alignment["all_fit_rms_below_threshold"],
+            "threshold_us": max_scope_rms_us,
+            "original_100us_standard_met": all(
+                row["scope_edge_fit_rms_below_original_100us"]
+                for row in reports
+            ),
         },
         "records": reports,
         "qualified_provisional_records": sum(
             row["status"] == "provisional_local_fit" for row in reports
+        ),
+        "exploratory_local_fit_records": sum(
+            row["status"] == "exploratory_local_fit" for row in reports
         ),
         "host_clock_synchronization_verified": False,
         "physical_sample_gaps_recovered": False,
@@ -169,7 +198,8 @@ def main(argv=None):
     output = args.run_dir / "epoch_clock_analysis.json"
     atomic_json(output, report)
     print(f"[EPOCH] {report['run_id']}: {len(report['records'])} records, "
-          f"{report['qualified_provisional_records']} provisional local fits")
+          f"{report['qualified_provisional_records']} provisional local fits, "
+          f"{report['exploratory_local_fit_records']} exploratory local fits")
     for row in report["records"]:
         fit = row.get("fit")
         summary = (f"drift {fit['drift_ppm_nano_to_host']:.1f} ppm, "
@@ -177,6 +207,7 @@ def main(argv=None):
                    if fit else "no valid clock fit")
         print(f"[EPOCH {row['record_index']}] {row['status']}, "
               f"{row['pre_sync_count']}+{row['post_sync_count']} SYNC, "
+              f"scope RMS {row['scope_edge_fit_rms_us']:.1f} us, "
               f"{summary}")
         if row["warnings"]:
             print("    WARN: " + "; ".join(row["warnings"]))
