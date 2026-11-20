@@ -169,3 +169,68 @@ resulting clock quality report. Run offline reanalysis as needed:
   oscilloscope/analyze_gray_epoch_experiment.py \
   data/recordings/<YOUR_INTEGRATED_RUN>
 ```
+
+
+## Offline visualization and printed summary of the latest run
+
+The integrated analyzer reuses `analyze_mcu_recording.load_recordings()`
+to load MCU rates and experiment settings, and reads the saved Matrix32
+BLE trace plus CH1 physical waveform. **It never opens hardware**.
+
+From the repository root:
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python -m unittest discover \
+  -s tests -p 'test_analyze_integrated_matrix32.py' -v
+
+# Automatically select the newest COMPLETED integrated capture
+/home/icub/.virtualenvs/matrix32/bin/python -u \
+  oscilloscope/analyze_integrated_matrix32.py
+
+# Or explicitly analyze the first complete pre-armed test
+/home/icub/.virtualenvs/matrix32/bin/python -u \
+  oscilloscope/analyze_integrated_matrix32.py \
+  --run-dir data/recordings/20261120T144806568426Z_integrated_matrix32_scope
+```
+
+Optional diagnostic zoom and threshold:
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python -u \
+  oscilloscope/analyze_integrated_matrix32.py \
+  --taxel 11 --zoom-start-s 5 --zoom-sec 0.2 \
+  --threshold-v 2 --deadtime-ms 1
+```
+
+The analyzer prints the exact selected run directory, physical CH1
+voltage range and sample count, number and per-second rate of candidate
+positive CH1 pulses, median pulse-to-pulse interval, MCU arrival cadence,
+selected taxel and encoded requested rate range, Matrix32 command/ACK
+event counts and scope/Nano clock-fit status. Note that the MCU input
+update cadence is not the physical Matrix32 output frequency.
+
+It saves `analysis/integrated_overview.png`,
+`analysis/matrix32_pulse_zoom.png` and
+`analysis/integrated_summary.json` **inside the selected run folder**.
+The overview uses a min/max waveform envelope so narrow electrical
+pulses are not lost when one million samples are plotted at screen scale.
+The zoom shows actual CH1 samples without decimation.
+
+The default pulse detector records positive threshold crossings with
+hysteresis and a 1 ms deadtime. This is a provisional event detector,
+not certified complete biphasic pulse reconstruction; change the
+threshold only after inspecting CH1 amplitude and noise. A flat or
+saturated waveform invalidates physical rate interpretations.
+
+When available, the scope-to-Nano and Nano-to-host affine mapping
+provides **provisional host-time placement** of MCU rates and BLE
+requests alongside the scope waveform. The plots label this explicitly
+even when the record is `unqualified`. Neither BLE ACKs nor host
+arrival times are physical stimulation-edge timestamps. The plot is
+not evidence of sub-millisecond absolute latency.
+
+The 20261120T144806568426Z initial integrated session reported
+111.6 us scope-to-Nano RMS and -846.6 ppm Nano-to-PC drift; the saved
+record was correctly marked **unqualified under the original
+100 us Gray-fit threshold**. This does not prevent diagnostic
+visualization or count-based CH1 waveform analysis.
