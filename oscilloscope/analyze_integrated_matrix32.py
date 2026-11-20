@@ -28,6 +28,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from analyze_mcu_recording import choose_recording, load_recordings
 from oscilloscope.record_scope import atomic_json
+from oscilloscope.matrix32_dynamic_frequency import (
+    analyze_dynamic_cycles, plot_dynamic_tracking,
+)
 
 
 def choose_run(output_root, run_dir=None):
@@ -189,8 +192,8 @@ def make_plots(root, t, volts, starts, mcu, events, mapping,
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    output = root / "analysis"
-    output.mkdir(exist_ok=True)
+    output = root / "analysis" / "record_00001"
+    output.mkdir(parents=True, exist_ok=True)
     selected = mcu.get("experiment_settings", {}).get("configuration", {}).get(
         "stimulation_source", {})
     enc = selected.get("encoding", "sa_ii")
@@ -234,6 +237,9 @@ def make_plots(root, t, volts, starts, mcu, events, mapping,
         axes[3].legend(loc="upper right", fontsize=8)
     for ax in axes:
         ax.grid(alpha=0.2)
+    if mapping:
+        for ax in axes:
+            ax.set_xlim(float(t[0]), float(t[-1]))
     title = "Integrated Matrix32 / MCU: " + root.name
     title += ("\nPROVISIONAL cross-clock overlay (USB offset uncalibrated)"
               if mapping else "\nNO scope-to-host map: panels 3–4 use local MCU time")
@@ -463,7 +469,7 @@ def plot_frequency_comparison(root, windows, compared, mapping):
     ax.set_title("Measured CH1 vs ACK-indicated SF — provisional time mapping")
     ax.grid(alpha=0.25)
     ax.legend()
-    output = root / "analysis" / "matrix32_frequency_comparison.png"
+    output = root / "analysis" / "record_00001" / "matrix32_frequency_comparison.png"
     fig.savefig(output, dpi=150)
     plt.close(fig)
     return str(output)
@@ -630,6 +636,9 @@ def summarize(root, meta, *, threshold_v=2, deadtime_ms=1, taxel=None,
         windows, ack_states, mapping, float(t[0]), float(t[-1]),
         frequency_tolerance_hz, frequency_tolerance_fraction,
     )
+    dynamic = analyze_dynamic_cycles(
+        starts, ack_states, mapping, float(t[0]), float(t[-1]),
+    )
     assessments = Counter(w["assessment"] for w in comparisons)
     report = {
         "schema_version": 1,
@@ -669,6 +678,7 @@ def summarize(root, meta, *, threshold_v=2, deadtime_ms=1, taxel=None,
             "physical_output_verified_off": False,
         },
         "clock_mapping": mapping,
+        "dynamic_tracking": dynamic,
         "frequency_comparison": {
             "window_s": frequency_window_s,
             "step_s": frequency_step_s,
@@ -704,6 +714,12 @@ def summarize(root, meta, *, threshold_v=2, deadtime_ms=1, taxel=None,
     report["plots"].append(
         plot_frequency_comparison(root, windows, comparisons, mapping)
     )
+    report["plots"].append(
+        plot_dynamic_tracking(
+            root / "analysis" / "record_00001" / "matrix32_dynamic_tracking.png",
+            dynamic, ack_states, mapping, float(t[0]), float(t[-1]),
+        )
+    )
     report["markdown_report"] = str(root / "analysis" / "integrated_report.md")
     atomic_json(root / "analysis" / "integrated_summary.json", report)
     write_markdown_report(root, report)
@@ -725,6 +741,15 @@ def summarize(root, meta, *, threshold_v=2, deadtime_ms=1, taxel=None,
              if len(d) else ""))
     print(f"[BLE] {len(events)} trace events: {dict(counts)}")
     freq = report["frequency_comparison"]
+    print(f"[DYNAMIC] {dynamic['classified']}/{dynamic['complete_intervals']} "
+          f"physical pulse intervals provisionally comparable; "
+          f"{dynamic['compatible']} compatible, {dynamic['discrepant']} discrepant; "
+          f"{dynamic['not_comparable']} transition/unknown")
+    if dynamic['median_absolute_error_hz'] is not None:
+        print(f"[DYNAMIC] median |measured - ACK-indicated| = "
+              f"{dynamic['median_absolute_error_hz']:.2f} Hz; "
+              f"{dynamic['compatibility_fraction']:.1%} inside tolerance "
+              "(NOT an absolute latency measurement)")
     print(f"[FREQUENCY] {freq['comparable_windows']} settled windows: "
           f"{freq['compatible_windows']} compatible, "
           f"{freq['discrepant_windows']} discrepant (PROVISIONAL); "
