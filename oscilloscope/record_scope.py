@@ -248,7 +248,19 @@ def acquire(f, timeout, on_armed=None, *, on_progress=None):
         if on_progress is not None:
             on_progress(snapshot())
         time.sleep(0.1)
-    raise TimeoutError("No completed single-sequence acquisition")
+    last = snapshot()
+    if on_progress is not None:
+        on_progress(last)
+    last_state = observations[-1]["value"] if observations else "UNKNOWN"
+    trigger_state = (
+        trigger_observations[-1]["value"] if trigger_observations else "NOT_QUERIED"
+    )
+    raise TimeoutError(
+        f"No completed single-sequence acquisition after {last['elapsed_s']:.2f}s; "
+        f"last ACQuire:STATE={last_state}, TRIGger:STATE={trigger_state}. "
+        "The instrument may be waiting for a trigger or processing a long record. "
+        "Review the per-record acquisition observations."
+    )
 
 
 def validate_csv(path, points):
