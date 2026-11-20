@@ -1,4 +1,5 @@
 """Device-free tests of per-record Nano SYNC epochs and safe bench plan."""
+import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -9,7 +10,14 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "oscilloscope"))
 from analyze_gray_epoch_experiment import analyze
 from test_gray_timecode import parser, plan
-from test_gray_epoch_pause import main as epoch_main
+# Explicitly load the bench entrypoint under a distinct module name.
+# unittest imports THIS test file as "test_gray_epoch_pause", otherwise a
+# normal import of that name resolves back to this partially loaded file.
+_bench_path = Path(__file__).resolve().parents[1] / "oscilloscope" / "test_gray_epoch_pause.py"
+_bench_spec = importlib.util.spec_from_file_location("gray_epoch_pause_bench", _bench_path)
+_bench_module = importlib.util.module_from_spec(_bench_spec)
+_bench_spec.loader.exec_module(_bench_module)
+epoch_main = _bench_module.main
 
 
 def make_recording(root, *, broken_post=False):
@@ -117,7 +125,7 @@ class EpochExperimentTests(unittest.TestCase):
                     analyze(td)
 
     def test_default_bench_plan_never_opens_hardware(self):
-        with patch("test_gray_epoch_pause.gray_main") as wrapped:
+        with patch.object(_bench_module, "gray_main") as wrapped:
             epoch_main([])
         argv = wrapped.call_args.args[0]
         self.assertEqual(argv[argv.index("--count")+1], "3")
