@@ -241,6 +241,12 @@ def parser():
                    help="Initial SYNC exchanges (0 for old firmware)")
     p.add_argument("--sync-per-record", type=int, default=4,
                    help="Additional SYNC exchanges after each recording")
+    p.add_argument("--per-record-epochs", action="store_true",
+                   help="Collect fresh pre/post SYNC batches for EACH scope record")
+    p.add_argument("--epoch-sync-count", type=int, default=30,
+                   help="SYNC exchanges before AND after each record in epoch mode")
+    p.add_argument("--pause-between-s", type=float, default=0.0,
+                   help="Deliberate wait after each transfer, before next arming")
     p.add_argument("--label", default="gray_marker_baseline")
     p.add_argument("--output-root", type=Path, default=Path("data/recordings"))
     p.add_argument("--run", action="store_true")
@@ -260,6 +266,10 @@ def plan(args, p):
         p.error("invalid --acquire-timeout")
     if not 0 <= args.sync_count <= 200 or not 0 <= args.sync_per_record <= 50:
         p.error("SYNC counts must be 0..200 initial and 0..50 per record")
+    if not 8 <= args.epoch_sync_count <= 200:
+        p.error("--epoch-sync-count must be 8..200")
+    if not math.isfinite(args.pause_between_s) or not 0 <= args.pause_between_s <= 3600:
+        p.error("--pause-between-s must be 0..3600 seconds")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.label):
         p.error("invalid --label")
     # record_scope.configure()/verify() interface (no Matrix32 settings).
@@ -284,6 +294,9 @@ def plan(args, p):
         "sync_transport": args.sync_transport,
         "sync_count": args.sync_count,
         "sync_per_record": args.sync_per_record,
+        "per_record_epochs": args.per_record_epochs,
+        "epoch_sync_count": args.epoch_sync_count if args.per_record_epochs else None,
+        "pause_between_s": args.pause_between_s,
     }
 
 
@@ -322,10 +335,11 @@ def run(args, requested):
             metadata["sync_measurements"] = []
             sync_method = (nano.binary_sync_exchange if args.sync_transport == "binary"
                            else nano.sync_exchange)
-            for _ in range(args.sync_count):
-                metadata["sync_measurements"].append(sync_method())
-            print(f"[SYNC] Collected {len(metadata['sync_measurements'])} initial exchanges",
-                  flush=True)
+            if not args.per_record_epochs:
+                for _ in range(args.sync_count):
+                    metadata["sync_measurements"].append(sync_method())
+                print(f"[SYNC] Collected {len(metadata['sync_measurements'])} initial exchanges",
+                      flush=True)
             try:
                 node = resolve_scope_device(args.scope_device)
                 metadata["scope_node"] = str(node)
@@ -342,9 +356,39 @@ def run(args, requested):
                         row = {"index": index, "status": "started", "started_utc": utc()}
                         metadata["records"].append(row)
                         try:
+                            if args.per_record_epochs:
+                                # The Arduino and its Gray counter keep running.
+                                # New estimator epoch = disjoint SYNC sample IDs.
+                                # Capture pre-arm stamps and post-acquisition stamps
+                                # before downloading the waveform (which can be slow).
+                                epoch = {
+                                    "epoch_id": index, "status": "started",
+                                    "clock_domain": "PC monotonic ns",
+                                    "pre_sync_sequence_ids": [],
+                                    "post_sync_sequence_ids": [],
+                                }
+                                row["clock_epoch"] = epoch
+                                for _ in range(args.epoch_sync_count):
+                                    measurement = sync_method()
+                                    metadata["sync_measurements"].append(measurement)
+                                    epoch["pre_sync_sequence_ids"].append(measurement["sequence_id"])
+                                epoch["pre_sync_end_host_monotonic_ns"] = time.monotonic_ns()
+                                print(f"[EPOCH {index}] pre-arm SYNC: "
+                                      f"{len(epoch['pre_sync_sequence_ids'])}", flush=True)
                             t0 = time.monotonic()
+                            row["arm_request_monotonic_ns"] = time.monotonic_ns()
                             row["acquisition"] = acquire(f, args.acquire_timeout)
                             row["acquisition_host_s"] = time.monotonic() - t0
+                            row["acquisition_completed_monotonic_ns"] = time.monotonic_ns()
+                            if args.per_record_epochs:
+                                for _ in range(args.epoch_sync_count):
+                                    measurement = sync_method()
+                                    metadata["sync_measurements"].append(measurement)
+                                    epoch["post_sync_sequence_ids"].append(measurement["sequence_id"])
+                                epoch["post_sync_end_host_monotonic_ns"] = time.monotonic_ns()
+                                epoch["status"] = "collected"
+                                print(f"[EPOCH {index}] post-acquisition SYNC: "
+                                      f"{len(epoch['post_sync_sequence_ids'])}", flush=True)
                             row["channels"] = {}
                             for ch in (2,):
                                 file = root / "waveforms" / f"record_{index:05d}_ch{ch}.csv"
@@ -360,8 +404,9 @@ def run(args, requested):
                             row["decoded_gray"] = decode_csv(marker_csv)
                             row["status"] = "captured"
                             row["completed_utc"] = utc()
-                            for _ in range(args.sync_per_record):
-                                metadata["sync_measurements"].append(sync_method())
+                            if not args.per_record_epochs:
+                                for _ in range(args.sync_per_record):
+                                    metadata["sync_measurements"].append(sync_method())
                             print(
                                 f"[GRAY] Record {index}: "
                                 f"{row['decoded_gray']['decoded_frame_count']} complete frames; "
@@ -372,6 +417,17 @@ def run(args, requested):
                             row["error"] = f"{type(exc).__name__}: {exc}"
                             raise
                         finally:
+                            atomic_json(root / "metadata.json", metadata)
+                        if index < args.count and args.pause_between_s:
+                            pause_start = time.monotonic_ns()
+                            print(f"[PAUSE] {args.pause_between_s:.1f} s before record "
+                                  f"{index+1}; Nano remains running", flush=True)
+                            time.sleep(args.pause_between_s)
+                            row["pause_after_transfer"] = {
+                                "requested_s": args.pause_between_s,
+                                "start_monotonic_ns": pause_start,
+                                "end_monotonic_ns": time.monotonic_ns(),
+                            }
                             atomic_json(root / "metadata.json", metadata)
                 metadata["status"] = "complete"
             finally:
