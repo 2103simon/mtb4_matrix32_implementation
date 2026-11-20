@@ -212,6 +212,20 @@ Examples:
 
 Relevant offline tests: `test_tactile_stimulation.py` and `test_matrix32_capture.py`. No hardware behavior for SF=0 has been validated by these tests.
 
+## Bench-only zero-current workaround: SC1=0 with SF=2
+
+The previous `--experimental-sf-zero` protocol trial did not produce the intended physical zero-frequency behavior. There is now an **alternative, separate** opt-in `--experimental-zero-current` mode. This is not a qualified electrical-off command; it must be tested on a dummy load and oscilloscope. It cannot be combined with `--experimental-sf-zero`.
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python run_tactile_stimulation.py --arm --record --experimental-zero-current
+```
+
+After a normal initial positive-frequency START, when the MCU rate drops below 2 Hz, the worker performs a single **ACK-verified live SC vector update with CH1 current command 0**, then **ACK-verified SF=2** (if it is not already 2). No STOP or START is issued for this intentional zero. While the input remains zero, it sends no duplicate commands. On the next positive input, the worker first updates SF to the selected positive rate **while current is still commanded 0**, then restores the saved positive CH1 current through another ACK-verified live SC vector update. Other channels remain disabled. Every SC/SF request and response includes host-monotonic metadata and detailed ACK evidence when `--record` is provided. On a transport error or loss of input, the existing independent STOP supervisor and shutdown still issue STOP.
+
+The new `Matrix32Device.apply_live_current(1, value)` closely follows the reference repository's ACK-gated live SW method: it sends the normal **69-byte, 32 x uint16 SC vector** over ATT Write Request with one positive application-level indication, serialized under the same configuration lock. This is intentionally separate from `set_channel_current()+apply()`, which would transmit all configuration fields, and separate from the optimized SF persistent write path. Switching SC may be slower than an SF update, but should avoid repeating the full configuration/START sequence. The method captures write and ACK evidence, preserves unchanged configuration, and fails closed on missing/negative ACK. The reference experiments validated SC configuration writes with output **OFF**; they did **not** qualify SC=0 updates while active.
+
+**Safety limitation:** firmware `>OK<` for SC1=0 is only protocol acceptance; it does not guarantee true zero output current, zero delivered charge, zero residual pulses, or safe reactivation. The device may reject SC0, continue producing pulses, retain an old current, or behave unexpectedly. On any mismatch, immediately STOP and inspect the waveform. Validate 50 -> 0 -> 50 Hz requests, trace CH1 current proxy/voltage, measure command-to-output transition latency, and confirm STOP on stale sensor data. The user-visible log says *current commanded zero*, not *output off*.
+
 ## Next increments
 
 - Measure whether 119 bytes/sample and diagnostic traffic introduce USB queueing at observed ~70 Hz.
