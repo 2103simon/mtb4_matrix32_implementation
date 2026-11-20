@@ -137,13 +137,17 @@ def read_events(path):
         return [json.loads(line) for line in f if line.strip()]
 
 
-def tentative_host_map(root):
+def tentative_host_map(root, record_index=1):
     file = root / "epoch_clock_analysis.json"
     if not file.exists():
         return None
     try:
         report = json.loads(file.read_text(encoding="utf-8"))
-        row = report["records"][0]
+        matches = [item for item in report["records"]
+                   if int(item["record_index"]) == int(record_index)]
+        if len(matches) != 1:
+            return None
+        row = matches[0]
         fit = row.get("fit")
         start = row.get("first_sample_host_monotonic_ns_est")
         end = row.get("last_sample_host_monotonic_ns_est")
@@ -187,12 +191,12 @@ def envelope(t, v, max_bins=4000):
 
 
 def make_plots(root, t, volts, starts, mcu, events, mapping,
-               taxel, zoom_start, zoom_sec):
+               taxel, zoom_start, zoom_sec, record_index=1):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    output = root / "analysis" / "record_00001"
+    output = root / "analysis" / f"record_{record_index:05d}"
     output.mkdir(parents=True, exist_ok=True)
     selected = mcu.get("experiment_settings", {}).get("configuration", {}).get(
         "stimulation_source", {})
@@ -207,7 +211,7 @@ def make_plots(root, t, volts, starts, mcu, events, mapping,
     axes[1].hist(starts, bins=np.arange(t[0], t[-1]+1.01, 1),
                  align="left", rwidth=0.95)
     axes[1].set_ylabel("CH1 positive events\nper 1 s bin")
-    if t_mcu is not None:
+    if t_mcu is not None and len(t_mcu):
         axes[2].plot(t_mcu, mcu["taxel_data"][:, taxel], linewidth=0.8)
         axes[3].plot(t_mcu, hz[:, taxel], linewidth=0.8,
                      label=f"MCU {enc} requested rate")
@@ -222,25 +226,21 @@ def make_plots(root, t, volts, starts, mcu, events, mapping,
                 axes[3].scatter(xs, np.interp(xs, t_mcu, hz[:, taxel]),
                                 marker="|", s=35, label=name, color=color)
     else:
-        local = mcu["taxel_corrected_timestamps"] / 1000
-        axes[2].plot(local, mcu["taxel_data"][:, taxel], linewidth=0.8)
-        axes[3].plot(local, hz[:, taxel], linewidth=0.8)
-        axes[2].text(0.01, 0.95, "MCU time only; NOT aligned to scope",
-                     transform=axes[2].transAxes, va="top")
-        axes[3].text(0.01, 0.95, "MCU time only; NOT aligned to scope",
-                     transform=axes[3].transAxes, va="top")
+        for ax in axes[2:]:
+            ax.text(0.02, 0.85,
+                    "MCU overlap unavailable — no usable per-record clock map "
+                    "or no overlapping samples. See independent full MCU plot.",
+                    transform=ax.transAxes, va="top", wrap=True)
     axes[2].set_ylabel(f"Taxel {taxel} (0–255)")
     axes[3].set_ylabel(f"MCU {enc} request (Hz)")
-    axes[3].set_xlabel("Scope waveform time (s)" if mapping else
-                       "Separate local times (NOT aligned)")
+    axes[3].set_xlabel("Time within THIS scope record (s)")
     if mapping:
         axes[3].legend(loc="upper right", fontsize=8)
     for ax in axes:
         ax.grid(alpha=0.2)
-    if mapping:
-        for ax in axes:
-            ax.set_xlim(float(t[0]), float(t[-1]))
-    title = "Integrated Matrix32 / MCU: " + root.name
+    for ax in axes:
+        ax.set_xlim(float(t[0]), float(t[-1]))
+    title = f"Integrated Matrix32 / MCU: {root.name}, record {record_index}"
     title += ("\nPROVISIONAL cross-clock overlay (USB offset uncalibrated)"
               if mapping else "\nNO scope-to-host map: panels 3–4 use local MCU time")
     fig.suptitle(title)
@@ -443,7 +443,7 @@ def summarize_frequency_by_ack(comparisons, states):
     return result
 
 
-def plot_frequency_comparison(root, windows, compared, mapping):
+def plot_frequency_comparison(root, windows, compared, mapping, record_index=1):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -469,15 +469,20 @@ def plot_frequency_comparison(root, windows, compared, mapping):
     ax.set_title("Measured CH1 vs ACK-indicated SF — provisional time mapping")
     ax.grid(alpha=0.25)
     ax.legend()
-    output = root / "analysis" / "record_00001" / "matrix32_frequency_comparison.png"
+    output = (root / "analysis" / f"record_{record_index:05d}"
+              / "matrix32_frequency_comparison.png")
     fig.savefig(output, dpi=150)
     plt.close(fig)
     return str(output)
 
 
-def write_markdown_report(root, report):
+def write_markdown_report(root, report, *, record_index=1, per_record=False):
     """Short, question-oriented report; full detail stays in JSON."""
-    out = root / "analysis" / "integrated_report.md"
+    out = (root / "analysis" / f"record_{record_index:05d}" / "report.md"
+           if per_record else root / "analysis" / "integrated_report.md")
+    image_prefix = "" if per_record else f"record_{record_index:05d}/"
+    waveform_prefix = "../../" if per_record else "../"
+    json_link = "summary.json" if per_record else "integrated_summary.json"
     scope = report["scope"]
     mcu = report["mcu"]
     pulses = scope["pulse_detection"]
@@ -531,7 +536,7 @@ def write_markdown_report(root, report):
         f"| Median absolute frequency difference | "
         f"{fmt(dynamic['median_absolute_error_hz'], ' Hz')} |",
         "",
-        "![Dynamic per-pulse tracking](record_00001/matrix32_dynamic_tracking.png)", "",
+        "![Dynamic per-pulse tracking]({image_prefix}matrix32_dynamic_tracking.png)", "",
         "### Where did it match and where did it differ?", "",
         "These are the **most frequently observed ACK frequencies among "
         "comparable pulse intervals**, not a certification of steady-state "
@@ -558,11 +563,11 @@ def write_markdown_report(root, report):
         "not failed. The sliding rate curve is still useful to visualize "
         "overall frequency trends.",
         "",
-        "![Sliding physical rate](record_00001/matrix32_frequency_comparison.png)", "",
+        "![Sliding physical rate]({image_prefix}matrix32_frequency_comparison.png)", "",
         "## Sensor and waveform context", "",
-        "![Scope waveform and MCU traces](record_00001/integrated_overview.png)", "",
+        "![Scope waveform and MCU traces]({image_prefix}integrated_overview.png)", "",
         "### Un-decimated voltage detail", "",
-        "![Pulse zoom](record_00001/matrix32_pulse_zoom.png)", "",
+        "![Pulse zoom]({image_prefix}matrix32_pulse_zoom.png)", "",
         "## Clock and data quality", "",
         f"- Scope-to-Nano Gray fit RMS: "
         f"**{fmt(clock.get('scope_rms_us') if clock else None, ' µs')}**.",
@@ -583,9 +588,9 @@ def write_markdown_report(root, report):
         "and minimum event spacing; inspect the waveform if counts look wrong.",
         "", "## Raw files and next checks", "",
         "- Full statistics, individual cycle classifications and raw ACK "
-        "states: [integrated_summary.json](integrated_summary.json).",
-        f"- Physical [CH1](../{scope['ch1_path']}) and "
-        f"Gray [CH2](../{scope['ch2_path']}) CSV files.",
+        f"states: [{json_link}]({json_link}).",
+        f"- Physical [CH1]({waveform_prefix}{scope['ch1_path']}) and "
+        f"Gray [CH2]({waveform_prefix}{scope['ch2_path']}) CSV files.",
         "- To validate *steady-state* SF accuracy, do a separate dummy-load "
         "run with several-second plateaus at fixed frequencies; live variable "
         "SF updates are too rapid for 1-second steady-state windows.",
