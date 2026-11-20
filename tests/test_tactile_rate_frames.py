@@ -8,6 +8,7 @@ import struct
 import tempfile
 import unittest
 import zlib
+from unittest.mock import patch
 
 from communication.serial_manager import SerialManager
 from recording.data_recorder import DataRecorder
@@ -33,6 +34,22 @@ class TactileRateFrameTest(unittest.TestCase):
     def feed(self, data):
         self.sm._rx_buffer.extend(data)
         self.sm._process_rx_buffer(987654321)
+
+    def test_compensation_uses_same_pc_monotonic_clock_as_recording(self):
+        self.sm.set_config({
+            "clock_compensation": {
+                "enabled": True, "adaptive_enabled": True,
+                "sample_source": "taxel",
+            },
+            "clock_drift_monitor": {"mode": "monitor"},
+        })
+        with patch("communication.serial_manager.time.time_ns",
+                   side_effect=AssertionError("wall clock must not be used")):
+            self.feed(frame_05(timestamp=12345))
+        self.assertEqual(self.sm._clock_compensator._fit_pc_anchor_ns, 987654321)
+        kind, snapshot = self.sm.data_queue.get_nowait()
+        self.assertEqual(kind, "tactile_rates")
+        self.assertEqual(snapshot["pc_arrival_monotonic_ns"], 987654321)
 
     def test_decode_rate_snapshot(self):
         self.feed(frame_05())
