@@ -10,7 +10,7 @@ CONFIG = {
     "tactile_encoding": {"raThreshold": 3, "saMaxFrequencyHz": 150},
     "stimulation_source": {"taxel": 0, "encoding": "sa_ii"},
     "stimulation_control": {"record": True, "armed": True,
-                            "experimental_zero_current": True},
+                            "zero_request_strategy": "SC1=0_then_SF=2; restore_SF_then_SC1"},
 }
 
 
