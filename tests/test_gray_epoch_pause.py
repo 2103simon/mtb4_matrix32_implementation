@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "oscilloscope"))
 from analyze_gray_epoch_experiment import analyze
+from align_gray_records import build_alignment, fit_affine
 from test_gray_timecode import parser, plan
 from record_scope import configure, verify
 # Explicitly load the bench entrypoint under a distinct module name.
@@ -75,6 +76,7 @@ def make_recording(root, *, broken_post=False):
         scope_records.append({
             "record_index": idx,
             "clock_fit": {"edge_fit_rms_us": 20.0},
+            "edge_fit_rms_below_threshold": True,
             "nano_time_at_first_sample_s": (epoch_start_us+8_000_000)/1e6,
             "nano_time_at_last_sample_s": (epoch_start_us+38_000_000)/1e6,
         })
@@ -89,6 +91,40 @@ def make_recording(root, *, broken_post=False):
 
 
 class EpochExperimentTests(unittest.TestCase):
+    def test_local_fit_exploratory_when_scope_rms_above_original_limit(self):
+        with tempfile.TemporaryDirectory() as td:
+            scope_alignment = make_recording(td)
+            scope_alignment["records"][0]["clock_fit"]["edge_fit_rms_us"] = 102.0
+            with patch("analyze_gray_epoch_experiment.read_nano_frames",
+                       return_value={}), patch(
+                           "analyze_gray_epoch_experiment.build_alignment",
+                           return_value=scope_alignment):
+                _, report = analyze(td, max_scope_rms_us=150)
+            self.assertEqual(report["qualified_provisional_records"], 2)
+            self.assertEqual(report["exploratory_local_fit_records"], 1)
+            self.assertFalse(
+                report["scope_to_nano_alignment"]["original_100us_standard_met"]
+            )
+            row = report["records"][0]
+            self.assertEqual(row["status"], "exploratory_local_fit")
+            self.assertIn("fit", row)
+
+    def test_scope_rms_gate_does_not_hide_clock_diagnostics(self):
+        with tempfile.TemporaryDirectory() as td:
+            scope_alignment = make_recording(td)
+            scope_alignment["records"][0]["clock_fit"]["edge_fit_rms_us"] = 102.0
+            scope_alignment["records"][0]["edge_fit_rms_below_threshold"] = False
+            with patch("analyze_gray_epoch_experiment.read_nano_frames",
+                       return_value={}), patch(
+                           "analyze_gray_epoch_experiment.build_alignment",
+                           return_value=scope_alignment):
+                _, report = analyze(td)
+            self.assertEqual(report["records"][0]["status"], "unqualified")
+            self.assertIn("fit", report["records"][0])
+            self.assertEqual(report["qualified_provisional_records"], 2)
+            self.assertTrue(any("exceeds analysis threshold" in warning
+                for warning in report["records"][0]["warnings"]))
+
     def test_left_edge_trigger_scpi_order_and_readback(self):
         p = parser()
         args = p.parse_args([])
