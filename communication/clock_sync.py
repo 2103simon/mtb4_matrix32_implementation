@@ -171,7 +171,8 @@ def active_clock_fit(exchanges, *, min_samples=8, min_span_s=5.0):
     report.update({
         "method": "four_timestamp_sync_weighted_affine",
         "offset_calibrated": True,
-        "host_clock_synchronized": True,
+        "host_clock_synchronized": False,
+        "host_clock_mapping_estimated": True,
         "assumption": (
             "Midpoint regression assumes limited transport asymmetry. "
             "Per-exchange halfwidth is a causal interval, conditional on "
@@ -187,7 +188,7 @@ def active_clock_fit(exchanges, *, min_samples=8, min_span_s=5.0):
 
 def nano_us_to_host_ns(nano_us, fit):
     """Estimate PC monotonic nanoseconds; meaningful only for active fit."""
-    if not fit.get("host_clock_synchronized"):
+    if not fit.get("host_clock_mapping_estimated"):
         raise ValueError("Passive observations do not calibrate Nano->host offset")
     return (fit["anchor_host_monotonic_ns"]
             + fit["relative_offset_ns"]
