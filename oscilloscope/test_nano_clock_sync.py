@@ -21,6 +21,8 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--duration-s", type=float, default=30.0)
     p.add_argument("--sync-interval-s", type=float, default=0.25)
+    p.add_argument("--sync-transport", choices=("text", "binary"), default="text",
+                   help="Choose legacy text or experimental CRC32 binary SYNC")
     p.add_argument("--nano-port", default=None, help="Optional device override")
     p.add_argument("--output-root", type=Path, default=Path("data/recordings"))
     p.add_argument("--run", action="store_true", help="Open Nano and issue START/SYNC/STOP")
@@ -41,6 +43,7 @@ def main(argv=None):
         "port": device, "duration_requested_s": args.duration_s,
         "sync_interval_requested_s": args.sync_interval_s,
         "clock": "time.monotonic_ns",
+        "sync_transport": args.sync_transport,
         "status": "started",
     }
     print(f"[NANO] {device}", flush=True)
@@ -58,7 +61,10 @@ def main(argv=None):
                 end = time.monotonic() + args.duration_s
                 metadata["sync_count"] = 0
                 while time.monotonic() < end:
-                    nano.sync_exchange()
+                    if args.sync_transport == "binary":
+                        nano.binary_sync_exchange()
+                    else:
+                        nano.sync_exchange()
                     metadata["sync_count"] += 1
                     remaining = end - time.monotonic()
                     if remaining > 0:
