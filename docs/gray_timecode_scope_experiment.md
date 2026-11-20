@@ -45,15 +45,28 @@ are not exact scope-edge timestamps.
    to Matrix32 electrodes or stimulation outputs. A future Matrix32
    integration requires a reviewed isolated/differential measurement path.
 
-Use an explicit Nano serial port when the Feather M4 is also connected:
+Nano and Feather USB serial ports are now selected **by board identity**,
+not by the volatile /dev/ttyACM index. The shared detector reports the
+resolved path for each:
 
 ```bash
-ls -l /dev/serial/by-id/
+/home/icub/.virtualenvs/matrix32/bin/python -m communication.serial_ports
 ```
 
-The previously copied `matrix32.timing_marker.discover_timing_marker_port`
-is used for `--nano-port auto`; it fails if there are multiple ambiguous
-Arduino-like USB serial devices.
+`--nano-port auto` is the default. `config/config.json` now also
+uses `serial.port = "auto"` for the Feather M4. The detector inspects
+pyserial USB descriptors without opening the devices, requires an
+unambiguous Nano Every / Feather M4 match, and fails with diagnostics
+rather than selecting another Arduino or serial adapter. Explicit
+port overrides remain supported.
+
+If device descriptors cannot distinguish the boards, inspect:
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python -m serial.tools.list_ports -v
+```
+
+Then specify the port manually rather than guessing.
 
 ## 2. Timecode wire protocol
 
@@ -113,15 +126,15 @@ Dry run (does **not** open hardware):
 
 ```bash
 /home/icub/.virtualenvs/matrix32/bin/python oscilloscope/test_gray_timecode.py \
-  --nano-port /dev/ttyACM0 --count 1
+  --nano-port auto --count 1
 ```
 
-Use the **actual** Nano port in place of `/dev/ttyACM0`:
+With automatic Nano discovery enabled:
 
 ```bash
 timeout 120s /home/icub/.virtualenvs/matrix32/bin/python -u \
   oscilloscope/test_gray_timecode.py \
-  --nano-port /dev/ttyACM0 --scope-device auto \
+  --nano-port auto --scope-device auto \
   --points 100000 --time-div-us 20000 \
   --count 1 --label gray_ch2_single --run
 ```
@@ -149,7 +162,7 @@ Once the single-record test succeeds:
 ```bash
 timeout 180s /home/icub/.virtualenvs/matrix32/bin/python -u \
   oscilloscope/test_gray_timecode.py \
-  --nano-port /dev/ttyACM0 --scope-device auto \
+  --nano-port auto --scope-device auto \
   --points 1000000 --time-div-us 200000 \
   --count 3 --label gray_ch2_multi --run
 ```
