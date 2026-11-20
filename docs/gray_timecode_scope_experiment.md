@@ -664,6 +664,12 @@ Use the run directory printed by the acquisition tool:
   data/recordings/<YOUR_GRAY_EPOCH_RUN>
 ```
 
+The `test_gray_epoch_pause.py --run` experiment **automatically runs
+this analysis after all three acquisitions**, once USBTMC and the Nano
+serial session are closed. The standalone analysis command is also
+provided so you can rerun it with different thresholds without
+repeating the physical experiment.
+
 This reads the capture and raw serial observations, recomputes a
 separate **scope-to-Nano alignment** per waveform record, and then
 fits a separate **Nano-to-PC monotonic clock mapping** from that
