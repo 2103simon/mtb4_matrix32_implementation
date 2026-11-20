@@ -10,7 +10,7 @@ CONFIG = {
     "tactile_encoding": {"raThreshold": 3, "saMaxFrequencyHz": 150},
     "stimulation_source": {"taxel": 0, "encoding": "sa_ii"},
     "stimulation_control": {"record": True, "armed": True,
-                            "experimental_sf_zero": True},
+                            "experimental_zero_current": True},
 }
 
 
@@ -29,9 +29,9 @@ class RecordingModeTest(unittest.TestCase):
             try:
                 capture.start({"acknowledged": True})
                 name = capture.recorder.recording_id
-                capture.emit("sf_requested", frequency_hz=0, experimental_zero=True,
+                capture.emit("sc_requested", channel=1, current_command=0,
                              source_sample_ns=123456789)
-                capture.emit("sf_ack", frequency_hz=0, status="OK",
+                capture.emit("sc_ack", channel=1, current_command=0, status="OK",
                              evidence={"ack_monotonic_s": 12.5,
                                        "write_begin_monotonic_s": 12.4})
             finally:
@@ -44,8 +44,8 @@ class RecordingModeTest(unittest.TestCase):
             rows = [json.loads(line) for line in
                     (folder / f"{name}_matrix32_commands.jsonl").read_text().splitlines()]
             self.assertEqual([r["event"] for r in rows],
-                             ["recording_started", "sf_requested",
-                              "sf_ack", "recording_closed"])
+                             ["recording_started", "sc_requested",
+                              "sc_ack", "recording_closed"])
             self.assertEqual(rows[1]["source_sample_ns"], 123456789)
             self.assertEqual(rows[2]["status"], "OK")
             self.assertIsInstance(rows[2]["pc_monotonic_ns"], int)
