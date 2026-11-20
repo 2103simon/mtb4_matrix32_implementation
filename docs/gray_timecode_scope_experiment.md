@@ -18,11 +18,22 @@ are not exact scope-edge timestamps.
 ## 1. Hardware and flashing
 
 1. Keep stimulation **OFF** and Matrix32 disconnected for this test.
-2. Flash **`arduino_nano/gray_timecode/gray_timecode.ino`** with the
-   Arduino IDE, selecting the **Nano Every** board and its correct
-   serial port. This replaces the earlier `S07_MARKER_V2` firmware:
-   its command protocol is *different*. Flash the earlier firmware back
-   before using the previous S07 timing-marker scripts.
+2. Build and flash the standalone **PlatformIO** project under
+   `arduino_nano/` (source: `arduino_nano/src/main.cpp`). Select the
+   **Nano Every** board (not the classic Nano), and run:
+
+   ```bash
+   cd arduino_nano
+   pio run -e nano_every
+   pio run -e nano_every -t upload --upload-port /dev/ttyACM0
+   cd ..
+   ```
+
+   Replace `/dev/ttyACM0` with the detected Nano port. The PlatformIO
+   project mirrors the structure of `adafruit_feather_m4/` and requires
+   no third-party libraries. Uploading replaces the earlier
+   `S07_MARKER_V2` firmware: its command protocol is *different*.
+   Flash the earlier firmware back before using previous S07 scripts.
 3. Attach Nano USB to the Linux PC. Wire **Nano D7 -> scope CH4 probe
    tip**, **Nano GND -> the CH4 probe ground**. CH4 will show a 0/5 V
    signal if the board is powered at 5 V. Confirm your probe attenuation
