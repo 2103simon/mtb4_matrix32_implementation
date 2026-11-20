@@ -172,6 +172,22 @@ class ZeroProtocolGuardTest(unittest.IsolatedAsyncioTestCase):
             await device.apply_live_frequency(0, experimental_allow_zero=True)
 
 
+class LiveCurrentGuardTest(unittest.IsolatedAsyncioTestCase):
+    async def test_sc_zero_is_protocol_valid_but_requires_running_device(self):
+        device = Matrix32Device()
+        # SC=0 is accepted as a serializable command; BLE readiness still
+        # blocks the actual unqualified bench write.
+        with self.assertRaises(RuntimeError):
+            await device.apply_live_current(1, 0)
+
+    async def test_sc_rejects_out_of_range_and_non_integer_values(self):
+        device = Matrix32Device()
+        for value in (-1, 65536, True, 1.5):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    await device.apply_live_current(1, value)
+
+
 class WorkerTests(unittest.IsolatedAsyncioTestCase):
     async def test_newest_sample_only_and_zero_stops(self):
         serial = FakeSerial(sample(40))
