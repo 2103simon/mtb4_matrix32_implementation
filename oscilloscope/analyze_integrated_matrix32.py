@@ -405,6 +405,38 @@ def compare_physical_with_acks(windows, states, mapping, t_start, t_end,
     return result
 
 
+def summarize_frequency_by_ack(comparisons, states):
+    """Aggregate settled comparisons by SF without hiding untested settings."""
+    grouped = {}
+    for state in states:
+        hz = state.get("expected_hz")
+        if hz is not None:
+            grouped.setdefault(int(hz), [])
+    for row in comparisons:
+        hz = row.get("ack_expected_hz")
+        if hz is not None:
+            grouped.setdefault(int(hz), []).append(row)
+    result = []
+    for hz, rows in sorted(grouped.items()):
+        compatible = sum(x["assessment"] == "compatible_provisional" for x in rows)
+        discrepant = sum(x["assessment"] == "discrepant_provisional" for x in rows)
+        observed = [x["physical_rate_hz"] for x in rows]
+        result.append({
+            "acknowledged_frequency_hz": hz,
+            "settled_windows": len(rows),
+            "compatible_windows": compatible,
+            "discrepant_windows": discrepant,
+            "median_measured_rate_hz": float(np.median(observed)) if observed else None,
+            "mean_measured_rate_hz": float(np.mean(observed)) if observed else None,
+            "assessment": (
+                "not_testable" if not rows else
+                "discrepancy_observed_provisional" if discrepant else
+                "compatible_in_observed_windows_provisional"
+            ),
+        })
+    return result
+
+
 def plot_frequency_comparison(root, windows, compared, mapping):
     import matplotlib
     matplotlib.use("Agg")
@@ -484,6 +516,22 @@ def write_markdown_report(root, report):
         f"| Tolerance | max({fmt(frequency['tolerance_hz'], ' Hz')}, "
         f"{fmt(100*frequency['tolerance_fraction'], '%')}, count quantization) |",
         "", "![Measured and acknowledged frequency](matrix32_frequency_comparison.png)", "",
+        "### Frequencies tested (grouped by acknowledged setting)", "",
+        "| ACK-indicated SF (Hz) | Comparable windows | Compatible | Discrepant | Median measured CH1 (Hz) | Assessment |",
+        "| ---: | ---: | ---: | ---: | ---: | --- |",
+    ]
+    if not frequency["by_ack_frequency"]:
+        lines.append("| — | 0 | 0 | 0 | — | No ACK-indicated frequencies |")
+    for grouped in frequency["by_ack_frequency"]:
+        lines.append(
+            f"| {grouped['acknowledged_frequency_hz']} | "
+            f"{grouped['settled_windows']} | {grouped['compatible_windows']} | "
+            f"{grouped['discrepant_windows']} | "
+            f"{fmt(grouped['median_measured_rate_hz'], precision=1)} | "
+            f"{grouped['assessment']} |"
+        )
+    lines.extend([
+        "", "### Time-resolved frequency check", "",
         "| Scope time (s) | CH1 measured (Hz) | ACK-indicated SF (Hz) | Difference (Hz) | Assessment |",
         "| ---: | ---: | ---: | ---: | --- |",
     ]
@@ -628,6 +676,9 @@ def summarize(root, meta, *, threshold_v=2, deadtime_ms=1, taxel=None,
             "tolerance_fraction": frequency_tolerance_fraction,
             "acknowledged_states": ack_states,
             "windows": comparisons,
+            "by_ack_frequency": summarize_frequency_by_ack(
+                comparisons, ack_states
+            ),
             "comparable_windows": (assessments["compatible_provisional"]
                                    + assessments["discrepant_provisional"]),
             "compatible_windows": assessments["compatible_provisional"],
