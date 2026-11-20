@@ -204,7 +204,8 @@ def active_clock_fit(exchanges, *, min_samples=8, min_span_s=5.0):
         brackets.append(max(0, right-left)/2000)  # microseconds halfwidth
     report.update({
         "method": "four_timestamp_sync_weighted_affine",
-        "offset_calibrated": True,
+        "offset_calibrated": False,
+        "offset_estimated": True,
         "host_clock_synchronized": False,
         "host_clock_mapping_estimated": True,
         "assumption": (
