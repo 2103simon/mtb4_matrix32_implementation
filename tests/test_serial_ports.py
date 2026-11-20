@@ -55,7 +55,7 @@ class PortDiscoveryTests(unittest.TestCase):
 
     def test_missing_device_has_diagnostics(self):
         with self.assertRaisesRegex(PortDiscoveryError, "Available ports"):
-            resolve_port("auto", "feather", ports=[self.nano])
+            resolve_port(None, "feather", ports=[self.nano])
 
 
 if __name__ == "__main__":
