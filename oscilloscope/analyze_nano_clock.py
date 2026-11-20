@@ -105,6 +105,13 @@ def main(argv=None):
             print(f"[ESTIMATOR] Offset constraints compatible: "
                   f"{all_constraint['feasible']}; "
                   f"{len(diagnostics['warnings'])} warnings")
+            held = diagnostics["blocked_holdout_validation"]
+            rms = held["worst_holdout_midpoint_rms_us"]
+            bias = held["max_abs_holdout_midpoint_bias_us"]
+            if rms is not None and bias is not None:
+                print(f"[ESTIMATOR] Holdout: {held['qualified_fold_count']}/3 "
+                      f"qualified, worst midpoint RMS {rms:.1f} us, "
+                      f"worst absolute bias {bias:.1f} us")
     elif result.get("active_error"):
         print(f"[ACTIVE] Not qualified: {result['active_error']}")
     print(f"[SCOPE] {len(result['scope_records'])} provisional host-time records")
