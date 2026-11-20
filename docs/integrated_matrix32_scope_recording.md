@@ -91,30 +91,51 @@ because a USBTMC read may block. If a hardware fault occurs, use the
 physical output disconnect; software STOP/kill is not guaranteed to
 stop electrical output after BLE failure.
 
-The integration runner:
+The integration runner (**revised after the first live test**) now:
+
 1. Opens the Nano serial session and starts the 10 Hz Gray generator.
-2. Verifies oscilloscope CH1+CH2 setup, trigger and 0% position.
-3. Takes 30 binary CRC32 SYNC measurements.
-4. Arms the scope; on the verified running observation starts the
-   existing Matrix32/Feather controller as a separate process.
-5. Collects the finite 20 s CH1+CH2 recording. While the scope is
-   acquiring the controller reads MCU telemetry, saves events and sends
-   ACK-verified SF updates as rapidly as the existing BLE command worker
-   can safely process fresh values.
-6. Takes 30 post-acquisition CRC32 exchanges, gracefully interrupts
-   the controller, waits for its shutdown STOP, and THEN downloads both
-   waveform channels. If the child controller fails or the scope
-   times out, its shutdown is attempted in the `finally` block.
+2. Configures and verifies scope CH1+CH2, trigger and 0% position but
+   **keeps the scope stopped**.
+3. Starts the existing Feather/Matrix32 controller in a subprocess. In
+   `--run` mode it waits for `[MCU] Configured; ready for live data.`
+   (both MCU configuration ACKs). In `--arm` mode it **additionally
+   waits for `[START] Matrix32 CH1:`**, emitted only after the Matrix32
+   start request has returned. Startup is capped at 45 seconds by default
+   (`--controller-ready-timeout` overrides, range 5..120 s).
+   No scope acquisition is started on startup timeout/failure.
+4. Takes 30 binary CRC32 SYNC measurements AFTER controller readiness.
+5. Arms the scope for its finite 20 s acquisition. The running
+   controller continues to consume fresh tactile data and sends changed
+   SF commands via the existing sequential ACK-verifying BLE worker.
+6. Takes 30 post-acquisition CRC32 exchanges, gracefully interrupts the
+   controller, waits for its shutdown STOP, and THEN downloads both
+   waveform channels. If the child fails or the scope times out, its
+   shutdown is attempted in the `finally` block.
 7. Writes scope/Gray alignment and provisional per-record host clock
    diagnostics, if possible. Scope-to-Nano RMS >100 us generates an
    unqualified status without deleting valid data.
 
-**Startup limitation:** the 20-second scope capture begins on a Nano D7
-rising edge, possibly before BLE/Feather readiness and before Matrix32
-START. The command log and resulting CH1 waveform show how much of the
-20-second capture contained actual output. This is a first integration
-record, not proof that every MCU update was captured electrically or
-that BLE latency is negligible.
+The earlier live 20261120T144228169465Z run displayed a Matrix32 START
+only after the scope was already running; that sequence could squander
+part of the 20 s on BLE connection and handshake. The revised order
+captures a running device instead of startup delay.
+
+**Qualification caveat:** MCU handshake and the printed Matrix32 START
+line prove software protocol progress, NOT that CH1 pulses are physically
+present. The new CH1 waveform is needed to verify sustained output.
+If the selected tactile input remains zero, there is no valid positive
+START and the armed runner times out **without starting scope capture**.
+Triggering remains on CH2 Nano D7; it is not synchronized to a Matrix32
+pulse. The existing 250 ms stale-sample supervisor still stops output
+if input is lost, even after readiness has been signaled.
+
+**Trigger limitation:** the 20-second scope capture still begins on
+the next Nano D7 rising edge, not on a Matrix32 output pulse. Matrix32
+START is now observed before arming, but output can still change or
+stop during the record. Check CH1 voltage directly, and inspect the
+MCU/Matrix32 trace for any stale-input STOP or frequency changes.
+This is a first integrated experiment, not proof that every MCU update
+was captured electrically or that BLE latency is negligible.
 
 ## Saved files
 
