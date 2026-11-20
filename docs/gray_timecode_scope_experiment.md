@@ -740,3 +740,58 @@ timeout 900s /home/icub/.virtualenvs/matrix32/bin/python -u \
 Expected plan includes `trigger_position_pct: 0.0` and the
 20-second nominal window (2 s/div). The Arduino firmware and Nano
 clock estimation do not need modification or reflashing.
+
+
+## 14. Retaining diagnostics when Gray edge-fit RMS narrowly fails
+
+The three-record 0%-trigger experiment
+`20261120T140817856192Z_gray_epoch_pause_20s` captured all three
+one-million-point waveforms, decoding 199 complete Gray frames per
+record. Automatic offline analysis stopped on record 1 because the
+scope-to-Nano fit RMS was **102.0 us**, exceeding the original **100 us**
+threshold by 2.0 us. This is a *quality gate*, not an acquisition
+failure.
+
+The offline epoch analyzer now calls `build_alignment(..., strict=False)`,
+preserving legitimate matched frame data and independently computed
+per-record Nano-to-host clock estimates even if the Gray RMS exceeds the
+requested threshold. The legacy `align_gray_records.py` standalone
+analyzer and `build_alignment()` calls remain **strict by default**.
+Gray/counter mismatches, ambiguous matches and malformed data are still
+hard errors; the change only concerns RMS quality reporting.
+
+Local statuses are:
+
+- `provisional_local_fit`: the host clock checks pass **and** Gray edge
+  RMS meets the original 100 us criterion.
+- `exploratory_local_fit`: the host checks pass and Gray RMS exceeds
+  100 us, but is within a deliberately relaxed diagnostic threshold,
+  such as `--max-scope-rms-us 150`. It is **not qualified under the
+  original timing criterion**.
+- `unqualified`: Gray RMS exceeds the selected analysis threshold,
+  or one of the host clock checks fails. All computable diagnostics are
+  still emitted for inspection.
+
+This avoids masking useful clock evidence while never silently
+promoting a poor scope alignment to a qualified end-to-end timing map.
+The revised epoch report includes `scope_edge_fit_rms_us`,
+`scope_edge_fit_rms_below_original_100us`, and
+`scope_to_nano_alignment.original_100us_standard_met` as well as
+the distinct counts of provisional and exploratory fits.
+
+To reanalyze the existing files, without rerunning hardware:
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python \
+  oscilloscope/analyze_gray_epoch_experiment.py \
+  data/recordings/20261120T140817856192Z_gray_epoch_pause_20s
+
+/home/icub/.virtualenvs/matrix32/bin/python \
+  oscilloscope/analyze_gray_epoch_experiment.py \
+  data/recordings/20261120T140817856192Z_gray_epoch_pause_20s \
+  --max-scope-rms-us 150
+```
+
+The first command reports failing records as `unqualified` but retains
+clock fits; the second allows `exploratory_local_fit` while explicitly
+retaining the original 100 us failure.
