@@ -99,7 +99,7 @@ def main():
         print("Could not open serial port.")
         return
 
-    print(f"Connected to MCU on {port}")
+    print(f"Connected to MCU on {sm.connected_port or port}")
 
     # Wait for both parameter ACKs before creating recording files.
     # Any tactile data received during configuration is intentionally dropped.
