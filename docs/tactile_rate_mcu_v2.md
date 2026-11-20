@@ -178,53 +178,52 @@ Behavior:
 - Ignore any latest sample timestamped before the MCU configuration ACK gate.
 - For Matrix32, round the selected requested rate to whole Hz, clip to **400 Hz**, and treat anything below **2 Hz** as **OFF**. Matrix32 SF=1 is not used due to the previously documented START anomaly. These are device bounds, not a general physiological-safety guarantee.
 - `--arm` explicitly permits output. To START after a positive request, set CH1 SF to the selected fresh rate, require all seven configuration ACKs, recheck freshness, then call `device.start()`. Subsequent changed positive frequencies use `device.apply_live_frequency()` sequentially with the library's qualified ACK/guard transport. Each BLE update is completed before reading the latest next value.
-- A zero request normally issues Matrix32 STOP; the explicit `--experimental-sf-zero` bench option sends ACK-gated live SF=0 instead, without assuming this stops physical pulses. A separate 20-ms stale-data supervisor attempts STOP if output is running and MCU input has aged more than 250 ms (configurable via `--stale-ms`); it then aborts the run rather than automatically restarting. Any sensor/connection failure or Ctrl+C triggers a best-effort STOP and BLE disconnect in cleanup. **If BLE is lost, physical output state is unknown**; isolate output and verify physically.
+- A zero request normally issues Matrix32 STOP. The opt-in `--experimental-zero-current` mode instead commands SC1=0/SF=2 as verified visually on the operator's oscilloscope (see below). A separate 20-ms stale-data supervisor attempts STOP if output is running and MCU input has aged more than 250 ms (configurable via `--stale-ms`); it then aborts the run rather than automatically restarting. Any sensor/connection failure or Ctrl+C triggers a best-effort STOP and BLE disconnect in cleanup. **If BLE is lost, physical output state is unknown**; isolate output and verify physically.
 - This is a **bench-test increment**, not medically or clinically qualified stimulation. Confirm frequency, latency, output-off behavior and rapid-change behavior on the oscilloscope with a suitable dummy load before any other use.
 - Offline tests: `python -m unittest discover -s tests -p 'test_tactile_stimulation.py' -v`. The integration has **not been physically tested** and the tests have **not been executed** here.
 
-## Optional MCU + Matrix32 recording and bench-only experimental SF=0
+## Optional MCU + Matrix32 recording
 
-`run_tactile_stimulation.py` is **no longer recording by default**. Add `--record` to create:
+`run_tactile_stimulation.py` does **not** record by default. Add `--record` to create:
 
-- `data/<run_id>_tactile_rates.csv`: every MCU rate sample after successful encoding ACKs, including 12 raw taxels and RA/SA requested frequencies.
-- `data/<run_id>_settings.json`: configuration snapshot, MCU ACK settings, arm/record/zero-test flags, and filenames.
-- `data/<run_id>_matrix32_commands.jsonl`: newline-delimited structured Matrix32 **host-side** events. Includes START/STOP requests and write completion, seven configuration ACK records, every live SF request, every SF ACK with full device-library evidence, and errors. Event fields include `pc_monotonic_ns` (same host clock domain as the MCU CSV `pc_arrival_monotonic_ns`) and `pc_wall_iso`; SF requests also carry `source_sample_ns` to link the selected tactile snapshot to the BLE request. The detailed nested ACK evidence includes actual `write_begin_monotonic_s` and `ack_monotonic_s` for comparing transport delay. These are **host-observed times**, not proof of physical application or output. JSONL serialization and file writes run on a separate thread so the BLE event loop does not synchronously flush every ACK.
-- Legacy `*_taxel.csv` and `*_events.csv` are created for compatibility (header-only with MCU rate streaming).
+- `data/<run_id>_tactile_rates.csv`: every MCU rate sample after both encoding ACKs, including 12 raw taxels and RA-I/SA-II frequencies.
+- `data/<run_id>_settings.json`: MCU and Matrix32 configuration, flags and file manifest.
+- `data/<run_id>_matrix32_commands.jsonl`: host-monotonic event trace of Matrix32 configuration, START/STOP, live SF and live SC commands and ACKs, including failures and source sample timestamps. Each event has `pc_monotonic_ns`, comparable with the MCU CSV `pc_arrival_monotonic_ns`. Detailed ACK evidence also contains BLE write/ACK host-monotonic times. **These are host-side observations, not proof of physical output or device apply time.** JSONL writes happen off the BLE event loop.
+- Legacy `*_taxel.csv` and `*_events.csv` compatibility outputs.
 
-Without `--record`, **no recording files are created**. Existing `read_mcu.py` still independently records as before.
+Without `--record`, **no recording files are created**. The independent `read_mcu.py` recorder is unchanged.
 
-The validated Matrix32 library only supports SF commands from **1 to 400 Hz**. To experimentally test **SF=0 without STOP/START latency**, use the explicit bench-only `--experimental-sf-zero` option **together with `--arm`**, on a properly connected oscilloscope and dummy load. During a previously started session, requested rates below 2 Hz then send one unqualified `>SF;00 00<` frame through the existing persistent one-at-a-time, guard-spaced, ACK-verified live SF transport. A later positive request uses the normal live SF update, without a new START. Before initial START, zeros do nothing. Ordinary `--arm` runs **still STOP** on zero. Any failed SF=0 command fails the run and attempts STOP during cleanup; missing tactile data invokes the existing independent STOP watchdog regardless of SF mode.
+## Oscilloscope-verified zero-request behavior (20 November 2026)
 
-**Crucial: firmware `>OK<` for SF=0 (if one is received) would only establish acknowledgement. SF=0 is outside the documented protocol and may leave physical stimulation unchanged, stopped, or in another anomalous state. Do not treat SF=0 as an electrically verified OFF state or use it outside controlled dummy-load/oscilloscope characterization.**
+**Observed by the operator on the bench:** with the Matrix32 initially running and a requested MCU tactile frequency of 0 Hz, commanding **SC1=0** (then **SF=2 Hz**) resulted in **no pulses visible on the oscilloscope**. Restoring a positive requested frequency with the existing live-command sequence resumed visible pulses without a full Matrix32 STOP/START cycle. This supports the SC0/SF2 strategy for the observed device/load/scope setup, **not a universal guarantee of zero delivered current**. Scope detection limits, electrical noise, residual charge and response at other configurations are not covered by this observation.
 
-Examples:
+The unsuccessful earlier **SF=0** experiment was removed: SF=0 is outside the documented Matrix32 range **1..400 Hz**, and did not yield the desired output behavior. The application and `Matrix32Device.apply_live_frequency()` no longer offer that experiment.
+
+The successful SC0/SF2 workaround remains **explicit opt-in** with `--experimental-zero-current` so ordinary `--arm` retains the previously validated zero-request STOP behavior. After the first positive-frequency START, the latest-value worker does:
+
+1. **Positive → zero input:** ACK-verified CH1 `SC=0`, then ACK-verified `SF=2` (if frequency is not already 2 Hz). It sends no duplicate commands while the request stays zero.
+2. **Zero → positive input:** ACK-verified `SF=requested_hz` **while SC remains zero**, then ACK-verified restoration of the original fixed CH1 SC command. No full configuration/START occurs.
+3. **MCU stale input, BLE failures, Ctrl+C, or any command error:** the independent STOP path remains mandatory; a firmware ACK never substitutes for emergency shutdown.
+
+The SC command is a **69-byte vector** (32 unsigned 16-bit channels) sent as a sequential, ACK-verified update and remains slower than a short optimized SF command. `--record` captures each SC/SF request and acknowledgement for latency analysis.
+
+### Commands
 
 ```bash
-# No output, no recording
+# Safe diagnostic: no stimulation, no recording
 /home/icub/.virtualenvs/matrix32/bin/python run_tactile_stimulation.py
-# No output, but save MCU CSV plus Matrix32 event log
+
+# Safe diagnostic plus MCU/Matrix32 recording
 /home/icub/.virtualenvs/matrix32/bin/python run_tactile_stimulation.py --record
-# Approved bench ONLY: armed stimulation and full recording, normal zero->STOP
+
+# Armed with normal zero-request STOP, optional recording
 /home/icub/.virtualenvs/matrix32/bin/python run_tactile_stimulation.py --arm --record
-# Scope/dummy-load experiment: live SF=0 rather than STOP
-/home/icub/.virtualenvs/matrix32/bin/python run_tactile_stimulation.py --arm --record --experimental-sf-zero
-```
 
-Relevant offline tests: `test_tactile_stimulation.py` and `test_matrix32_capture.py`. No hardware behavior for SF=0 has been validated by these tests.
-
-## Bench-only zero-current workaround: SC1=0 with SF=2
-
-The previous `--experimental-sf-zero` protocol trial did not produce the intended physical zero-frequency behavior. There is now an **alternative, separate** opt-in `--experimental-zero-current` mode. This is not a qualified electrical-off command; it must be tested on a dummy load and oscilloscope. It cannot be combined with `--experimental-sf-zero`.
-
-```bash
+# Bench-verified SC0/SF2 zero-request strategy, optional recording
 /home/icub/.virtualenvs/matrix32/bin/python run_tactile_stimulation.py --arm --record --experimental-zero-current
 ```
 
-After a normal initial positive-frequency START, when the MCU rate drops below 2 Hz, the worker performs a single **ACK-verified live SC vector update with CH1 current command 0**, then **ACK-verified SF=2** (if it is not already 2). No STOP or START is issued for this intentional zero. While the input remains zero, it sends no duplicate commands. On the next positive input, the worker first updates SF to the selected positive rate **while current is still commanded 0**, then restores the saved positive CH1 current through another ACK-verified live SC vector update. Other channels remain disabled. Every SC/SF request and response includes host-monotonic metadata and detailed ACK evidence when `--record` is provided. On a transport error or loss of input, the existing independent STOP supervisor and shutdown still issue STOP.
-
-The new `Matrix32Device.apply_live_current(1, value)` closely follows the reference repository's ACK-gated live SW method: it sends the normal **69-byte, 32 x uint16 SC vector** over ATT Write Request with one positive application-level indication, serialized under the same configuration lock. This is intentionally separate from `set_channel_current()+apply()`, which would transmit all configuration fields, and separate from the optimized SF persistent write path. Switching SC may be slower than an SF update, but should avoid repeating the full configuration/START sequence. The method captures write and ACK evidence, preserves unchanged configuration, and fails closed on missing/negative ACK. The reference experiments validated SC configuration writes with output **OFF**; they did **not** qualify SC=0 updates while active.
-
-**Safety limitation:** firmware `>OK<` for SC1=0 is only protocol acceptance; it does not guarantee true zero output current, zero delivered charge, zero residual pulses, or safe reactivation. The device may reject SC0, continue producing pulses, retain an old current, or behave unexpectedly. On any mismatch, immediately STOP and inspect the waveform. Validate 50 -> 0 -> 50 Hz requests, trace CH1 current proxy/voltage, measure command-to-output transition latency, and confirm STOP on stale sensor data. The user-visible log says *current commanded zero*, not *output off*.
+The SC0/SF2 result should be rechecked on the oscilloscope if current, phase width, voltage, ST, load, or Matrix32 firmware changes. Relevant offline tests: `test_tactile_stimulation.py` and `test_matrix32_capture.py`.
 
 ## Next increments
 
