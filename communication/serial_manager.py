@@ -211,7 +211,7 @@ class SerialManager():
         with self._latest_rates_lock:
             self._latest_rates_snapshot = None
 
-    def start_comm(self, port: str):
+    def start_comm(self, port: str | None = None):
         if self._thread and self._thread.is_alive():
             self.logger.warning("Serial communication already running")
             return
