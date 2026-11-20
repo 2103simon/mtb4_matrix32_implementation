@@ -126,8 +126,8 @@ class NanoLog:
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--nano-port", default="auto",
-                   help="auto selects Nano Every using USB metadata; explicit path overrides")
+    p.add_argument("--nano-port", default=None,
+                   help="Optional explicit Nano serial path; by default detects Nano Every")
     p.add_argument("--scope-device", default="auto")
     p.add_argument("--count", type=int, default=1,
                    help="Finite records: 1 first, then 3 for repeated test")
