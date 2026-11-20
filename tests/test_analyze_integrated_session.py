@@ -172,6 +172,9 @@ class PerRecordScopeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "mcu_matrix32").mkdir()
+            (root / "mcu_matrix32/synthetic_tactile_rates.csv").write_text(
+                "synthetic fixture: loader is mocked"
+            )
             meta = {"run_id": "test_two", "status": "complete",
                     "records": [make_scope_record(1), make_scope_record(2)]}
             def record_result(root, record, *args, **kwargs):
