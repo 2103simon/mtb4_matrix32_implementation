@@ -20,6 +20,7 @@ def main(argv=None):
         "--count", "3",
         "--points", "1000000",
         "--time-div-us", "2000000",
+        "--trigger-position-pct", "0",
         "--acquire-timeout", "90",
         "--per-record-epochs",
         "--epoch-sync-count", "30",
