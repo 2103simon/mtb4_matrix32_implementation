@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "oscilloscope"))
 from analyze_integrated_matrix32 import (
     acknowledged_frequency_states, choose_run, compare_physical_with_acks,
     envelope, host_to_scope, pulse_statistics, rising_pulses,
-    sliding_physical_rates, write_markdown_report,
+    sliding_physical_rates, summarize_frequency_by_ack, write_markdown_report,
 )
 
 
@@ -123,6 +123,24 @@ class IntegratedAnalysisTests(unittest.TestCase):
         self.assertEqual(compared[3]["assessment"], "discrepant_provisional")
         self.assertEqual(compared[4]["assessment"], "not_comparable")
 
+    def test_group_by_ack_frequency_exposes_discrepancy_and_untested(self):
+        windows = [
+            {"ack_expected_hz": 78, "physical_rate_hz": 79,
+             "assessment": "compatible_provisional"},
+            {"ack_expected_hz": 78, "physical_rate_hz": 100,
+             "assessment": "discrepant_provisional"},
+            {"ack_expected_hz": 150, "physical_rate_hz": 149,
+             "assessment": "compatible_provisional"},
+        ]
+        states = [{"expected_hz": 78}, {"expected_hz": 150},
+                  {"expected_hz": 400}]
+        rows = summarize_frequency_by_ack(windows, states)
+        self.assertEqual([x["acknowledged_frequency_hz"] for x in rows],
+                         [78, 150, 400])
+        self.assertEqual(rows[0]["discrepant_windows"], 1)
+        self.assertEqual(rows[1]["compatible_windows"], 1)
+        self.assertEqual(rows[2]["assessment"], "not_testable")
+
     def test_no_clock_map_refuses_ack_comparison(self):
         rows = [{"center_scope_s": 2.0, "window_s": 1,
                  "physical_rate_hz": 78.0}]
@@ -154,6 +172,13 @@ class IntegratedAnalysisTests(unittest.TestCase):
             "frequency_comparison": {
                 "window_s": 1., "step_s": .25, "tolerance_hz": 3.,
                 "tolerance_fraction": .05,
+                "by_ack_frequency": [{
+                    "acknowledged_frequency_hz": 78,
+                    "settled_windows": 1, "compatible_windows": 1,
+                    "discrepant_windows": 0,
+                    "median_measured_rate_hz": 78.0,
+                    "assessment": "compatible_in_observed_windows_provisional",
+                }],
                 "comparable_windows": 1, "compatible_windows": 1,
                 "discrepant_windows": 0, "not_comparable_windows": 0,
                 "windows": [{
