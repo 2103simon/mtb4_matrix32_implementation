@@ -23,12 +23,22 @@ def compare(text_run, binary_run):
         if report["active"] is None:
             raise ValueError(f"{path}: insufficient active synchronization data")
         fit = report["active"]
+        quality = report.get("estimator_diagnostics", {})
+        if quality.get("status") != "diagnostic_only_no_production_fit_replacement":
+            raise ValueError(f"{path}: estimator diagnostics unavailable: {quality}")
         reports[label] = {
             "run_dir": str(path),
             "sample_count": fit["sample_count"],
             "duration_s": fit["span_s"],
             "drift_ppm_nano_to_host": fit["drift_ppm_nano_to_host"],
             "fit_rms_us": fit["rms_residual_us"],
+            "low_latency_drift_ppm": quality["stratified_low_latency"][
+                "drift_ppm_nano_to_host"],
+            "slope_sensitivity_ppm": quality["absolute_slope_sensitivity_ppm"],
+            "window_drift_range_ppm": quality["window_drift_range_ppm"],
+            "offset_intersection_feasible": quality["offset_constraints"][
+                "all_exchanges_conditional_on_baseline_slope"]["feasible"],
+            "estimator_warning_count": len(quality["warnings"]),
             "fit_max_abs_us": fit["max_abs_residual_us"],
             "best_exchange_offset_halfwidth_us":
                 fit["best_exchange_offset_halfwidth_us"],
@@ -49,6 +59,7 @@ def compare(text_run, binary_run):
             key: reports["binary"][key] - reports["text"][key]
             for key in (
                 "drift_ppm_nano_to_host", "fit_rms_us",
+                "low_latency_drift_ppm", "slope_sensitivity_ppm",
                 "rtt_p10_us", "rtt_median_us", "rtt_p90_us",
                 "transport_rtt_p10_us", "transport_rtt_median_us",
                 "best_exchange_offset_halfwidth_us",
@@ -74,6 +85,9 @@ def main(argv=None):
     fields = (
         ("sample_count", "SYNC exchanges"),
         ("drift_ppm_nano_to_host", "Nano->host drift [ppm]"),
+        ("low_latency_drift_ppm", "Low-delay drift [ppm]"),
+        ("slope_sensitivity_ppm", "Slope sensitivity [ppm]"),
+        ("estimator_warning_count", "Estimator warnings"),
         ("rtt_p10_us", "RTT p10 [us]"),
         ("rtt_median_us", "RTT median [us]"),
         ("rtt_p90_us", "RTT p90 [us]"),
@@ -84,6 +98,11 @@ def main(argv=None):
     for key, label in fields:
         print(f"{label:40s} {report['baseline'][key]:13.2f} "
               f"{report['candidate'][key]:13.2f}")
+    for label in ("text", "binary"):
+        item = report["baseline"] if label == "text" else report["candidate"]
+        print(f"[{label}] common offset interval feasible: "
+              f"{item['offset_intersection_feasible']}; "
+              f"window drift range: {item['window_drift_range_ppm']} ppm")
     if args.output:
         args.output.write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
         print(f"Saved {args.output}")
