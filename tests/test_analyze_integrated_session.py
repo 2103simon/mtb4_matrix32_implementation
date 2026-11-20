@@ -58,6 +58,31 @@ class PerRecordScopeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing CH1"):
             record_boundaries([bad])
 
+    def test_local_clock_maps_match_exact_record_index(self):
+        from oscilloscope.analyze_integrated_matrix32 import tentative_host_map
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "epoch_clock_analysis.json").write_text(json.dumps({
+                "records": [
+                    {"record_index": 1, "status": "provisional_local_fit",
+                     "fit": {"rms_residual_us": 200.},
+                     "first_sample_host_monotonic_ns_est": 100,
+                     "last_sample_host_monotonic_ns_est": 200,
+                     "scope_edge_fit_rms_us": 75.},
+                    {"record_index": 2, "status": "unqualified",
+                     "fit": {"rms_residual_us": 220.},
+                     "first_sample_host_monotonic_ns_est": 350,
+                     "last_sample_host_monotonic_ns_est": 450,
+                     "scope_edge_fit_rms_us": 150.},
+                ]
+            }))
+            first = tentative_host_map(root, record_index=1)
+            second = tentative_host_map(root, record_index=2)
+            self.assertEqual(first["first_sample_pc_monotonic_ns_est"], 100)
+            self.assertEqual(second["first_sample_pc_monotonic_ns_est"], 350)
+            self.assertEqual(second["status"], "unqualified")
+            self.assertIsNone(tentative_host_map(root, record_index=3))
+
     def test_unmapped_overlaps_are_unknown_not_zero(self):
         mcu = synthetic_mcu()
         overlap = coverage_overlaps(None, mcu, [])
