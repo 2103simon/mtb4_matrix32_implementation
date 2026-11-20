@@ -21,8 +21,8 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--duration-s", type=float, default=30.0)
     p.add_argument("--sync-interval-s", type=float, default=0.25)
-    p.add_argument("--sync-transport", choices=("text", "binary"), default="text",
-                   help="Choose legacy text or experimental CRC32 binary SYNC")
+    p.add_argument("--sync-transport", choices=("text", "binary"), default="binary",
+                   help="CRC32 binary default; text retained for legacy comparison")
     p.add_argument("--nano-port", default=None, help="Optional device override")
     p.add_argument("--output-root", type=Path, default=Path("data/recordings"))
     p.add_argument("--run", action="store_true", help="Open Nano and issue START/SYNC/STOP")
