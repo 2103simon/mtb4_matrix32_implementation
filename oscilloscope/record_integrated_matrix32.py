@@ -208,7 +208,9 @@ class StimulationChild:
 
 def run(args, requested):
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "_" + args.label
-    root = args.output_root / run_id
+    # The controller subprocess runs from ROOT; use an absolute path so
+    # its traces land in the same session even when invoked from elsewhere.
+    root = (args.output_root / run_id).resolve()
     (root / "waveforms").mkdir(parents=True, exist_ok=False)
     (root / "mcu_matrix32").mkdir()
     meta = {
