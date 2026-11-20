@@ -193,6 +193,8 @@ class IntegratedAnalysisTests(unittest.TestCase):
                 "ch2_path": "waveforms/b.csv",
                 "pulse_detection": {
                     "positive_rising_events": 1900,
+                    "first_positive_event_scope_s": 0.015,
+                    "last_positive_event_scope_s": 19.982,
                     "median_instantaneous_rate_hz": 98.,
                     "median_interevent_ms": 10.2,
                     "positive_threshold_v": 2.,
