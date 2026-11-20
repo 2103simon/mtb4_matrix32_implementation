@@ -355,3 +355,83 @@ Reanalyze the existing run without another bench session:
 Use a **separate, safely isolated dummy-load plateau experiment**
 with fixed SF values held for several seconds when the objective is
 precise steady-state frequency accuracy, rather than live tracking.
+
+
+## Independent scope-record analysis and session-level aggregation
+
+The analysis CLI is now **multi-record aware**. The existing integrated
+acquisition runner still captures **one** 20-second CH1+CH2 scope record
+per run. Earlier Gray-only experiments captured multiple acquisitions,
+but they are a different experiment schema and lack integrated CH1 and
+MCU/Matrix32 traces. The revised integrated analyzer supports future
+integrated sessions whose `metadata.json.records` contains multiple
+**captured CH1+CH2** entries; it does not mislabel Gray-only sessions as
+Matrix32 integrated captures.
+
+Every scope record is analyzed **independently**:
+
+- Its own CH1 waveform times, threshold pulse crossings, intervals,
+  per-second rate windows, per-cycle dynamic BLE frequency comparison,
+  plot files, summary JSON and Markdown report.
+- Its **own** matching record-index entry from
+  `epoch_clock_analysis.json.records`, if available. A missing local
+  host fit gives **unknown** MCU/ACK overlap, never a fabricated zero
+  count or a borrowed clock fit from another record.
+- Only MCU snapshot **host arrival timestamps** and BLE timestamps
+  within that specific provisionally mapped scope interval are selected
+  for the per-record overlay. Observations before and after an
+  acquisition remain present in the full continuous source logs.
+- Physical pulse periods are never evaluated between distinct scope
+  records, even if the sample-time vectors both happen to begin at
+  `time_s=0`.
+
+The session report summarizes per-record pulse counts and **sum of
+observed scope durations**, lists every gap between adjacent records
+(with optional provisional gap length if both host maps are present),
+and counts the full MCU and BLE logs **once**. A standalone full MCU
+trace figure is plotted on its own PC-arrival-relative time axis. No
+joined scope waveform, fake elapsed time, across-gap rate, or pooled
+pulse-to-pulse interval is constructed.
+
+Output structure:
+
+```text
+data/recordings/<run_id>/
+  metadata.json
+  epoch_clock_analysis.json
+  mcu_matrix32/
+  waveforms/
+  analysis/
+    integrated_report.md           # final session report
+    integrated_summary.json        # compact session data
+    mcu_full_stream.png            # entire independent MCU acquisition
+    record_00001/
+      report.md                    # record-only results
+      summary.json                 # complete per-cycle diagnostics
+      integrated_overview.png
+      matrix32_pulse_zoom.png
+      matrix32_frequency_comparison.png
+      matrix32_dynamic_tracking.png
+    record_00002/                  # only if second scope acquisition exists
+      ...
+```
+
+Existing single-record integrated data continues to work: it creates
+one `record_00001` result and one session-level report. The original
+single-record CLI remains unchanged:
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python -m unittest discover \
+  -s tests -p 'test_analyze_integrated_session.py' -v
+
+/home/icub/.virtualenvs/matrix32/bin/python -u \
+  oscilloscope/analyze_integrated_matrix32.py \
+  --run-dir data/recordings/20261120T144806568426Z_integrated_matrix32_scope
+```
+
+This refactor is **offline-only**; it does not change pulse output,
+scope acquisition ordering, or the MCU controller. As before, scope
+host-time fitting is provisional due to uncalibrated Nano USB
+asymmetry. A separate integration capture-loop change will be needed
+if future sessions should actually acquire several finite oscilloscope
+recordings with pauses under one running Matrix32 controller.
