@@ -91,7 +91,12 @@ def fit_affine(pairs):
             "matched_frames": len(pairs)}
 
 
-def build_alignment(metadata, nano_frames, *, max_rms_us=100):
+def build_alignment(metadata, nano_frames, *, max_rms_us=100, strict=True):
+    """Match all waveform records; optionally retain over-threshold fits.
+
+    strict=True preserves legacy fail-closed behavior. strict=False only
+    relaxes the RMS gate for diagnostic reporting, not counter validation.
+    """
     if metadata.get("plan", {}).get("experiment") != "GRAY_TC_V1":
         raise ValueError("Expected GRAY_TC_V1 metadata")
     records = metadata.get("records", [])
@@ -139,11 +144,15 @@ def build_alignment(metadata, nano_frames, *, max_rms_us=100):
                             ref["nano_unwrapped_us"] / 1e6))
             previous_count = ref["counter"]
         fit = fit_affine(matches)
-        if fit["edge_fit_rms_us"] > max_rms_us:
-            raise ValueError(
+        fit_passes = fit["edge_fit_rms_us"] <= max_rms_us
+        if not fit_passes:
+            warning = (
                 f"Record {index}: edge-fit RMS {fit['edge_fit_rms_us']:.1f} us "
                 f"exceeds threshold {max_rms_us:.1f} us"
             )
+            if strict:
+                raise ValueError(warning)
+            result["warnings"].append(warning)
         first_count = nano_frames[
             next(k for k in nano_frames if k % MOD16 == decoded[0]["counter_mod_65536"])
         ]["counter"]
@@ -186,6 +195,8 @@ def build_alignment(metadata, nano_frames, *, max_rms_us=100):
             "scope_sample_interval_s": xincr,
             "nano_seconds_per_scope_second": slope,
             "clock_fit": fit,
+            "edge_fit_rms_threshold_us": max_rms_us,
+            "edge_fit_rms_below_threshold": fit_passes,
             "gap_from_previous": delta,
         }
         result["records"].append(entry)
@@ -194,7 +205,10 @@ def build_alignment(metadata, nano_frames, *, max_rms_us=100):
     )
     result["source_record_count"] = len(records)
     result["nano_serial_frame_count"] = len(nano_frames)
-    result["all_fit_rms_below_threshold"] = True
+    result["edge_fit_rms_threshold_us"] = max_rms_us
+    result["all_fit_rms_below_threshold"] = all(
+        record["edge_fit_rms_below_threshold"] for record in result["records"]
+    )
     result["interpretation"] = (
         "A waveform sample at scope t_s maps to estimated Nano time "
         "a*t_s+b using that record's clock_fit coefficients. Preserve fit "
