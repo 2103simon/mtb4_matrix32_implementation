@@ -439,10 +439,10 @@ async def run(config, stim_config=None, *, arm, record=False,
         if not device.connected or device.last_battery_level is None:
             raise RuntimeError("Matrix32 readiness check failed")
         print(f"[BLE] Ready. Battery={device.last_battery_level}%; stimulation OFF")
-        sm.start_comm(config["serial"]["port"])
+        sm.start_comm(config.get("serial", {}).get("port"))
         if not sm.is_running():
             raise ConnectionError("Failed to open MCU serial connection")
-        print(f"[MCU] Connected: {sm.connected_port or config['serial']['port']}")
+        print(f"[MCU] Connected: {sm.connected_port or config.get('serial', {}).get('port')}")
         async with asyncio.TaskGroup() as group:
             group.create_task(mcu_receiver(sm, config, capture, ready))
             group.create_task(frequency_worker(sm, device, ready, taxel, receptor, arm=arm,
