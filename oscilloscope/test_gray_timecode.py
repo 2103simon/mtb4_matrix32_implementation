@@ -127,7 +127,7 @@ class NanoLog:
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--nano-port", default="auto",
-                   help="Explicit serial node recommended if Feather is also attached")
+                   help="auto selects Nano Every using USB metadata; explicit path overrides")
     p.add_argument("--scope-device", default="auto")
     p.add_argument("--count", type=int, default=1,
                    help="Finite records: 1 first, then 3 for repeated test")
@@ -177,7 +177,7 @@ def plan(args, p):
 
 
 def run(args, requested):
-    from matrix32.timing_marker import discover_timing_marker_port
+    from communication.serial_ports import resolve_port
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "_" + args.label
     root = args.output_root / run_id
     (root / "waveforms").mkdir(parents=True, exist_ok=False)
@@ -191,8 +191,7 @@ def run(args, requested):
     metadata["git_commit"] = git.stdout.strip() if git.returncode == 0 else None
     nano_start_attempted = False
     try:
-        port = (discover_timing_marker_port() if args.nano_port == "auto"
-                else args.nano_port)
+        port = resolve_port(args.nano_port, "nano")
         metadata["nano_port"] = port
         print(f"[NANO] Serial port {port}", flush=True)
         with NanoLog(port, root / "nano_serial.jsonl") as nano:
