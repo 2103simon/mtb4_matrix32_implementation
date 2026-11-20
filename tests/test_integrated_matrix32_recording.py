@@ -22,6 +22,8 @@ class IntegratedBenchTests(unittest.TestCase):
         self.assertFalse(result["matrix32_armed"])
         self.assertEqual(result["trigger_position_pct"], 0)
         self.assertEqual(result["epoch_sync_count"], 30)
+        self.assertEqual(result["acquisition_order"],
+                         "controller_ready_then_pre_sync_then_arm_scope")
 
     def test_explicit_two_gate_arming(self):
         for argv in (["--arm"], ["--arm", "--run"],
@@ -61,6 +63,46 @@ class IntegratedBenchTests(unittest.TestCase):
             with self.subTest(args=args):
                 with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
                     plan(p.parse_args(args), p)
+
+    def test_controller_ready_is_required_before_scope_capture(self):
+        class RunningProcess:
+            returncode = None
+            def poll(self):
+                return None
+        child = StimulationChild(Path("not_used"), arm=True, stale_ms=250)
+        child.process = RunningProcess()
+        with self.assertRaisesRegex(TimeoutError, "no ACK-verified Matrix32 START"):
+            child.wait_ready(0.01)
+        child.mcu_ready_observed_ns = 123
+        child.mcu_ready.set()
+        # MCU handshake alone cannot authorize an armed scope recording.
+        with self.assertRaisesRegex(TimeoutError, "no ACK-verified Matrix32 START"):
+            child.wait_ready(0.01)
+        child.matrix32_started_observed_ns = 456
+        child.matrix32_started.set()
+        evidence = child.wait_ready(0.01)
+        self.assertEqual(evidence["mcu_configured_observed_monotonic_ns"], 123)
+        self.assertEqual(evidence["matrix32_start_observed_monotonic_ns"], 456)
+        self.assertFalse(evidence["startup_electrical_output_verified"])
+
+    def test_dry_run_ready_only_needs_mcu_configuration(self):
+        class RunningProcess:
+            def poll(self):
+                return None
+        child = StimulationChild(Path("not_used"), arm=False, stale_ms=250)
+        child.process = RunningProcess()
+        child.mcu_ready_observed_ns = 42
+        child.mcu_ready.set()
+        self.assertEqual(
+            child.wait_ready(0.01)["mcu_configured_observed_monotonic_ns"], 42
+        )
+
+    def test_controller_timeout_invalid(self):
+        p = parser()
+        for value in ("nan", "4", "121"):
+            with self.subTest(value=value):
+                with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+                    plan(p.parse_args(["--controller-ready-timeout", value]), p)
 
     def test_child_stop_no_start(self):
         child = StimulationChild(Path("not_used"), arm=False, stale_ms=250)
