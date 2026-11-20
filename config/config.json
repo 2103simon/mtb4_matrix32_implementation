@@ -21,7 +21,7 @@
     "export_dir": "logs"
   },
   "serial": {
-    "port": "auto",
+    "port": null,
     "input_baud_rate": 115200
   },
   "omega": {
