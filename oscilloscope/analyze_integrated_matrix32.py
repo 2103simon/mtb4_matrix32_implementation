@@ -490,6 +490,22 @@ def write_markdown_report(root, report, *, record_index=1, per_record=False):
     old = report["frequency_comparison"]
     clock = report["clock_mapping"]
     counts = report["matrix32_commands"]["counts_by_event"]
+    overlap = report.get("scope_to_host_overlap")
+    if overlap is None:
+        coverage_note = "MCU statistics describe the original recording input."
+    elif overlap["status"] == "unknown_no_per_record_host_map":
+        coverage_note = (
+            "MCU/Matrix32 overlap with this scope acquisition is UNKNOWN "
+            "because its per-record scope-to-host mapping is missing. "
+            "An apparent zero selected MCU samples is NOT evidence of missing telemetry."
+        )
+    else:
+        coverage_note = (
+            f"This record includes {overlap['mcu_sample_count']} MCU samples "
+            f"and {overlap['ble_event_count']} BLE events inside its "
+            "provisionally mapped host window only. "
+            "The continuous logs are analyzed separately in the session report."
+        )
     def fmt(value, unit="", digits=1):
         return "n/a" if value is None else f"{value:.{digits}f}{unit}"
     lines = [
@@ -498,6 +514,7 @@ def write_markdown_report(root, report, *, record_index=1, per_record=False):
         "**not calibrated**; ACK timings indicate software protocol events, "
         "not electrically verified setting application or latency.", "",
         "## What happened?", "",
+        coverage_note, "",
         f"**{scope['samples']:,} CH1 samples** over "
         f"**{scope['duration_s']:.3f} s** and "
         f"**{pulses['positive_rising_events']:,} candidate physical positive phases**. "
@@ -506,7 +523,9 @@ def write_markdown_report(root, report, *, record_index=1, per_record=False):
         f"({fmt(pulses['median_instantaneous_rate_hz'], ' Hz')}). "
         f"Voltage range: {scope['ch1_min_v']:.1f} to {scope['ch1_max_v']:.1f} V.",
         "",
-        f"**{mcu['samples']:,} MCU rate snapshots** recorded "
+        f"**{mcu['samples']:,} MCU rate snapshots** "
+        + ("within this record's estimated scope interval " if per_record
+           else "recorded ")
         f"({fmt(mcu['observed_update_rate_hz'], ' Hz')} median host-arrival "
         f"cadence) for taxel {mcu['taxel']} / {mcu['encoding']}. "
         f"MCU requested output range: "
