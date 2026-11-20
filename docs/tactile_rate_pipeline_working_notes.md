@@ -87,7 +87,7 @@ The Python `SerialManager` now recognizes the `0x05` telemetry in addition to le
 ### Host check procedure
 
 1. Flash MCU firmware from `feature/tactile-rate-streaming` (PlatformIO project: `adafruit_feather_m4`).
-2. Install Python dependencies: `pip install -r requirements.txt`; check port in `config/config.json` (default `/dev/ttyACM0`).
+2. Install Python dependencies: `pip install -r requirements.txt`. The Feather M4 is now located by USB board identity automatically (`config/config.json`: `serial.port = null`); no `/dev/ttyACM*` value is required. See `docs/serial_device_discovery.md` for explicit troubleshooting overrides.
 3. Run `python read_mcu.py --print-every 10` (or `--print-every 1` for each frame). Press Ctrl+C to stop and close CSV.
 4. Inspect `data/*_tactile_rates.csv`. Taxel values should be 0..255; SA rate should match raw * configured SA max / 255; RA rate should track thresholded sample-to-sample changes and return zero when unchanged. Note that RA output has **no** refractory limit.
 5. Run offline tests: `python -m unittest discover -s tests -v` from repository root. **These tests were authored but have not been run against live MCU data.**
