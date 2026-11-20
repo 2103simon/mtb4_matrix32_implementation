@@ -48,6 +48,7 @@ class NanoLog:
         self.thread = None
         self.logfile = None
         self.reader_error = None
+        self.log_lock = threading.Lock()
 
     def __enter__(self):
         import serial  # pyserial is only needed for --run
@@ -63,6 +64,11 @@ class NanoLog:
             self.logfile.close()
             raise
 
+    def _write_log(self, row):
+        with self.log_lock:
+            self.logfile.write(json.dumps(row) + "\n")
+            self.logfile.flush()
+
     def _read(self):
         try:
             while not self.closed.is_set():
@@ -74,11 +80,10 @@ class NanoLog:
                     "received_utc": utc(),
                     "line": raw.decode("ascii", errors="replace").strip(),
                 }
-                self.logfile.write(json.dumps(observed) + "\n")
-                self.logfile.flush()
+                self._write_log(observed)
                 line = observed["line"]
                 if line.startswith(("ACK ", "ERR ")):
-                    self.acks.put(line)
+                    self.acks.put((line, observed["received_monotonic_ns"]))
         except BaseException as exc:
             self.reader_error = f"{type(exc).__name__}: {exc}"
 
@@ -92,7 +97,7 @@ class NanoLog:
             if self.reader_error:
                 raise RuntimeError(f"Nano reader failed: {self.reader_error}")
             try:
-                line = self.acks.get(timeout=min(0.1, max(0.001, deadline - time.monotonic())))
+                line, _ = self.acks.get(timeout=min(0.1, max(0.001, deadline - time.monotonic())))
             except queue.Empty:
                 continue
             tokens = line.split()
@@ -102,6 +107,46 @@ class NanoLog:
                 raise RuntimeError(f"Nano rejected command: {line}")
             # Ignore late stale replies; they are preserved in the JSONL log.
         raise TimeoutError(f"No matching ACK {op} {seq} from Nano")
+
+    def sync_exchange(self, *, timeout=1.0):
+        """Collect 4 timestamps: PC monotonic ns t1/t4, Nano micros t2/t3."""
+        self.next_sequence += 1
+        seq = self.next_sequence
+        t1 = time.monotonic_ns()
+        self.serial.write(f"SYNC {seq}\n".encode("ascii"))
+        self.serial.flush()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.reader_error:
+                raise RuntimeError(f"Nano reader failed: {self.reader_error}")
+            try:
+                line, t4 = self.acks.get(
+                    timeout=min(0.1, max(0.001, deadline - time.monotonic()))
+                )
+            except queue.Empty:
+                continue
+            tokens = line.split()
+            if tokens[:3] == ["ACK", "SYNC", str(seq)]:
+                if len(tokens) != 7 or tokens[3] != "RX_US" or tokens[5] != "TX_US":
+                    raise RuntimeError(f"Malformed Nano SYNC ACK: {line}")
+                try:
+                    t2, t3 = int(tokens[4]), int(tokens[6])
+                except ValueError as exc:
+                    raise RuntimeError(f"Invalid Nano SYNC timestamps: {line}") from exc
+                if not (0 <= t2 < 2**32 and 0 <= t3 < 2**32):
+                    raise RuntimeError(f"Nano SYNC timestamp out of range: {line}")
+                row = {
+                    "type": "sync_exchange", "sequence_id": seq,
+                    "host_send_monotonic_ns": t1,
+                    "host_receive_monotonic_ns": t4,
+                    "nano_receive_us": t2, "nano_transmit_us": t3,
+                    "nano_ack": line,
+                }
+                self._write_log(row)
+                return row
+            if tokens and tokens[0] == "ERR":
+                raise RuntimeError(f"Nano rejected SYNC: {line}")
+        raise TimeoutError(f"No matching ACK SYNC {seq}")
 
     def synchronize(self, *, timeout=8.0):
         # Opening Nano serial may reset firmware. PING is idempotent; START
@@ -135,6 +180,10 @@ def parser():
     p.add_argument("--time-div-us", type=float, default=20000,
                    help="200 ms span by default; >=1 complete 100 ms frame")
     p.add_argument("--acquire-timeout", type=float, default=15)
+    p.add_argument("--sync-count", type=int, default=12,
+                   help="Initial SYNC exchanges (0 for old firmware)")
+    p.add_argument("--sync-per-record", type=int, default=4,
+                   help="Additional SYNC exchanges after each recording")
     p.add_argument("--label", default="gray_marker_baseline")
     p.add_argument("--output-root", type=Path, default=Path("data/recordings"))
     p.add_argument("--run", action="store_true")
@@ -152,6 +201,8 @@ def plan(args, p):
         p.error("timebase must produce >=200 ms window (>=20000 us/div)")
     if not math.isfinite(args.acquire_timeout) or not 0 < args.acquire_timeout <= 120:
         p.error("invalid --acquire-timeout")
+    if not 0 <= args.sync_count <= 200 or not 0 <= args.sync_per_record <= 50:
+        p.error("SYNC counts must be 0..200 initial and 0..50 per record")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.label):
         p.error("invalid --label")
     # record_scope.configure()/verify() interface (no Matrix32 settings).
@@ -173,6 +224,8 @@ def plan(args, p):
         "acquire_timeout_s": args.acquire_timeout,
         "no_stimulation": True,
         "not_continuous": True,
+        "sync_count": args.sync_count,
+        "sync_per_record": args.sync_per_record,
     }
 
 
@@ -208,6 +261,11 @@ def run(args, requested):
             metadata["start_ack"] = nano.command("START")
             print(f"[NANO] Gray-code timebase running ({metadata['start_ack']})",
                   flush=True)
+            metadata["sync_measurements"] = []
+            for _ in range(args.sync_count):
+                metadata["sync_measurements"].append(nano.sync_exchange())
+            print(f"[SYNC] Collected {len(metadata['sync_measurements'])} initial exchanges",
+                  flush=True)
             try:
                 node = resolve_scope_device(args.scope_device)
                 metadata["scope_node"] = str(node)
@@ -242,6 +300,8 @@ def run(args, requested):
                             row["decoded_gray"] = decode_csv(marker_csv)
                             row["status"] = "captured"
                             row["completed_utc"] = utc()
+                            for _ in range(args.sync_per_record):
+                                metadata["sync_measurements"].append(nano.sync_exchange())
                             print(
                                 f"[GRAY] Record {index}: "
                                 f"{row['decoded_gray']['decoded_frame_count']} complete frames; "
