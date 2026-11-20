@@ -5,8 +5,7 @@ Experimental branch: `feature/live-oscilloscope-recording`.
 ## Aim and limits
 
 Generate autonomous **10 Hz framed 16-bit Gray-code time markers** on
-Nano Every **D7**, record those markers simultaneously with a
-Tektronix PROBE COMP calibration waveform, and decode marker indices
+Nano Every **D7**, record those markers on oscilloscope **CH2**, and decode marker indices
 in *independent*, finite oscilloscope acquisitions. This trial does
 **not** modify or operate Matrix32 or the Feather tactile MCU.
 
@@ -34,12 +33,13 @@ are not exact scope-edge timestamps.
    no third-party libraries. Uploading replaces the earlier
    `S07_MARKER_V2` firmware: its command protocol is *different*.
    Flash the earlier firmware back before using previous S07 scripts.
-3. Attach Nano USB to the Linux PC. Wire **Nano D7 -> scope CH4 probe
-   tip**, **Nano GND -> the CH4 probe ground**. CH4 will show a 0/5 V
-   signal if the board is powered at 5 V. Confirm your probe attenuation
-   matches the scope CH4 setting (assumes 1x; adjust if needed).
-4. Attach **scope CH2 tip -> PROBE COMP** and CH2 ground to its companion
-   PROBE COMP ground. Keep CH2 as the trigger source, +1 V, rising.
+3. Attach Nano USB to the Linux PC. Wire **Nano D7 -> scope CH2 probe
+   tip**, **Nano GND -> CH2 probe ground**. CH2 should show a 0/5 V
+   signal if the board is powered at 5 V. Confirm probe attenuation
+   matches scope CH2 settings (the experiment assumes a correctly
+   calibrated probe setting).
+4. **PROBE COMP remains disconnected.** CH2 is both the Gray marker
+   source and the trigger, rising edge at +1 V.
 5. The Arduino/PC/scope share a ground *only within this bench reference
    circuit*. Do **not** connect scope ground or Nano ground directly
    to Matrix32 electrodes or stimulation outputs. A future Matrix32
@@ -70,7 +70,7 @@ The output repeats every **100,000 us**:
 
 The 16 bits are `gray = binary ^ (binary >> 1)`, transmitted MSB
 first. The binary counter is the full unsigned 32-bit `frameIndex`;
-only its **low 16 bits** appear on CH4 and repeat after 65536 frames
+only its **low 16 bits** appear on CH2 and repeat after 65536 frames
 (**109 minutes 13.6 seconds** at 10 Hz). Serial logs include the full
 counter and the Arduino `micros()` reading taken shortly after
 physically raising D7 at START. The host stores monotonic reception
@@ -123,21 +123,21 @@ timeout 120s /home/icub/.virtualenvs/matrix32/bin/python -u \
   oscilloscope/test_gray_timecode.py \
   --nano-port /dev/ttyACM0 --scope-device auto \
   --points 100000 --time-div-us 20000 \
-  --count 1 --label gray_ch2_ch4_single --run
+  --count 1 --label gray_ch2_single --run
 ```
 
-This requests one 100,000-point, 200 ms time window on **both CH2 and
-CH4**. The scope triggers on PROBE COMP, not on the Nano. Depending on
-the starting phase, expect approximately one or two *complete* Gray
-frames plus partial frames. The program reports decoded counters.
+This requests one 100,000-point, 200 ms time window on **CH2 only**.
+The scope triggers on an Arduino D7 rising edge. Depending on trigger
+phase (START or a data pulse), the record may include zero, one, or
+more complete Gray frames. A zero-frame result needs inspection of the
+recorded waveform and is not automatically a recording failure. The program reports decoded counters.
 
 If your Nano enumerates as `/dev/ttyUSB0` or another node, substitute
 that device. An existing serial monitor must be closed first.
 
 The run saves:
 
-- `waveforms/record_00001_ch4.csv` (Gray timecode).
-- `waveforms/record_00001_ch2.csv` (PROBE COMP validation).
+- `waveforms/record_00001_ch2.csv` (Gray timecode).
 - `nano_serial.jsonl` (raw serial events plus host timestamps).
 - `metadata.json` (verified scope settings, capture preambles, decoded
    Gray frames and acquisition results).
@@ -151,13 +151,13 @@ timeout 180s /home/icub/.virtualenvs/matrix32/bin/python -u \
   oscilloscope/test_gray_timecode.py \
   --nano-port /dev/ttyACM0 --scope-device auto \
   --points 1000000 --time-div-us 200000 \
-  --count 3 --label gray_ch2_ch4_multi --run
+  --count 3 --label gray_ch2_multi --run
 ```
 
-This captures three *separate* 2 s waveform windows on CH2 and CH4,
-with about 20 complete Gray frames per record. Each channel is
+This captures three *separate* 2 s waveform windows on CH2,
+with roughly 19–20 complete Gray frames per record. The channel is
 transferred after the scope stops; it remains frozen during transfer.
-At one million points/channel, CSV conversion can take several seconds
+At one million points, CSV conversion can take several seconds
 per record. The external `timeout` is required because USBTMC I/O
 can block.
 
@@ -170,20 +170,20 @@ Physical missing samples **cannot** be interpolated.
 ```bash
 /home/icub/.virtualenvs/matrix32/bin/python \
   oscilloscope/decode_gray_timecode.py \
-  data/recordings/<RUN>/waveforms/record_00001_ch4.csv \
+  data/recordings/<RUN>/waveforms/record_00001_ch2.csv \
   --output data/recordings/<RUN>/gray_decode.json
 ```
 
-Optionally pass all the `record_*_ch4.csv` files to the decoder
+Optionally pass all the `record_*_ch2.csv` files to the decoder
 together. Each record is decoded independently and retains its own
 scope-relative time axis. The decoder uses a +2 V crossing and ±450
 us pulse-width/slot-timing tolerances. Investigate decoding failure
-before altering these bounds; confirm CH4 scaling and wiring.
+before altering these bounds; confirm CH2 scaling and wiring.
 
 ## 6. Interpretation / decision gate
 
 The first goal is **reliable decoding of the exact Gray counters**
-visible on CH4, with matching Arduino `FRAME` lines in the serial log
+visible on CH2, with matching Arduino `FRAME` lines in the serial log
 and no unexplained overruns.
 
 The next step (not yet implemented in the Matrix32 recording path)
