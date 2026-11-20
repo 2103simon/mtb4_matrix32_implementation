@@ -530,3 +530,56 @@ Offline tests:
 Do **not** update the Feather compensation algorithm or the Matrix32
 stimulation event timestamps based on Nano ppm values; clocks are
 independent and must be evaluated separately.
+
+
+## 11. Blocked out-of-sample estimator validation
+
+The November 20 comparison found that the low-delay filtered slope changed
+by only **1.74 ppm** for CRC32 binary versus **10.47 ppm** for text;
+however, three nonoverlapping ten-second windows still showed a
+**185.0 ppm** range (binary) and **119.9 ppm** range (text).
+Filtering insensitivity therefore is not sufficient evidence of a
+stable oscillator estimate or reliable host-time offset.
+
+The offline estimator now also performs **three-fold blocked holdout
+validation**: fit using the other two chronological thirds of the
+SYNC measurements and predict the withheld third's PC arrival/return
+midpoints. For each held-out block, report the RMS, mean signed error
+and maximum absolute error, plus the variability of training-fit slopes.
+This detects extrapolation problems and time-dependent USB latency bias
+without changing the canonical Nano-to-PC mapping.
+
+All held-out errors are comparisons to the *software-observed SYNC
+midpoints*. They are **not** errors against an independently measured
+physical clock offset. A systematic one-way USB delay asymmetry may be
+shared by both training and validation observations and remain invisible.
+
+Run the offline estimator on existing text and CRC32 records; no
+reflashing or new hardware collection is required:
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python \
+  oscilloscope/analyze_nano_clock.py \
+  data/recordings/20261120T104903872313Z_nano_clock_sync
+
+/home/icub/.virtualenvs/matrix32/bin/python \
+  oscilloscope/analyze_nano_clock.py \
+  data/recordings/20261120T104937304807Z_nano_clock_sync
+```
+
+The report stores results at
+`estimator_diagnostics.blocked_holdout_validation`. A withheld midpoint
+bias above 1 ms generates a diagnostic warning. Interpret it as
+**clock-prediction instability and/or changing communication delay**,
+not proof of a specific physical oscillator defect.
+
+Recommended next hardware characterization, after verifying the
+offline diagnostics: run the same **binary CRC32** experiment for
+**180 seconds**. Analyze its full-record drift, 60-second windows and
+holdout predictions before modifying production timestamp correction:
+
+```bash
+timeout 240s /home/icub/.virtualenvs/matrix32/bin/python -u \
+  oscilloscope/test_nano_clock_sync.py \
+  --duration-s 180 --sync-interval-s 0.25 --run
+```
