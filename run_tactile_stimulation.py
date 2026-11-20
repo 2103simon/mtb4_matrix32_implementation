@@ -220,7 +220,6 @@ async def send_live_current(device, current, *, capture=None, source_sample_ns=N
 
 async def frequency_worker(sm, device, ready, taxel, receptor, *, arm,
                            stale_seconds=STALE_SECONDS, capture=None,
-                           experimental_sf_zero=False,
                            experimental_zero_current=False):
     """Single sequential BLE command worker. Never queues older frequencies."""
     await ready.wait()
@@ -292,30 +291,6 @@ async def frequency_worker(sm, device, ready, taxel, receptor, *, arm,
                                          evidence=sf_record, zero_current_workaround=True)
                         if sf_record["status"] != "OK":
                             raise RuntimeError("Zero-current SF=2 was not ACK-verified")
-                    last_command = 0
-                continue
-            if experimental_sf_zero:
-                if last_command != 0:
-                    if capture is not None:
-                        capture.emit("sf_requested", frequency_hz=0,
-                                     source_sample_ns=sample_ns,
-                                     experimental_zero=True)
-                    try:
-                        sf_record = await device.apply_live_frequency(
-                            0, experimental_allow_zero=True
-                        )
-                    except BaseException as exc:
-                        if capture is not None:
-                            capture.emit("sf_failed", frequency_hz=0,
-                                         error=repr(exc),
-                                         evidence=getattr(exc, "record", None))
-                        raise
-                    if capture is not None:
-                        capture.emit("sf_ack", frequency_hz=0, status=sf_record["status"],
-                                     evidence=sf_record, experimental_zero=True)
-                    if sf_record["status"] != "OK":
-                        raise RuntimeError("Experimental SF=0 not ACK-verified")
-                    print("[SF ACK] Experimental SF=0 accepted; physical output state UNVERIFIED")
                     last_command = 0
                 continue
             await stop_output(device, reason="requested frequency is zero", capture=capture)
@@ -437,13 +412,11 @@ async def stale_supervisor(sm, device, ready, *, arm, stale_seconds, capture=Non
 
 
 async def run(config, stim_config=None, *, arm, record=False,
-              experimental_sf_zero=False, experimental_zero_current=False,
+              experimental_zero_current=False,
               stale_seconds=STALE_SECONDS,
               serial_factory=SerialManager, device_factory=Matrix32Device):
-    if (experimental_sf_zero or experimental_zero_current) and not arm:
-        raise ValueError("Experimental SF/SC zero controls require --arm (bench-only)")
-    if experimental_sf_zero and experimental_zero_current:
-        raise ValueError("Choose only one zero strategy: --experimental-sf-zero or --experimental-zero-current")
+    if experimental_zero_current and not arm:
+        raise ValueError("--experimental-zero-current requires --arm (bench-only)")
     stim_config = build_stim_config(config) if stim_config is None else stim_config
     taxel, receptor = validate_settings(config, stim_config, arm=arm)
     check_bleak_version()
@@ -458,7 +431,6 @@ async def run(config, stim_config=None, *, arm, record=False,
         "stimulation_control": {
             "armed": arm,
             "record": record,
-            "experimental_sf_zero": experimental_sf_zero,
             "experimental_zero_current": experimental_zero_current,
             "stale_timeout_ms": int(stale_seconds * 1000),
             "source": config["stimulation_source"],
@@ -479,7 +451,6 @@ async def run(config, stim_config=None, *, arm, record=False,
             group.create_task(mcu_receiver(sm, config, capture, ready))
             group.create_task(frequency_worker(sm, device, ready, taxel, receptor, arm=arm,
                                                stale_seconds=stale_seconds, capture=capture,
-                                               experimental_sf_zero=experimental_sf_zero,
                                                experimental_zero_current=experimental_zero_current))
             group.create_task(stale_supervisor(sm, device, ready, arm=arm,
                                                stale_seconds=stale_seconds, capture=capture))
@@ -518,9 +489,6 @@ def main():
                         help="Explicitly enable ACK-verified CH1 stimulation; otherwise DRY RUN")
     parser.add_argument("--record", action="store_true",
                         help="Save all MCU samples and timestamped Matrix32 commands/ACKs")
-    parser.add_argument("--experimental-sf-zero", action="store_true",
-                        help="Bench/scope only: try SF=0 instead of STOP for zero requests; "
-                             "ACK does NOT guarantee zero physical output")
     parser.add_argument("--experimental-zero-current", action="store_true",
                         help="Bench/scope only: SC1=0 then SF=2 for zero requests, "
                              "restore SF then SC on positive input; ACK is not proof of off")
@@ -541,7 +509,6 @@ def main():
     try:
         asyncio.run(run(config, stim_config, arm=args.arm,
                         record=args.record,
-                        experimental_sf_zero=args.experimental_sf_zero,
                         experimental_zero_current=args.experimental_zero_current,
                         stale_seconds=args.stale_ms / 1000))
     except KeyboardInterrupt:
