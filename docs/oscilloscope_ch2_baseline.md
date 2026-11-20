@@ -164,6 +164,48 @@ transfer and CSV conversion; optimize storage only after measuring.
 We can later record a separate **Arduino Nano marker** on another
 scope channel to relate trigger-relative times to BLE/MCU host times.
 
+## 5. One-million-point timeout diagnosis (20 November 2026)
+
+The operator confirmed that `--points 1000000 --time-div-us 200000`
+**passes the strict scope configuration readback**, unlike 500,000 points,
+which failed that check. However, the initial 1-million-point run
+timed out waiting for `ACQuire:STATE` to reach STOP after **15 s**,
+*before any waveform was transferred*. Thus the instrument's ability
+to complete this particular long sequence remains **unverified**.
+
+Do not infer a transfer-bandwidth problem from this timeout: no
+`CURVE?` read occurred. Possible causes include trigger wait, scope
+processing/holdoff for the long record, or acquisition settings not
+yet characterized. The existing log did not distinguish them.
+
+The recorder now supports an optional `--diagnose-trigger` switch,
+which polls `TRIGger:STATE?` as well as acquisition state and retains
+the observations in `record_00001.json` even if acquisition times out.
+Trigger polling adds SCPI traffic and can affect timing; use only for
+diagnostics, not throughput benchmarks.
+
+**First diagnostic** (one record, longer per-record timeout, external
+watchdog):
+
+```bash
+timeout 120s /home/icub/.virtualenvs/matrix32/bin/python -u \
+  oscilloscope/record_scope_live.py \
+  --device auto --channel 2 --scale 1 \
+  --time-div-us 200000 --points 1000000 \
+  --trigger-edge rising --trigger-level 1 \
+  --trigger-position-pct 50 --count 1 \
+  --acquire-timeout 60 --diagnose-trigger \
+  --label probe_comp_ch2_1m_diag --run
+```
+
+If that times out again, inspect `record_00001.json`:
+`diagnostic_summary.last_acquisition_state`,
+`diagnostic_summary.last_trigger_state`, the trigger-state history
+and `summary.json`. Report those observations before changing
+the trigger or trying different sample lengths. The on-screen
+trigger state and whether CH2 visibly still shows PROBE COMP are
+useful independent checks. No reconfiguration of Matrix32 is involved.
+
 ### Offline regression tests
 
 ```bash
