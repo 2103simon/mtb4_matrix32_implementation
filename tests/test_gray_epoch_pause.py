@@ -130,6 +130,7 @@ class EpochExperimentTests(unittest.TestCase):
         argv = wrapped.call_args.args[0]
         self.assertEqual(argv[argv.index("--count")+1], "3")
         self.assertEqual(argv[argv.index("--pause-between-s")+1], "60")
+        self.assertEqual(argv[argv.index("--time-div-us")+1], "2000000")
         self.assertIn("--per-record-epochs", argv)
         self.assertNotIn("--run", argv)
 
@@ -137,12 +138,12 @@ class EpochExperimentTests(unittest.TestCase):
         p = parser()
         a = p.parse_args([
             "--count", "3", "--points", "1000000",
-            "--time-div-us", "3000000", "--acquire-timeout", "90",
+            "--time-div-us", "2000000", "--acquire-timeout", "90",
             "--per-record-epochs", "--epoch-sync-count", "30",
             "--pause-between-s", "60",
         ])
         requested = plan(a, p)
-        self.assertAlmostEqual(requested["nominal_window_s"], 30)
+        self.assertAlmostEqual(requested["nominal_window_s"], 20)
         self.assertEqual(requested["count"], 3)
         self.assertTrue(requested["per_record_epochs"])
         self.assertEqual(requested["pause_between_s"], 60)
