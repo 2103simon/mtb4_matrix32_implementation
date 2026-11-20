@@ -25,6 +25,7 @@ def read_nano_frames(path):
     frames = {}
     previous_count = None
     previous_us = None
+    previous_unwrapped_us = None
     wrap_count = 0
     with Path(path).open(encoding="utf-8") as stream:
         for line_number, line in enumerate(stream, 1):
@@ -49,7 +50,7 @@ def read_nano_frames(path):
             if previous_us is not None and edge_us < previous_us:
                 wrap_count += 1
             unwrapped_us = edge_us + wrap_count * MOD32_US
-            if frames and unwrapped_us <= next(reversed(frames.values()))["nano_unwrapped_us"]:
+            if previous_unwrapped_us is not None and unwrapped_us <= previous_unwrapped_us:
                 raise ValueError("Nano clock not increasing after unwrapping")
             frames[count] = {
                 "counter": count,
@@ -61,6 +62,7 @@ def read_nano_frames(path):
             }
             previous_count = count
             previous_us = edge_us
+            previous_unwrapped_us = unwrapped_us
     if not frames:
         raise ValueError("No valid FRAME messages in Nano serial log")
     return frames
