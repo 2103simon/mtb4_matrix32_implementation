@@ -28,6 +28,8 @@ import threading
 import serial
 import queue
 
+from communication.serial_ports import resolve_port
+
 from typing import Optional
 
 from communication.clock_compensator import (
@@ -214,6 +216,7 @@ class SerialManager():
             return
 
         try:
+            port = resolve_port(port, "feather")
             self.ser = serial.Serial(
                 port,
                 self.baudrate,
