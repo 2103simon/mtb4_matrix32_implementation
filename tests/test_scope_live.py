@@ -63,6 +63,33 @@ class ScopeLiveTests(unittest.TestCase):
             self.assertEqual([r["index"] for r in saved["records"]], [1, 2, 3])
             self.assertEqual(len(list(files[0].parent.glob("waveforms/*.csv"))), 3)
 
+    def test_trigger_diagnostics_retained_after_timeout(self):
+        with tempfile.TemporaryDirectory() as folder:
+            args = scope.build_parser().parse_args(
+                ["--diagnose-trigger", "--output-root", folder])
+            scope.validate_args(args, scope.build_parser())
+            root = Path(folder)
+            (root / "waveforms").mkdir()
+            snapshot = {
+                "elapsed_s": 15.1,
+                "acquisition_state_observations": [{"value": "1"}],
+                "trigger_state_observations": [{"value": "READY"}],
+                "first_trigger_observation": None,
+            }
+
+            def timeout_acquire(f, timeout, on_progress=None):
+                self.assertIsNotNone(on_progress)
+                on_progress(snapshot)
+                raise TimeoutError("scope still running")
+
+            with patch.object(scope, "acquire", side_effect=timeout_acquire):
+                with self.assertRaisesRegex(TimeoutError, "scope still running"):
+                    scope.acquire_one(None, args, index=1, root=root)
+            record = json.loads((root / "record_00001.json").read_text())
+            self.assertEqual(record["status"], "failed")
+            self.assertEqual(record["diagnostic_summary"]["last_trigger_state"], "READY")
+            self.assertEqual(record["diagnostic_summary"]["last_acquisition_state"], "1")
+
     def test_failure_retains_summary_and_index(self):
         with tempfile.TemporaryDirectory() as folder:
             args = scope.build_parser().parse_args(
