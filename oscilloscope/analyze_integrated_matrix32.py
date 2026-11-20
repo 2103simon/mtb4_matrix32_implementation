@@ -509,8 +509,9 @@ def write_markdown_report(root, report, *, record_index=1, per_record=False):
         f"**{mcu['samples']:,} MCU rate snapshots** recorded "
         f"({fmt(mcu['observed_update_rate_hz'], ' Hz')} median host-arrival "
         f"cadence) for taxel {mcu['taxel']} / {mcu['encoding']}. "
-        f"MCU requested output range: {mcu['requested_rate_min_hz']:.0f}–"
-        f"{mcu['requested_rate_max_hz']:.0f} Hz. "
+        f"MCU requested output range: "
+        f"{fmt(mcu['requested_rate_min_hz'], ' Hz', 0)} to "
+        f"{fmt(mcu['requested_rate_max_hz'], ' Hz', 0)}. "
         "Host-arrival cadence is not necessarily the MCU's true firmware update rate.",
         "",
         f"**{counts.get('sf_ack', 0)} acknowledged SF frequency changes**; "
@@ -603,7 +604,7 @@ def write_markdown_report(root, report, *, record_index=1, per_record=False):
 
 
 
-def summarize(root, meta, *, threshold_v=2, deadtime_ms=1, taxel=None,
+def summarize_legacy_single_record(root, meta, *, threshold_v=2, deadtime_ms=1, taxel=None,
               zoom_start=None, zoom_sec=0.5, show=False,
               frequency_window_s=1.0, frequency_step_s=0.25,
               frequency_tolerance_hz=3.0, frequency_tolerance_fraction=0.05):
@@ -783,6 +784,22 @@ def summarize(root, meta, *, threshold_v=2, deadtime_ms=1, taxel=None,
         # PNGs have been saved; interactive viewers can open files separately.
         print("[INFO] Use your image viewer to open the saved PNG plots.")
     return report
+
+
+def summarize(root, meta, *, threshold_v=2, deadtime_ms=1, taxel=None,
+              zoom_start=None, zoom_sec=0.5, show=False,
+              frequency_window_s=1.0, frequency_step_s=0.25,
+              frequency_tolerance_hz=3.0, frequency_tolerance_fraction=0.05):
+    """One session = N independent scope records + one continuous MCU log."""
+    from oscilloscope.analyze_integrated_session import analyze_session
+    return analyze_session(
+        root, meta, threshold_v=threshold_v, deadtime_ms=deadtime_ms,
+        taxel=taxel, zoom_start=zoom_start, zoom_sec=zoom_sec, show=show,
+        frequency_window_s=frequency_window_s,
+        frequency_step_s=frequency_step_s,
+        frequency_tolerance_hz=frequency_tolerance_hz,
+        frequency_tolerance_fraction=frequency_tolerance_fraction,
+    )
 
 
 def main(argv=None):
