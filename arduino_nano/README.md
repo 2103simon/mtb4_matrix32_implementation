@@ -37,15 +37,15 @@ Each command returns a matching `ACK`. `SYNC` returns
 The PC brackets the exchange with `time.monotonic_ns()` to estimate
 clock offset and drift. USB delay asymmetry remains an uncertainty.
 
-A second **binary CRC32 SYNC v1** request/ACK transport is available for
-controlled latency experiments. It uses 12-byte requests and 20-byte
+The **binary CRC32 SYNC v1** request/ACK transport is now the default
+for Nano synchronization after the 2026-11-20 A/B latency comparison. It uses 12-byte requests and 20-byte
 responses, with magic bytes `A5 5A`, version, message type, sequence
 number, Nano timestamps in the response, and IEEE CRC32 over the
 message body (little-endian fields). The ASCII Gray `FRAME` stream and
 legacy commands remain unchanged. See the protocol specification and
 A/B benchmark in `docs/gray_timecode_scope_experiment.md`.
-The extra transport is experimental; CRC32 protects frame integrity
-but cannot reveal asymmetric USB delays.
+Text SYNC is retained for legacy compatibility and controlled comparison.
+CRC32 protects frame integrity but cannot reveal asymmetric USB delays.
 At START the firmware
 generates a framed 16-bit Gray counter at 10 Hz on D7 while reporting
 the full counter over USB serial. Never run the serial monitor and
