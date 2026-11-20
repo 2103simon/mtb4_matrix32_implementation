@@ -97,6 +97,7 @@ class SerialManager():
         self.logger = logger or logging.getLogger(__name__)
         self.config = config or {}
         self.baudrate = self._get_baudrate_from_config()
+        self.connected_port = None
         self._rx_buffer = bytearray()
         self._resynchronizing = False
         self._link_ready_emitted = False
@@ -222,6 +223,7 @@ class SerialManager():
                 self.baudrate,
                 timeout=0.1
             )
+            self.connected_port = port
 
             self.logger.info(
                 f"Opened serial port {port} at {self.baudrate}"
