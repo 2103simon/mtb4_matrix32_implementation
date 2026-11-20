@@ -295,3 +295,63 @@ consistency check, not verified electrical latency or perfect tracking**.
 Independent CH1 waveforms remain the source of physical frequency
 evidence. The report retains every comparison window in JSON and a
 readable subset plus all discrepancies in Markdown.
+
+
+## Improved report: dynamic Matrix32 tracking (2026-11-20)
+
+The initial live benchmark had **517 ACK-verified SF updates** within
+approximately 20 s, a median 37.5 ms between output-state observations.
+A 1.0 s sliding count window with an additional 0.5 s guard on both
+sides cannot be called 'settled' while the stimulus is continuously
+changing; therefore **0/76 settled windows is an inapplicable
+qualification rule, not 76 failures of the Matrix32**.
+
+The analyzer now separately evaluates **each complete physical
+positive-pulse interval** against the *last acknowledged SF*. Intervals
+straddling a BLE state change, occurring within 5 ms of the last ACK,
+or during an ACK-indicated zero-current state are explicitly
+unclassified. Comparisons are called **provisionally compatible**
+within max(8 Hz, 15% of the acknowledged frequency), or **provisionally
+discrepant** otherwise. No lag is optimized to make the traces match.
+The report shows compared counts, the compatible fraction, median
+absolute Hz error, the most commonly tested acknowledged SF values and
+a time-resolved per-cycle scatter plot. This is a diagnostic
+consistency test, not a validated physical latency measurement:
+the host-to-scope map is not absolutely calibrated and
+ACK timestamps are not device-internal apply timestamps.
+
+**Output organization (each run already has its own recording root):**
+
+```text
+data/recordings/<run_id>/
+    metadata.json
+    nano_serial.jsonl
+    mcu_matrix32/
+    waveforms/
+    analysis/
+        integrated_report.md
+        integrated_summary.json
+        record_00001/
+            integrated_overview.png
+            matrix32_pulse_zoom.png
+            matrix32_frequency_comparison.png
+            matrix32_dynamic_tracking.png
+```
+
+Scope waveform and MCU data are plotted on a shared 0..20 s
+view only when a provisional cross-clock map exists; otherwise
+the plot clearly labels their separate time domains. The report no
+longer includes a hundred-line `not_testable` frequency table.
+All raw per-cycle results remain preserved in JSON.
+
+Reanalyze the existing run without another bench session:
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python -u \
+  oscilloscope/analyze_integrated_matrix32.py \
+  --run-dir data/recordings/20261120T144806568426Z_integrated_matrix32_scope
+```
+
+Use a **separate, safely isolated dummy-load plateau experiment**
+with fixed SF values held for several seconds when the objective is
+precise steady-state frequency accuracy, rather than live tracking.
