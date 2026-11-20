@@ -2,7 +2,8 @@
 
 Select by USB identity, not volatile /dev/ttyACM numbers. Never open
 candidate ports or probe firmware (opening may reset an Arduino).
-An explicit path always wins. Ambiguous matches require operator choice.
+Device selection is implicit by role; an explicit path still overrides. Ambiguous
+matches require operator choice.
 """
 from __future__ import annotations
 
@@ -89,9 +90,16 @@ def discover_port(role, *, ports=None, serial_number=None):
 
 
 def resolve_port(port, role, *, ports=None, serial_number=None):
-    if port and str(port).lower() != "auto":
-        return str(port)
-    return discover_port(role, ports=ports, serial_number=serial_number)
+    """Resolve omitted port by device role; explicit paths override discovery.
+
+    The legacy string 'auto' is deliberately rejected: callers should omit
+    port configuration entirely, or pass None.
+    """
+    if port is None:
+        return discover_port(role, ports=ports, serial_number=serial_number)
+    if not isinstance(port, str) or not port.strip() or port.strip().lower() == "auto":
+        raise ValueError("Omit the serial port for discovery, or provide an explicit device path")
+    return port
 
 
 def main(argv=None):
