@@ -77,6 +77,11 @@ def main(argv=None):
                     except BaseException as stop_exc:
                         metadata["nano_stop_error"] = repr(stop_exc)
                         print(f"[NANO] STOP not acknowledged: {stop_exc}", flush=True)
+        metadata["nano_stream_diagnostics"] = {
+            "binary_crc_errors": nano.decoder.bad_crc_count,
+            "discarded_stream_bytes": nano.decoder.discarded_byte_count,
+            "serial_reader_error": nano.reader_error,
+        }
         report = analyze_run(root)
         result_path = root / "nano_host_clock.json"
         result_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
