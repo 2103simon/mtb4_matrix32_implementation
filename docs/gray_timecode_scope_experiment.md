@@ -583,3 +583,101 @@ timeout 240s /home/icub/.virtualenvs/matrix32/bin/python -u \
   oscilloscope/test_nano_clock_sync.py \
   --duration-s 180 --sync-interval-s 0.25 --run
 ```
+
+
+## 12. Three independent scope captures with deliberate 60-second pauses
+
+Purpose: test whether **per-record Nano-to-PC clock fits** are more stable
+than one global fit across deliberate acquisition gaps. The Nano Every
+D7 Gray-code generator is **started once and never reset between records**.
+Its continuous frame counter disambiguates successive waveform captures.
+Only the **estimator sample set** resets per record; each epoch has its
+own disjoint pre- and post-acquisition CRC32 SYNC observations. The
+Feather M4 and Matrix32 are not used, and stimulation stays OFF.
+
+The specialized entry point wraps the validated scope-only Gray capture:
+
+```bash
+cd ~/code/mtb4_matrix32_implementation
+git pull origin feature/live-oscilloscope-recording
+
+# OFFLINE tests; do not open Arduino or scope
+/home/icub/.virtualenvs/matrix32/bin/python -m unittest discover \
+  -s tests -p 'test_gray_epoch_pause.py' -v
+
+# DRY RUN: show the exact plan; no serial/USBTMC device opened
+/home/icub/.virtualenvs/matrix32/bin/python -u \
+  oscilloscope/test_gray_epoch_pause.py
+```
+
+Bench experiment with external USBTMC watchdog:
+
+```bash
+timeout 900s /home/icub/.virtualenvs/matrix32/bin/python -u \
+  oscilloscope/test_gray_epoch_pause.py --run
+```
+
+Default plan: **three nominally 30-second, 1,000,000-sample finite
+oscilloscope records** (3 s/div, CH2 trigger at +1 V), **60 seconds
+of deliberate pause after each completed transfer except the last**,
+and **30 binary SYNC measurements immediately before arming and 30
+immediately after the acquisition completes** for each record. No SYNC
+messages are sent during the acquisition. The host reader still records
+the ongoing Nano `FRAME` messages. The sync time windows bracket each
+record; per-record fits use only that record's 60 SYNC exchanges.
+
+**Hardware qualification:** 3 s/div and a 1M-point record length are
+requested, not assumed supported. The code refuses acquisition if the
+Tektronix scope does not confirm both settings. If the scope rounds
+3 s/div to another supported step, use an explicit override such as
+`--time-div-us 2000000` for a 20 s record (same sample count), rather
+than ignoring the failed verification. Always inspect the actual saved
+waveform preamble and time span. At 30 s / 1M samples the nominal 30 us
+sample spacing gives approximately 33 samples for the narrowest 1 ms
+Gray pulse, adequate for a first decoder attempt but coarser than
+the prior 2 us marker experiment.
+
+The pause starts **after waveform transfer/decoding**, before the next
+pre-SYNC batch. The scope acquisition is not continuous between these
+records; physically missing waveform samples cannot be recovered.
+An actual run may take considerably longer than the three acquisition
+windows plus the two pauses because waveform transfer and verification
+are also required. The script logs real pause start and end host
+monotonic timestamps.
+
+On success the run directory contains:
+`metadata.json`, `nano_serial.jsonl`, and
+`waveforms/record_00001_ch2.csv` through
+`waveforms/record_00003_ch2.csv`.
+Metadata stores `clock_epoch` for every record with independent pre/post
+SYNC sequence IDs, bracketing host monotonic times, and actual pause
+intervals. No firmware reflash is needed if CRC32 SYNC v1 is already
+installed.
+
+### Analyze after the experiment
+
+Use the run directory printed by the acquisition tool:
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python \
+  oscilloscope/analyze_gray_epoch_experiment.py \
+  data/recordings/<YOUR_GRAY_EPOCH_RUN>
+```
+
+This reads the capture and raw serial observations, recomputes a
+separate **scope-to-Nano alignment** per waveform record, and then
+fits a separate **Nano-to-PC monotonic clock mapping** from that
+record's pre/post SYNC set. It writes both `gray_alignment.json`
+and `epoch_clock_analysis.json`. The final report includes per-record
+drift, fit RMS, latency/offset diagnostics, independent sequence IDs,
+sample endpoint estimates in PC monotonic time, qualification warnings
+and an explicit scope-to-Nano timing-error threshold.
+
+A local fit is `provisional_local_fit` only if its sync windows
+correctly bracket acquisition, there are enough observations, its
+midpoint RMS does not exceed 1 ms, its offset feasibility constraints
+overlap, and its low-delay slope sensitivity is at most 50 ppm.
+Otherwise it is **unqualified**, preserving raw evidence and warnings.
+These are exploratory diagnostic thresholds, **not** a claim of
+microsecond-accurate host synchronization. USB asymmetry still limits
+absolute offset accuracy even when an epoch fit passes all checks.
