@@ -178,7 +178,7 @@ Behavior:
 - Ignore any latest sample timestamped before the MCU configuration ACK gate.
 - For Matrix32, round the selected requested rate to whole Hz, clip to **400 Hz**, and treat anything below **2 Hz** as **OFF**. Matrix32 SF=1 is not used due to the previously documented START anomaly. These are device bounds, not a general physiological-safety guarantee.
 - `--arm` explicitly permits output. To START after a positive request, set CH1 SF to the selected fresh rate, require all seven configuration ACKs, recheck freshness, then call `device.start()`. Subsequent changed positive frequencies use `device.apply_live_frequency()` sequentially with the library's qualified ACK/guard transport. Each BLE update is completed before reading the latest next value.
-- A zero request normally issues Matrix32 STOP. The opt-in `--experimental-zero-current` mode instead commands SC1=0/SF=2 as verified visually on the operator's oscilloscope (see below). A separate 20-ms stale-data supervisor attempts STOP if output is running and MCU input has aged more than 250 ms (configurable via `--stale-ms`); it then aborts the run rather than automatically restarting. Any sensor/connection failure or Ctrl+C triggers a best-effort STOP and BLE disconnect in cleanup. **If BLE is lost, physical output state is unknown**; isolate output and verify physically.
+- After a first positive-rate START, a zero request **now defaults to SC1=0 followed by SF=2**, matching the operator's observed no-visible-pulses oscilloscope result. The next positive rate restores SF first, then SC1, without a new START. A separate 20-ms stale-data supervisor attempts STOP if output is running and MCU input has aged more than 250 ms (configurable via `--stale-ms`); it then aborts the run rather than automatically restarting. Any sensor/connection failure or Ctrl+C triggers a best-effort STOP and BLE disconnect in cleanup. **If BLE is lost, physical output state is unknown**; isolate output and verify physically.
 - This is a **bench-test increment**, not medically or clinically qualified stimulation. Confirm frequency, latency, output-off behavior and rapid-change behavior on the oscilloscope with a suitable dummy load before any other use.
 - Offline tests: `python -m unittest discover -s tests -p 'test_tactile_stimulation.py' -v`. The integration has **not been physically tested** and the tests have **not been executed** here.
 
@@ -199,7 +199,7 @@ Without `--record`, **no recording files are created**. The independent `read_mc
 
 The unsuccessful earlier **SF=0** experiment was removed: SF=0 is outside the documented Matrix32 range **1..400 Hz**, and did not yield the desired output behavior. The application and `Matrix32Device.apply_live_frequency()` no longer offer that experiment.
 
-The successful SC0/SF2 workaround remains **explicit opt-in** with `--experimental-zero-current` so ordinary `--arm` retains the previously validated zero-request STOP behavior. After the first positive-frequency START, the latest-value worker does:
+The successful-on-the-bench SC0/SF2 workaround is now the **standard behavior of `--arm`**, without an extra experimental flag. The first positive-frequency START is still required; an initial zero never STARTs the device. After the first START, the latest-value worker does:
 
 1. **Positive → zero input:** ACK-verified CH1 `SC=0`, then ACK-verified `SF=2` (if frequency is not already 2 Hz). It sends no duplicate commands while the request stays zero.
 2. **Zero → positive input:** ACK-verified `SF=requested_hz` **while SC remains zero**, then ACK-verified restoration of the original fixed CH1 SC command. No full configuration/START occurs.
@@ -216,11 +216,8 @@ The SC command is a **69-byte vector** (32 unsigned 16-bit channels) sent as a s
 # Safe diagnostic plus MCU/Matrix32 recording
 /home/icub/.virtualenvs/matrix32/bin/python run_tactile_stimulation.py --record
 
-# Armed with normal zero-request STOP, optional recording
+# Armed: SC0/SF2 is the standard zero-request strategy, optional recording
 /home/icub/.virtualenvs/matrix32/bin/python run_tactile_stimulation.py --arm --record
-
-# Bench-verified SC0/SF2 zero-request strategy, optional recording
-/home/icub/.virtualenvs/matrix32/bin/python run_tactile_stimulation.py --arm --record --experimental-zero-current
 ```
 
 The SC0/SF2 result should be rechecked on the oscilloscope if current, phase width, voltage, ST, load, or Matrix32 firmware changes. Relevant offline tests: `test_tactile_stimulation.py` and `test_matrix32_capture.py`.
