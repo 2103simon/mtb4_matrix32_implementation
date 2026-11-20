@@ -476,117 +476,126 @@ def plot_frequency_comparison(root, windows, compared, mapping):
 
 
 def write_markdown_report(root, report):
-    """Publish an entirely offline human-readable report beside JSON."""
+    """Short, question-oriented report; full detail stays in JSON."""
     out = root / "analysis" / "integrated_report.md"
-    scope, mcu, pulses = report["scope"], report["mcu"], report["scope"]["pulse_detection"]
-    frequency = report["frequency_comparison"]
-    def fmt(value, suffix="", precision=2):
-        return "not available" if value is None else f"{value:.{precision}f}{suffix}"
-    lines = [
-        f"# Integrated Matrix32 recording — {report['run_id']}", "",
-        "> **Exploratory, bench-only analysis.** BLE acknowledgments confirm a protocol response, "
-        "not electrical output timing. Cross-clock alignment is provisional; USB asymmetry "
-        "is not calibrated. Do not use reported frequency agreement to claim precise latency.",
-        "", "## Overview", "",
-        "| Measurement | Value |", "| --- | ---: |",
-        f"| Acquisition status | {report['recording_status']} |",
-        f"| CH1 waveform duration | {fmt(scope['duration_s'], ' s', 3)} |",
-        f"| CH1 samples | {scope['samples']:,} |",
-        f"| CH1 voltage range | {fmt(scope['ch1_min_v'], ' V')} to {fmt(scope['ch1_max_v'], ' V')} |",
-        f"| Gray frames (CH2) | {scope['gray_frames']} |",
-        f"| Candidate positive CH1 events | {pulses['positive_rising_events']:,} |",
-        f"| Median local CH1 rate | {fmt(pulses['median_instantaneous_rate_hz'], ' Hz')} |",
-        f"| Median CH1 interval | {fmt(pulses['median_interevent_ms'], ' ms', 3)} |",
-        f"| MCU rate snapshots | {mcu['samples']:,} |",
-        f"| MCU arrival cadence | {fmt(mcu['observed_update_rate_hz'], ' Hz')} |",
-        f"| Selected taxel / encoding | {mcu['taxel']} / {mcu['encoding']} |",
-        f"| MCU requested rate | {fmt(mcu['requested_rate_min_hz'], ' Hz')} to "
-        f"{fmt(mcu['requested_rate_max_hz'], ' Hz')} |",
-        f"| Matrix32 BLE trace events | {report['matrix32_commands']['events']:,} |",
-        "", "## Physical frequency versus command acknowledgments", "",
-        f"Sliding count window **{fmt(frequency['window_s'], ' s')}** stepped by "
-        f"**{fmt(frequency['step_s'], ' s')}**. An event is a rising CH1 "
-        f"positive-phase threshold crossing above {fmt(pulses['positive_threshold_v'], ' V')}. "
-        "The measured rate is events/window duration, quantized at 1/window seconds. "
-        "This is not a guaranteed biphasic-cycle detector.",
-        "",
-        "Expected rates are sourced from the **ACK-verified initial configuration and START**, "
-        "followed by successful `sf_ack` updates. Requested-only `sf_requested` events "
-        "are not counted as accepted changes. `sc_ack` with current=0 is treated as muted. "
-        "A settled window must be clear of ACK transitions by 0.5 s at each end.",
-        "",
-        f"| Settled windows comparable | {frequency['comparable_windows']} |",
-        f"| Compatible (provisional) | {frequency['compatible_windows']} |",
-        f"| Discrepant (provisional) | {frequency['discrepant_windows']} |",
-        f"| Not comparable | {frequency['not_comparable_windows']} |",
-        f"| Tolerance | max({fmt(frequency['tolerance_hz'], ' Hz')}, "
-        f"{fmt(100*frequency['tolerance_fraction'], '%')}, count quantization) |",
-        "", "![Measured and acknowledged frequency](matrix32_frequency_comparison.png)", "",
-        "### Frequencies tested (grouped by acknowledged setting)", "",
-        "| ACK-indicated SF (Hz) | Comparable windows | Compatible | Discrepant | Median measured CH1 (Hz) | Assessment |",
-        "| ---: | ---: | ---: | ---: | ---: | --- |",
-    ]
-    if not frequency["by_ack_frequency"]:
-        lines.append("| — | 0 | 0 | 0 | — | No ACK-indicated frequencies |")
-    for grouped in frequency["by_ack_frequency"]:
-        lines.append(
-            f"| {grouped['acknowledged_frequency_hz']} | "
-            f"{grouped['settled_windows']} | {grouped['compatible_windows']} | "
-            f"{grouped['discrepant_windows']} | "
-            f"{fmt(grouped['median_measured_rate_hz'], precision=1)} | "
-            f"{grouped['assessment']} |"
-        )
-    lines.extend([
-        "", "### Time-resolved frequency check", "",
-        "| Scope time (s) | CH1 measured (Hz) | ACK-indicated SF (Hz) | Difference (Hz) | Assessment |",
-        "| ---: | ---: | ---: | ---: | --- |",
-    ])
-    # One row per second (or an anomalous window) keeps the report readable.
-    selection = [w for i, w in enumerate(frequency["windows"]) if
-                 i % max(1, round(1/frequency["step_s"])) == 0
-                 or w["assessment"] == "discrepant_provisional"]
-    for w in selection:
-        lines.append(
-            f"| {w['center_scope_s']:.2f} | {w['physical_rate_hz']:.1f} | "
-            f"{fmt(w['ack_expected_hz'], precision=1)} | "
-            f"{fmt(w['difference_hz'], precision=1)} | "
-            f"{w['assessment']} |"
-        )
-    if not selection:
-        lines.append("| — | — | — | — | No measurable windows |")
-    lines.extend([
-        "", "Individual windows with a near-boundary ACK transition are intentionally "
-        "reported **not comparable**. Agreement is **provisional**, even when "
-        "the clock fit passed the original Gray RMS criterion.",
-        "", "## Commands and recorded evidence", "",
-        "| BLE trace event | Count |", "| --- | ---: |",
-    ])
-    for event, count in sorted(report["matrix32_commands"]["counts_by_event"].items()):
-        lines.append(f"| `{event}` | {count} |")
+    scope = report["scope"]
+    mcu = report["mcu"]
+    pulses = scope["pulse_detection"]
+    dynamic = report["dynamic_tracking"]
+    old = report["frequency_comparison"]
     clock = report["clock_mapping"]
-    lines += [
-        "", "## Timing / limitations", "",
-        f"- Clock qualification: **{clock['status'] if clock else 'not available'}**.",
-        f"- Scope-to-Nano RMS: **{fmt(clock.get('scope_rms_us') if clock else None, ' µs')}**.",
-        f"- Nano-to-PC fit RMS: **{fmt(clock.get('nano_pc_rms_us') if clock else None, ' µs')}**.",
-        "- The Nano USB one-way offset remains uncalibrated; the expected-vs-measured "
-        "time overlay is therefore exploratory, not an absolute timing guarantee.",
-        "- The 44.5 Hz MCU update cadence and Matrix32 physical pulse frequency "
-        "are different quantities.",
-        "", "## Figures", "",
-        "### CH1 waveform, physical event density, MCU sensor and requested rate",
-        "![Integrated overview](integrated_overview.png)", "",
-        "### Detailed biphasic output voltage",
-        "![CH1 pulse zoom](matrix32_pulse_zoom.png)", "",
-        "## Files", "",
-        "- Machine-readable results: [integrated_summary.json](integrated_summary.json)",
-        f"- Waveform: [CH1](../{scope['ch1_path']}), [CH2](../{scope['ch2_path']})",
-        "", "## Warnings", "",
+    counts = report["matrix32_commands"]["counts_by_event"]
+    def fmt(value, unit="", digits=1):
+        return "n/a" if value is None else f"{value:.{digits}f}{unit}"
+    lines = [
+        f"# Matrix32 recording: {report['run_id']}", "",
+        "> Bench-only exploratory recording. Scope↔Nano↔PC offset is "
+        "**not calibrated**; ACK timings indicate software protocol events, "
+        "not electrically verified setting application or latency.", "",
+        "## What happened?", "",
+        f"**{scope['samples']:,} CH1 samples** over "
+        f"**{scope['duration_s']:.3f} s** and "
+        f"**{pulses['positive_rising_events']:,} candidate physical positive phases**. "
+        f"Median physical positive-phase interval: "
+        f"**{fmt(pulses['median_interevent_ms'], ' ms', 3)}** "
+        f"({fmt(pulses['median_instantaneous_rate_hz'], ' Hz')}). "
+        f"Voltage range: {scope['ch1_min_v']:.1f} to {scope['ch1_max_v']:.1f} V.",
+        "",
+        f"**{mcu['samples']:,} MCU rate snapshots** recorded "
+        f"({fmt(mcu['observed_update_rate_hz'], ' Hz')} median host-arrival "
+        f"cadence) for taxel {mcu['taxel']} / {mcu['encoding']}. "
+        f"MCU requested output range: {mcu['requested_rate_min_hz']:.0f}–"
+        f"{mcu['requested_rate_max_hz']:.0f} Hz. "
+        "Host-arrival cadence is not necessarily the MCU's true firmware update rate.",
+        "",
+        f"**{counts.get('sf_ack', 0)} acknowledged SF frequency changes**; "
+        f"{counts.get('sf_requested', 0)} sent SF requests. "
+        f"{counts.get('sc_ack', 0)} acknowledged current changes; "
+        f"{counts.get('start_write_completed', 0)} START completion(s).",
+        "",
+        "## Did physical pulse frequency follow the Matrix32 commands?", "",
+        "### Dynamic check: one pulse interval at a time", "",
+        "The physical frequency is 1 / interval between successive detected "
+        "positive pulse phases. It is compared with the most recent "
+        "ACK-indicated SF only when no ACK transition occurred inside that "
+        "interval and the previous ACK is at least 5 ms old.",
+        "",
+        "| Measure | Value |", "| --- | ---: |",
+        f"| Complete measured pulse intervals | {dynamic['complete_intervals']} |",
+        f"| Provisionally comparable | {dynamic['classified']} |",
+        f"| Compatible (max 8 Hz or 15%) | {dynamic['compatible']} |",
+        f"| Discrepant | {dynamic['discrepant']} |",
+        f"| Not comparable (transition / mute / unknown) | {dynamic['not_comparable']} |",
+        f"| Comparable fraction within tolerance | "
+        f"{fmt(100*dynamic['compatibility_fraction'] if dynamic['compatibility_fraction'] is not None else None, '%')} |",
+        f"| Median absolute frequency difference | "
+        f"{fmt(dynamic['median_absolute_error_hz'], ' Hz')} |",
+        "",
+        "![Dynamic per-pulse tracking](record_00001/matrix32_dynamic_tracking.png)", "",
+        "### Where did it match and where did it differ?", "",
+        "These are the **most frequently observed ACK frequencies among "
+        "comparable pulse intervals**, not a certification of steady-state "
+        "frequency accuracy. Each line can include measurements at different "
+        "times. The complete per-cycle results are in JSON.",
+        "",
+        "| ACK SF (Hz) | Compared intervals | Within tolerance | Outside tolerance | Median physical (Hz) |",
+        "| ---: | ---: | ---: | ---: | ---: |",
     ]
-    lines.extend(f"- {warning}" for warning in report["warnings"])
+    if not dynamic["per_frequency"]:
+        lines.append("| — | 0 | 0 | 0 | — |")
+    for item in dynamic["per_frequency"][:15]:
+        lines.append(
+            f"| {item['ack_hz']} | {item['cycle_intervals']} | "
+            f"{item['compatible']} | {item['discrepant']} | "
+            f"{item['median_measured_hz']:.1f} |"
+        )
+    lines += [
+        "", "### What the one-second analysis can (and cannot) say", "",
+        f"The original 1-second sliding-window test found "
+        f"**{old['comparable_windows']} settled windows** of "
+        f"**{len(old['windows'])}**. With changing SF approximately every "
+        "few tens of milliseconds, those windows are mainly **ineligible**, "
+        "not failed. The sliding rate curve is still useful to visualize "
+        "overall frequency trends.",
+        "",
+        "![Sliding physical rate](record_00001/matrix32_frequency_comparison.png)", "",
+        "## Sensor and waveform context", "",
+        "![Scope waveform and MCU traces](record_00001/integrated_overview.png)", "",
+        "### Un-decimated voltage detail", "",
+        "![Pulse zoom](record_00001/matrix32_pulse_zoom.png)", "",
+        "## Clock and data quality", "",
+        f"- Scope-to-Nano Gray fit RMS: "
+        f"**{fmt(clock.get('scope_rms_us') if clock else None, ' µs')}**.",
+        f"- Nano-to-PC fit RMS: "
+        f"**{fmt(clock.get('nano_pc_rms_us') if clock else None, ' µs')}**.",
+        f"- Original clock qualification: "
+        f"**{clock.get('status') if clock else 'unavailable'}**.",
+        f"- First physical positive-phase event: "
+        f"**{fmt(pulses['first_positive_event_scope_s'], ' s', 3)}**.",
+        f"- Last physical positive-phase event: "
+        f"**{fmt(pulses['last_positive_event_scope_s'], ' s', 3)}**.",
+        "- The 20 µs scope sampling interval limits pulse-edge resolution.",
+        "- BLE ACK ordering and provisional host timestamps cannot establish "
+        "true electrical frequency-update latency or exact device apply time.",
+        "- Dynamic comparisons assume a frequency update can affect the "
+        "next measurable pulse cycle. The 5 ms guard is a diagnostic choice.",
+        "- Pulse detection depends on CH1 voltage threshold, hysteresis, "
+        "and minimum event spacing; inspect the waveform if counts look wrong.",
+        "", "## Raw files and next checks", "",
+        "- Full statistics, individual cycle classifications and raw ACK "
+        "states: [integrated_summary.json](integrated_summary.json).",
+        f"- Physical [CH1](../{scope['ch1_path']}) and "
+        f"Gray [CH2](../{scope['ch2_path']}) CSV files.",
+        "- To validate *steady-state* SF accuracy, do a separate dummy-load "
+        "run with several-second plateaus at fixed frequencies; live variable "
+        "SF updates are too rapid for 1-second steady-state windows.",
+        "", "### Warnings", "",
+    ]
+    lines.extend(f"- {message}" for message in report["warnings"])
     lines.append("")
     out.write_text("\n".join(lines), encoding="utf-8")
     return str(out)
+
 
 
 def summarize(root, meta, *, threshold_v=2, deadtime_ms=1, taxel=None,
