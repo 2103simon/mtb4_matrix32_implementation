@@ -38,6 +38,58 @@ static uint32_t timingOverruns = 0;
 static char input[64];
 static uint8_t inputSize = 0;
 
+// Binary SYNC v1: A5 5A 01 TYPE SEQ_LE32 [TIMES_LE32] CRC32_LE.
+// Separate from the legacy ASCII command/FRAME protocol.
+static constexpr uint8_t BINARY_MAGIC0 = 0xA5;
+static constexpr uint8_t BINARY_MAGIC1 = 0x5A;
+static constexpr uint8_t BINARY_REQUEST_BYTES = 12;
+static constexpr uint8_t BINARY_ACK_BYTES = 20;
+static uint8_t binaryRx[BINARY_REQUEST_BYTES];
+static uint8_t binarySize = 0;
+
+static uint32_t crc32IEEE(const uint8_t* data, uint8_t size) {
+  uint32_t crc = 0xFFFFFFFFUL;
+  for (uint8_t i = 0; i < size; ++i) {
+    crc ^= (uint32_t)data[i];
+    for (uint8_t bit = 0; bit < 8; ++bit) {
+      crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320UL : 0UL);
+    }
+  }
+  return crc ^ 0xFFFFFFFFUL;
+}
+
+static uint32_t readLe32(const uint8_t* p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+         ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void writeLe32(uint8_t* p, uint32_t value) {
+  for (uint8_t i = 0; i < 4; ++i) p[i] = (uint8_t)(value >> (8 * i));
+}
+
+// Binary response is emitted entirely by one loop iteration; text FRAME
+// output is only emitted by tickGenerator outside that iteration.
+static void handleBinarySync(uint32_t receivedUs) {
+  if (binaryRx[2] != 1 || binaryRx[3] != 1 ||
+      readLe32(binaryRx + 8) != crc32IEEE(binaryRx + 2, 6)) {
+    // Silent reject: a damaged sync request must not produce a valid ACK.
+    return;
+  }
+  uint8_t response[BINARY_ACK_BYTES] = {
+      BINARY_MAGIC0, BINARY_MAGIC1, 1, 2
+  };
+  for (uint8_t i = 4; i < BINARY_ACK_BYTES; ++i) response[i] = 0;
+  const uint32_t seq = readLe32(binaryRx + 4);
+  writeLe32(response + 4, seq);
+  writeLe32(response + 8, receivedUs);
+  // Timestamp as close as possible before enqueueing response bytes.
+  // This is NOT USB bus transmission time and does not eliminate buffering.
+  writeLe32(response + 12, micros());
+  writeLe32(response + 16, crc32IEEE(response + 2, 14));
+  Serial.write(response, BINARY_ACK_BYTES);
+}
+
+
 static void setMarker(bool high) {
   if (high != pinHigh) {
     digitalWrite(MARKER_PIN, high ? HIGH : LOW);
@@ -119,7 +171,23 @@ static void pollSerial() {
   // Limit work per loop; serial I/O jitter is exposed via OVERRUNS.
   uint8_t consumed = 0;
   while (Serial.available() && consumed++ < 16) {
-    char c = (char)Serial.read();
+    const uint8_t byteValue = (uint8_t)Serial.read();
+    if (binarySize != 0 || (inputSize == 0 && byteValue == BINARY_MAGIC0)) {
+      if (binarySize == 0) {
+        binaryRx[binarySize++] = byteValue;
+      } else if (binarySize == 1 && byteValue != BINARY_MAGIC1) {
+        binarySize = 0;  // Ignore corrupt binary prefix.
+      } else {
+        binaryRx[binarySize++] = byteValue;
+        if (binarySize == BINARY_REQUEST_BYTES) {
+          const uint32_t receivedUs = micros();
+          handleBinarySync(receivedUs);
+          binarySize = 0;
+        }
+      }
+      continue;
+    }
+    char c = (char)byteValue;
     if (c == '\r') continue;
     if (c == '\n') {
       const uint32_t receivedUs = micros();
