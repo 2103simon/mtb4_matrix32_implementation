@@ -442,3 +442,92 @@ hardware we still cannot establish exact one-way latency. Avoid
 interpreting the causal offset half-width as a guaranteed full
 error bound. The existing Feather MCU CRC32 format and Matrix32
 stimulation pipeline are not modified by this experiment.
+
+
+## 10. Nano synchronization default and estimator refinement (2026-11-20)
+
+After the controlled 30 s A/B tests, CRC32 binary SYNC is the **default**
+for `oscilloscope/test_nano_clock_sync.py` and
+`oscilloscope/test_gray_timecode.py`. The text SYNC transport is retained
+solely for legacy compatibility, diagnostics, and repeatable A/B comparison.
+There is no mandatory `--sync-transport` argument in new runs.
+
+**Observed A/B comparison** (119 binary vs 118 text exchanges):
+
+| Quantity | Text | CRC32 binary |
+|---|---:|---:|
+| Median RTT | 4811.41 us | 3447.62 us |
+| p10 RTT | 4618.69 us | 3340.59 us |
+| p90 RTT | 5042.16 us | 3590.51 us |
+| Median Nano handler duration | 139.90 us | 111.93 us |
+| Active fit RMS residual | 346.51 us | 398.98 us |
+| Best offset interval halfwidth | 2029.79 us | 1587.32 us |
+
+Binary therefore improves measured latency, **not** automatically
+host-clock offset accuracy. CRC32 is checked before using a binary ACK
+as synchronization evidence. The original Nano frame logs and CH2 marker
+waveform are unchanged.
+
+### Offline estimator analysis
+
+`communication/clock_estimator_diagnostics.py` adds quality diagnostics
+to `nano_host_clock.json` under `estimator_diagnostics`:
+
+- **Baseline:** original weighted four-timestamp regression is
+  preserved for compatibility; its time mapping is not silently changed.
+- **Stratified lowest-delay fit:** divide the recording into six
+  chronological bins; retain the lowest 25% of measured transport RTTs
+  in *each* bin (at least two per bin) before refitting.
+  This guards against selecting only an early or late latency cluster.
+- **Clock stability:** independently fit three nonoverlapping time
+  windows and report the drift spread and standard deviation; windows
+  that lack minimum samples/duration are explicitly unqualified.
+- **Causal offset feasibility:** at each fitted slope, intersect all
+  per-exchange bounds `t1 - a*t2 <= b <= t4 - a*t3`, evaluated relative
+  to a numerical anchor. Report a feasible interval width or the
+  infeasibility gap; never invent a feasible bound when none exists.
+- **Warnings:** flag sensitivity above 50 ppm, window drift spread
+  above 100 ppm, and incompatible offset constraints.
+
+**These are diagnostic thresholds, not acceptance criteria for
+microsecond-accurate synchronization.** Slope uncertainty, USB one-way
+asymmetry, and software-to-hardware timestamp latency have not been
+independently calibrated. The provisional mapping remains in use for
+offline visualization only, not as an authoritative physical event time.
+
+Run the estimator on **existing** A/B records (no hardware or firmware
+changes are necessary):
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python \
+  oscilloscope/analyze_nano_clock.py \
+  data/recordings/20261120T104903872313Z_nano_clock_sync
+
+/home/icub/.virtualenvs/matrix32/bin/python \
+  oscilloscope/analyze_nano_clock.py \
+  data/recordings/20261120T104937304807Z_nano_clock_sync
+```
+
+Both overwrite only their own derived `nano_host_clock.json`, never
+the raw `nano_serial.jsonl`. To collect new data, the normal command
+now defaults to binary:
+
+```bash
+timeout 90s /home/icub/.virtualenvs/matrix32/bin/python -u \
+  oscilloscope/test_nano_clock_sync.py \
+  --duration-s 30 --sync-interval-s 0.25 --run
+```
+
+To compare with older runs or intentionally select text SYNC, pass
+`--sync-transport text`.
+
+Offline tests:
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python -m unittest discover \
+  -s tests -p 'test_clock_estimator_diagnostics.py' -v
+```
+
+Do **not** update the Feather compensation algorithm or the Matrix32
+stimulation event timestamps based on Nano ppm values; clocks are
+independent and must be evaluated separately.
