@@ -212,3 +212,47 @@ microsecond-precision PC clock synchronization has been established.
 
 This design tests **offline alignment despite acquisition gaps**; it
 does not claim live, gap-free streaming.
+
+
+## 7. Offline clock alignment of separate recordings
+
+The repeated-acquisition trial on 2026-11-20 decoded **57** complete
+frames across three separate 1M-sample records: **4..22**, **98..116**,
+**192..210**. These match the Arduino serial frame counters; no Nano
+timing overruns were reported. The scope's inferred 100 ms frame periods
+are systematically shorter than the Arduino `micros()` intervals by
+roughly 30–46 µs per frame, so do **not** align records by naively
+multiplying frame index by 100 ms.
+
+The separate offline tool `oscilloscope/align_gray_records.py` now
+joins scope-decoded frames to full Arduino `FRAME` serial messages,
+unrolls 32-bit Nano `micros()`, and fits an independent affine clock
+model for **each** finite record. The fit reports RMS and maximum edge
+residuals in microseconds and the estimated Nano-time positions of
+each record's first and last samples.
+
+From the repository root, after a completed experiment:
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python \
+  oscilloscope/align_gray_records.py \
+  data/recordings/20261120T101230327188Z_gray_ch2_multi
+```
+
+This writes `gray_alignment.json` next to `metadata.json`.
+It does not rewrite the large waveform CSV files; sample `i` in a
+record can later be mapped using its `clock_fit` coefficients:
+
+```text
+t_scope = xzero + (i - ptoff) * xincr
+t_nano = slope_nano_s_per_scope_s * t_scope + offset_nano_s
+```
+
+**Important limits:** This establishes sample timing in the Arduino's
+local clock domain, not UTC or host monotonic time. The host serial
+reception timestamp can be delayed by USB/OS buffering and is not an
+exact hardware timing observation. Physically missing oscilloscope
+samples cannot be recovered. Aligning MCU and Matrix32 host logs
+requires a separately validated Nano-to-host clock/uncertainty model.
+The current script fails closed for missing/ambiguous frame matches or
+fit RMS > 100 µs, and reports observed Nano timing overruns.
