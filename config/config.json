@@ -21,7 +21,7 @@
     "export_dir": "logs"
   },
   "serial": {
-    "port": "/dev/ttyACM0",
+    "port": "auto",
     "input_baud_rate": 115200
   },
   "omega": {
