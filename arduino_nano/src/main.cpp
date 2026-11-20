@@ -11,7 +11,7 @@
  * uint32_t micros() wraps ~71.6 min; host log includes frame index
  * to disambiguate 16-bit waveform counter wraps.
  *
- * Wire only D7 -> grounded scope CH4 probe tip and Nano GND -> scope CH4
+ * Wire only D7 -> grounded scope CH2 probe tip and Nano GND -> scope CH2
  * ground in an isolated scope-only experiment. Never connect this ground
  * directly to stimulation electrodes.
  */
@@ -76,7 +76,7 @@ static void startGenerator() {
   running = true;
 }
 
-static void handleCommand(const char* line) {
+static void handleCommand(const char* line, uint32_t receivedUs) {
   // Sequence numbers are returned verbatim so the host can match ACKs.
   char op[12] = {0};
   unsigned long seq = 0;
@@ -86,6 +86,14 @@ static void handleCommand(const char* line) {
   }
   if (strcmp(op, "PING") == 0) {
     Serial.print(F("ACK PING ")); Serial.println(seq);
+  } else if (strcmp(op, "SYNC") == 0) {
+    // RX_US is sampled immediately after the command newline was read.
+    // TX_US is sampled before reply formatting; serial buffering adds
+    // unmeasured latency, so the host must bound rather than assume it.
+    const uint32_t transmitUs = micros();
+    Serial.print(F("ACK SYNC ")); Serial.print(seq);
+    Serial.print(F(" RX_US ")); Serial.print(receivedUs);
+    Serial.print(F(" TX_US ")); Serial.println(transmitUs);
   } else if (strcmp(op, "INFO") == 0) {
     Serial.print(F("ACK INFO ")); Serial.print(seq);
     Serial.print(F(" FW GRAY_TC_V1 PIN 7 FRAME_US "));
@@ -114,8 +122,9 @@ static void pollSerial() {
     char c = (char)Serial.read();
     if (c == '\r') continue;
     if (c == '\n') {
+      const uint32_t receivedUs = micros();
       input[inputSize] = 0;
-      if (inputSize != 0) handleCommand(input);
+      if (inputSize != 0) handleCommand(input, receivedUs);
       inputSize = 0;
     } else if (inputSize < sizeof(input) - 1) {
       input[inputSize++] = c;
