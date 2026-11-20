@@ -345,3 +345,100 @@ or prove physical Matrix32 output-edge timing. A validated delay/jitter
 budget is still required before interpreting microsecond-scale cross
 device timing. The existing stimulation pipeline is not modified to
 consume this experimental mapping.
+
+
+## 9. Experimental CRC32 binary SYNC and controlled benchmark
+
+The Nano now accepts **both** the original textual `SYNC <seq>` and
+a compact CRC32-protected binary synchronization request; `FRAME` logs,
+`PING`, `INFO`, `START`, and `STOP` stay textual, and the D7 frame
+waveform is unchanged.
+
+### Binary wire format (v1)
+
+All integers are unsigned **little-endian**. CRC32 is the standard
+reflected IEEE algorithm (same result as Python `zlib.crc32`),
+computed over bytes after `A5 5A` and before the trailing CRC.
+
+| Packet | Fields | Total bytes |
+|---|---|---|
+| SYNC request | `A5 5A`, version=`01`, type=`01`, sequence u32, CRC32 u32 | 12 |
+| SYNC ACK | `A5 5A`, version=`01`, type=`02`, sequence u32, RX_US u32, TX_US u32, CRC32 u32 | 20 |
+
+The host verifies version, type, length, CRC, and sequence. An invalid
+binary ACK is never treated as valid clock evidence. The receiver
+supports fragmented reads and mixed binary ACKs/text `FRAME` lines.
+The Nano discards invalid binary requests silently. No automatic SYNC
+retry is performed inside a single measurement, preventing duplicate
+observations from being mistaken for independent samples.
+
+**Important:** `t1` is taken immediately before the Python serial
+`write()`; `t4` is taken when the host reader receives a chunk
+containing the completed ACK. `RX_US` is sampled after the Nano reads
+the final packet byte, and `TX_US` immediately before enqueueing the
+binary response. These are *software* timestamps, not USB hardware
+timestamps. CRC32 guarantees integrity of correctly framed data, not
+one-way delay symmetry or sub-millisecond absolute accuracy.
+
+### Tests and A/B run (Nano and scope kept disconnected from Matrix32)
+
+After pulling, reflash the Nano **once** with the new firmware:
+
+```bash
+cd arduino_nano
+pio run -e nano_every -t upload --upload-port /dev/ttyACM1
+cd ..
+```
+
+Run offline tests from repository root:
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python -m unittest discover \
+  -s tests -p 'test_nano_binary_protocol.py' -v
+/home/icub/.virtualenvs/matrix32/bin/python -m unittest discover \
+  -s tests -p 'test_clock_sync.py' -v
+```
+
+Then run **two 30-second trials** with the same conditions:
+
+```bash
+timeout 90s /home/icub/.virtualenvs/matrix32/bin/python -u \
+  oscilloscope/test_nano_clock_sync.py \
+  --duration-s 30 --sync-interval-s 0.25 \
+  --sync-transport text --run
+
+timeout 90s /home/icub/.virtualenvs/matrix32/bin/python -u \
+  oscilloscope/test_nano_clock_sync.py \
+  --duration-s 30 --sync-interval-s 0.25 \
+  --sync-transport binary --run
+```
+
+Both use Nano USB auto-discovery (no `auto` port flag). Each run
+contains `nano_serial.jsonl`, `nano_host_clock.json` and
+`metadata.json`. The binary log has sequence-tagged
+`binary_sync_ack` evidence and `sync_exchange` rows with
+`transport="binary_crc32_v1"`. The JSON output now includes RTT
+p10/median/p90/p99, Nano handler time and RTT minus measured handler
+time. No original log format is overwritten.
+
+Compare, replacing the two paths with the generated run directories:
+
+```bash
+/home/icub/.virtualenvs/matrix32/bin/python \
+  oscilloscope/compare_nano_sync_transports.py \
+  --text-run data/recordings/<TEXT_RUN> \
+  --binary-run data/recordings/<BINARY_RUN> \
+  --output data/recordings/nano_sync_transport_comparison.json
+```
+
+The text transport remains the default until the binary benchmark is
+validated. For a Gray scope acquisition, use `--sync-transport binary`
+to opt into this experimental transport while preserving all CH2
+waveform processing.
+
+**Interpretation:** A smaller RTT, reduced jitter or smaller fit RMS
+would be a measurable improvement, but without independent timing
+hardware we still cannot establish exact one-way latency. Avoid
+interpreting the causal offset half-width as a guaranteed full
+error bound. The existing Feather MCU CRC32 format and Matrix32
+stimulation pipeline are not modified by this experiment.
