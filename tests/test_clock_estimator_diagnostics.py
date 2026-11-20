@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from communication.clock_estimator_diagnostics import (
     diagnose_active_clock, _clock_intersection, _stratified_low_latency,
+    _holdout_checks,
 )
 from test_clock_sync import synthetic_exchanges
 
@@ -55,6 +56,24 @@ class ClockEstimatorDiagnosticsTests(unittest.TestCase):
         result = _clock_intersection(rows, 1002.0, rows[0]["t2_nano_us"])
         self.assertFalse(result["feasible"])
         self.assertGreater(result["infeasibility_gap_us"], 0)
+
+    def test_blocked_holdout_on_stationary_clock(self):
+        checks = _holdout_checks(synthetic_exchanges(n=72))
+        self.assertEqual(checks["qualified_fold_count"], 3)
+        self.assertEqual([x["test_count"] for x in checks["folds"]],
+                         [24, 24, 24])
+        self.assertLess(checks["worst_holdout_midpoint_rms_us"], 100)
+        self.assertLess(checks["holdout_train_drift_range_ppm"], 30)
+
+    def test_blocked_holdout_exposes_time_dependent_bias(self):
+        rows = synthetic_exchanges(n=72)
+        # First third receives a constant additional downstream delay;
+        # ordinary training fit on the rest cannot predict that block.
+        for row in rows[:24]:
+            row["t4_host_ns"] += 5_000_000
+        checks = _holdout_checks(rows)
+        self.assertGreater(checks["max_abs_holdout_midpoint_bias_us"], 1000)
+        self.assertEqual(checks["qualified_fold_count"], 3)
 
     def test_bad_configuration_rejected(self):
         rows = synthetic_exchanges(n=30)
