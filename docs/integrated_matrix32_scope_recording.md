@@ -251,6 +251,8 @@ Running `oscilloscope/analyze_integrated_matrix32.py` now writes **both**
 
 The Markdown report includes recording metadata, MCU sampling statistics,
 physical pulse counts and spacing, the command/ACK event table, a
+**per-acknowledged-frequency table** indicating compatible/discrepant
+settled windows (or `not_testable` when no settled window was observed), a
 per-second subset of measured/expected/transition-status windows
 (including *all detected discrepant windows*), clock-quality warnings,
 and image links relative to the report so it can render on GitHub.
