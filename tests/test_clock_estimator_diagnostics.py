@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from communication.clock_estimator_diagnostics import (
     diagnose_active_clock, _clock_intersection, _stratified_low_latency,
 )
-from tests.test_clock_sync import synthetic_exchanges
+from test_clock_sync import synthetic_exchanges
 
 
 class ClockEstimatorDiagnosticsTests(unittest.TestCase):
