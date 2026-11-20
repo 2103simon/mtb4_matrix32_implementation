@@ -234,6 +234,9 @@ def parser():
     p.add_argument("--points", type=int, default=100000)
     p.add_argument("--time-div-us", type=float, default=20000,
                    help="200 ms span by default; >=1 complete 100 ms frame")
+    p.add_argument("--trigger-position-pct", type=float, default=0.0,
+                   help="Trigger position in percent of waveform; 0 = left edge, "
+                        "100 = right edge, 50 = centered (default: 0)")
     p.add_argument("--acquire-timeout", type=float, default=15)
     p.add_argument("--sync-transport", choices=("text", "binary"),
                    default="binary", help="CRC32 binary default; text for legacy comparison")
@@ -264,6 +267,9 @@ def plan(args, p):
         p.error("timebase must produce >=200 ms window (>=20000 us/div)")
     if not math.isfinite(args.acquire_timeout) or not 0 < args.acquire_timeout <= 120:
         p.error("invalid --acquire-timeout")
+    if (not math.isfinite(args.trigger_position_pct)
+            or not 0 <= args.trigger_position_pct <= 100):
+        p.error("--trigger-position-pct must be finite and between 0 and 100")
     if not 0 <= args.sync_count <= 200 or not 0 <= args.sync_per_record <= 50:
         p.error("SYNC counts must be 0..200 initial and 0..50 per record")
     if not 8 <= args.epoch_sync_count <= 200:
@@ -278,7 +284,9 @@ def plan(args, p):
     args.trigger_channel = 2
     args.trigger_edge = "rising"
     args.trigger_level = 1.0
-    args.trigger_position_pct = 50.0
+    # Keep the user-selected horizontal position. record_scope.configure()
+    # sets delay mode OFF and writes HORizontal:POSition AFTER timebase and
+    # record-length writes; verify() checks both values before arming.
     return {
         "schema_version": 1, "experiment": "GRAY_TC_V1",
         "source": "Arduino Nano Every D7, 10 Hz framed Gray counter",
@@ -289,6 +297,8 @@ def plan(args, p):
         "nominal_window_s": 10 * args.time_div_us * 1e-6,
         "nano_port": args.nano_port, "scope_device": args.scope_device,
         "acquire_timeout_s": args.acquire_timeout,
+        "trigger_position_pct": args.trigger_position_pct,
+        "horizontal_delay_mode_requested": "OFF",
         "no_stimulation": True,
         "not_continuous": True,
         "sync_transport": args.sync_transport,
@@ -381,6 +391,12 @@ def run(args, requested):
                             row["acquisition"] = acquire(f, args.acquire_timeout)
                             row["acquisition_host_s"] = time.monotonic() - t0
                             row["acquisition_completed_monotonic_ns"] = time.monotonic_ns()
+                            # Verify position stayed at the requested location
+                            # throughout the acquisition, before any transfer.
+                            row["scope_settings_after_acquisition"] = scope_settings(
+                                f, args.channels, args.trigger_channel,
+                                horizontal_position=True)
+                            verify(row["scope_settings_after_acquisition"], args)
                             if args.per_record_epochs:
                                 for _ in range(args.epoch_sync_count):
                                     measurement = sync_method()
