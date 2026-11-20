@@ -76,6 +76,17 @@ class TimecodeTests(unittest.TestCase):
         self.assertEqual([x["counter_mod_65536"] for x in result["frames"]],
                          [42, 43])
 
+    def test_ch2_only_capture_plan(self):
+        p = experiment.parser()
+        args = p.parse_args(["--count", "1"])
+        requested = experiment.plan(args, p)
+        self.assertEqual(args.channels, [2])
+        self.assertEqual(args.scales, {2: 2.0})
+        self.assertEqual(args.trigger_channel, 2)
+        self.assertEqual(args.trigger_edge, "rising")
+        self.assertEqual(args.trigger_level, 1.0)
+        self.assertEqual(requested["probe_comp"], "disconnected")
+
     def test_dry_run_does_not_open_serial(self):
         with patch.object(experiment, "run", side_effect=AssertionError("hardware")):
             experiment.main(["--count", "1"])
