@@ -31,8 +31,8 @@ pio device monitor -b 115200
 ```
 
 Firmware **does not start D7 pulses automatically**. Commands are
-`PING <seq>`, `INFO <seq>`, `START <seq>`, `STOP <seq>`.
-Each command returns a matching `ACK`. At START the firmware
+`PING <seq>`, `INFO <seq>`, `START <seq>`, `STOP <seq>`, and `SYNC <seq>`.
+Each command returns a matching `ACK`. `SYNC` returns\n`ACK SYNC <seq> RX_US <micros_at_command_newline> TX_US <micros_before_reply>`.\nThe PC brackets the exchange with `time.monotonic_ns()` to estimate\nclock offset and drift. USB delay asymmetry remains an uncertainty.\nAt START the firmware
 generates a framed 16-bit Gray counter at 10 Hz on D7 while reporting
 the full counter over USB serial. Never run the serial monitor and
 Python experiment against the same port simultaneously.
