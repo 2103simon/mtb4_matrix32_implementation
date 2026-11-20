@@ -129,6 +129,35 @@ def read_active_exchanges(serial_log):
     return exchanges
 
 
+def _percentile(sorted_values, percent):
+    if not sorted_values:
+        raise ValueError("No latency observations")
+    index = (len(sorted_values)-1)*percent/100
+    lo, hi = int(math.floor(index)), int(math.ceil(index))
+    return sorted_values[lo] + (sorted_values[hi]-sorted_values[lo])*(index-lo)
+
+
+def _latency_summary(exchanges, slope):
+    """RTT minus measured Nano processing; not a one-way latency estimate."""
+    samples = []
+    for entry in exchanges:
+        rtt = (entry["t4_host_ns"]-entry["t1_host_ns"])/1000
+        processing = (entry["t3_nano_us"]-entry["t2_nano_us"])*slope/1000
+        samples.append((rtt, processing, rtt-processing))
+    def quantiles(index, percentiles):
+        sorted_values = sorted(row[index] for row in samples)
+        return {name: _percentile(sorted_values, pct) for name,pct in percentiles}
+    full = [("min",0), ("p10",10), ("median",50), ("p90",90),
+            ("p99",99), ("max",100)]
+    return {
+        "sample_count": len(samples),
+        "rtt_us": quantiles(0, full),
+        "nano_processing_us": quantiles(1, [("median",50), ("p90",90), ("max",100)]),
+        "transport_rtt_us": quantiles(2, full),
+        "note": "One-way delays and USB/OS asymmetry are not directly measured.",
+    }
+
+
 def active_clock_fit(exchanges, *, min_samples=8, min_span_s=5.0):
     """Fit Nano->host monotonic using four-timestamp exchanges.
 
@@ -187,6 +216,7 @@ def active_clock_fit(exchanges, *, min_samples=8, min_span_s=5.0):
         "median_exchange_offset_halfwidth_us": sorted(brackets)[len(brackets)//2],
         "worst_exchange_offset_halfwidth_us": max(brackets),
         "timestamp_domain": "PC monotonic ns, same host boot; not UTC",
+        "latency": _latency_summary(exchanges, slope),
     })
     return report
 
