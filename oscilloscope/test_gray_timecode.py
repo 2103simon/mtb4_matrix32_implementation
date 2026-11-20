@@ -1,7 +1,8 @@
-"""Scope-only Gray timecode experiment: command Nano, capture CH4 and CH2.
+"""Scope-only Gray timecode experiment: command Nano, capture CH2.
 
-Requires GRAY_TC_V1 sketch on Arduino Nano Every. CH2 = PROBE COMP
-trigger, CH4 = Nano D7 marker. Matrix32 is never connected/commanded.
+Requires GRAY_TC_V1 firmware on Arduino Nano Every. CH2 = Nano D7
+marker and trigger; PROBE COMP is disconnected.
+Matrix32 is never connected/commanded.
 Default dry-run; --run is an explicit hardware opt-in.
 USBTMC can block: invoke under external 'timeout'.
 """
@@ -153,8 +154,8 @@ def plan(args, p):
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.label):
         p.error("invalid --label")
     # record_scope.configure()/verify() interface (no Matrix32 settings).
-    args.channels = [2, 4]
-    args.scales = {2: 1.0, 4: 2.0}
+    args.channels = [2]
+    args.scales = {2: 2.0}
     args.trigger_channel = 2
     args.trigger_edge = "rising"
     args.trigger_level = 1.0
@@ -162,8 +163,8 @@ def plan(args, p):
     return {
         "schema_version": 1, "experiment": "GRAY_TC_V1",
         "source": "Arduino Nano Every D7, 10 Hz framed Gray counter",
-        "channel_2": "scope PROBE COMP; trigger rising at +1 V",
-        "channel_4": "Nano D7; scale 2 V/div; expected 0-5 V",
+        "channel_2": "Nano D7; 2 V/div, expected 0-5 V; trigger rising at +1 V",
+        "probe_comp": "disconnected",
         "channels": args.channels, "points": args.points,
         "time_div_us": args.time_div_us, "count": args.count,
         "nominal_window_s": 10 * args.time_div_us * 1e-6,
@@ -198,7 +199,7 @@ def run(args, requested):
             info = nano.command("INFO")
             metadata["nano_info"] = info
             if "FW GRAY_TC_V1" not in info or "PIN 7" not in info:
-                raise RuntimeError("Wrong Nano firmware or pin; flash GRAY_TC_V1 sketch")
+                raise RuntimeError("Wrong Nano firmware or pin; upload arduino_nano PlatformIO project")
             if "RUN 1" in info:
                 nano.command("STOP")
             # No automatic retry of START: ambiguous response may mean
@@ -227,7 +228,7 @@ def run(args, requested):
                             row["acquisition"] = acquire(f, args.acquire_timeout)
                             row["acquisition_host_s"] = time.monotonic() - t0
                             row["channels"] = {}
-                            for ch in (4, 2):
+                            for ch in (2,):
                                 file = root / "waveforms" / f"record_{index:05d}_ch{ch}.csv"
                                 t1 = time.monotonic()
                                 report = capture(f, ch, args.points, file)
@@ -237,8 +238,8 @@ def run(args, requested):
                                     "transfer": report,
                                     "waveform": validate_csv(file, args.points),
                                 }
-                            ch4 = root / row["channels"]["CH4"]["path"]
-                            row["decoded_gray"] = decode_csv(ch4)
+                            marker_csv = root / row["channels"]["CH2"]["path"]
+                            row["decoded_gray"] = decode_csv(marker_csv)
                             row["status"] = "captured"
                             row["completed_utc"] = utc()
                             print(
