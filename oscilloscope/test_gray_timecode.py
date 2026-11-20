@@ -22,6 +22,9 @@ from datetime import datetime, timezone
 # Allow direct invocation as python oscilloscope/test_gray_timecode.py.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from communication.nano_binary_protocol import (
+    MixedNanoStreamDecoder, pack_sync_request,
+)
 from decode_gray_timecode import decode_csv
 from record_scope import (
     acquire, atomic_json, configure, scope_settings, validate_csv, verify,
@@ -42,6 +45,7 @@ class NanoLog:
         self.path = Path(path)
         self.baud = baud
         self.acks = queue.Queue()
+        self.binary_acks = queue.Queue()
         self.closed = threading.Event()
         self.next_sequence = 0
         self.serial = None
@@ -49,6 +53,7 @@ class NanoLog:
         self.logfile = None
         self.reader_error = None
         self.log_lock = threading.Lock()
+        self.decoder = MixedNanoStreamDecoder()
 
     def __enter__(self):
         import serial  # pyserial is only needed for --run
@@ -72,18 +77,33 @@ class NanoLog:
     def _read(self):
         try:
             while not self.closed.is_set():
-                raw = self.serial.readline()
+                raw = self.serial.read(max(1, int(self.serial.in_waiting)))
                 if not raw:
                     continue
-                observed = {
-                    "received_monotonic_ns": time.monotonic_ns(),
-                    "received_utc": utc(),
-                    "line": raw.decode("ascii", errors="replace").strip(),
-                }
-                self._write_log(observed)
-                line = observed["line"]
-                if line.startswith(("ACK ", "ERR ")):
-                    self.acks.put((line, observed["received_monotonic_ns"]))
+                # Time closest to receipt of this chunk; NOT a hardware
+                # USB-controller arrival timestamp.
+                arrival_ns = time.monotonic_ns()
+                for kind, value in self.decoder.feed(raw):
+                    if kind == "binary_sync_ack":
+                        seq, rx_us, tx_us = value
+                        self.binary_acks.put((seq, rx_us, tx_us, arrival_ns))
+                        self._write_log({
+                            "type": "binary_sync_ack",
+                            "received_monotonic_ns": arrival_ns,
+                            "sequence_id": seq,
+                            "nano_receive_us": rx_us,
+                            "nano_transmit_us": tx_us,
+                            "crc32_verified": True,
+                        })
+                        continue
+                    observed = {
+                        "received_monotonic_ns": arrival_ns,
+                        "received_utc": utc(),
+                        "line": value,
+                    }
+                    self._write_log(observed)
+                    if value.startswith(("ACK ", "ERR ")):
+                        self.acks.put((value, arrival_ns))
         except BaseException as exc:
             self.reader_error = f"{type(exc).__name__}: {exc}"
 
@@ -148,6 +168,41 @@ class NanoLog:
                 raise RuntimeError(f"Nano rejected SYNC: {line}")
         raise TimeoutError(f"No matching ACK SYNC {seq}")
 
+    def binary_sync_exchange(self, *, timeout=1.0):
+        """CRC32-verified sequence matched exchange (PC monotonic t1/t4)."""
+        self.next_sequence += 1
+        seq = self.next_sequence
+        wire = pack_sync_request(seq)
+        t1 = time.monotonic_ns()
+        self.serial.write(wire)
+        self.serial.flush()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.reader_error:
+                raise RuntimeError(f"Nano serial reader failed: {self.reader_error}")
+            try:
+                ack_seq, t2, t3, t4 = self.binary_acks.get(
+                    timeout=min(0.1, max(0.001, deadline-time.monotonic()))
+                )
+            except queue.Empty:
+                continue
+            if ack_seq != seq:
+                # Stale ACK is never used for a new exchange.
+                continue
+            row = {
+                "type": "sync_exchange",
+                "transport": "binary_crc32_v1",
+                "sequence_id": seq,
+                "host_send_monotonic_ns": t1,
+                "host_receive_monotonic_ns": t4,
+                "nano_receive_us": t2,
+                "nano_transmit_us": t3,
+                "crc32_verified": True,
+            }
+            self._write_log(row)
+            return row
+        raise TimeoutError(f"No CRC32-verified binary SYNC ACK {seq}")
+
     def synchronize(self, *, timeout=8.0):
         # Opening Nano serial may reset firmware. PING is idempotent; START
         # intentionally is not retried after ambiguous timeout.
@@ -180,6 +235,8 @@ def parser():
     p.add_argument("--time-div-us", type=float, default=20000,
                    help="200 ms span by default; >=1 complete 100 ms frame")
     p.add_argument("--acquire-timeout", type=float, default=15)
+    p.add_argument("--sync-transport", choices=("text", "binary"),
+                   default="text", help="Experimental binary CRC32 or legacy text SYNC")
     p.add_argument("--sync-count", type=int, default=12,
                    help="Initial SYNC exchanges (0 for old firmware)")
     p.add_argument("--sync-per-record", type=int, default=4,
@@ -224,6 +281,7 @@ def plan(args, p):
         "acquire_timeout_s": args.acquire_timeout,
         "no_stimulation": True,
         "not_continuous": True,
+        "sync_transport": args.sync_transport,
         "sync_count": args.sync_count,
         "sync_per_record": args.sync_per_record,
     }
@@ -262,8 +320,10 @@ def run(args, requested):
             print(f"[NANO] Gray-code timebase running ({metadata['start_ack']})",
                   flush=True)
             metadata["sync_measurements"] = []
+            sync_method = (nano.binary_sync_exchange if args.sync_transport == "binary"
+                           else nano.sync_exchange)
             for _ in range(args.sync_count):
-                metadata["sync_measurements"].append(nano.sync_exchange())
+                metadata["sync_measurements"].append(sync_method())
             print(f"[SYNC] Collected {len(metadata['sync_measurements'])} initial exchanges",
                   flush=True)
             try:
@@ -301,7 +361,7 @@ def run(args, requested):
                             row["status"] = "captured"
                             row["completed_utc"] = utc()
                             for _ in range(args.sync_per_record):
-                                metadata["sync_measurements"].append(nano.sync_exchange())
+                                metadata["sync_measurements"].append(sync_method())
                             print(
                                 f"[GRAY] Record {index}: "
                                 f"{row['decoded_gray']['decoded_frame_count']} complete frames; "
