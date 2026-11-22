@@ -1,6 +1,6 @@
 # Software architecture, protocols and module ownership
 
-Start with the [top-level README](../README.md), then use this reference to find the module that owns an observed behavior or experiment. The current branch is `feature/live-oscilloscope-recording`; not every experiment script is an entry point for clinical or human use.
+Start with the [top-level README](../README.md), then use this reference to find the module that owns an observed behavior or experiment. The current default branch is `master`; not every experiment script is an entry point for clinical or human use.
 
 ## End-to-end runtime
 
@@ -17,11 +17,11 @@ Nano USB full frame index/EDGE_US + CRC32 SYNC ↔ PC monotonic ns
         → independent scope↔Nano↔PC mapping for each scope record
 ```
 
-## Feather M4 firmware: `adafruit_feather_m4/`
+## Feather M4 firmware: [`adafruit_feather_m4/`](../adafruit_feather_m4/README.md)
 
 - [`src/main.cpp`](../adafruit_feather_m4/src/main.cpp): Adafruit Feather M4 CAN Express CAN startup, receive ISR, bounded 32-frame queue, command parser, CRC-framed serial transport, foreground event serialization, and MCU control loop.
-- [`src/taxel_assembler.cpp`](../adafruit_feather_m4/src/taxel_assembler.cpp) and `include/taxel_assembler.h`: pair the 0x40/0xC0 halves of the MTB4 CAN sample, preserve the 12 taxel positions and invert the incoming 8-bit values.
-- [`src/encoding.cpp`](../adafruit_feather_m4/src/encoding.cpp) and `include/encoding.h`: RA-I/SA-II rate and event algorithms, parameters, refractory logic.
+- [`src/taxel_assembler.cpp`](../adafruit_feather_m4/src/taxel_assembler.cpp) and [`include/taxel_assembler.h`](../adafruit_feather_m4/include/taxel_assembler.h): pair the 0x40/0xC0 halves of the MTB4 CAN sample, preserve the 12 taxel positions and invert the incoming 8-bit values.
+- [`src/encoding.cpp`](../adafruit_feather_m4/src/encoding.cpp) and [`include/encoding.h`](../adafruit_feather_m4/include/encoding.h): RA-I/SA-II rate and event algorithms, parameters, refractory logic.
 - [`src/event_transport.cpp`](../adafruit_feather_m4/src/event_transport.cpp): event packet batch handling.
 - [`src/diagnostic_telemetry.cpp`](../adafruit_feather_m4/src/diagnostic_telemetry.cpp): periodic diagnostic telemetry helpers.
 - [`platformio.ini`](../adafruit_feather_m4/platformio.ini): PlatformIO environment `adafruit_feather_m4_can`.
@@ -51,17 +51,17 @@ The host command IDs include `0x01` RA threshold, `0x02` refractory setting, `0x
 
 The experimental update cadence has been approximately **44.5 Hz** (about 22.5 ms per sample), but the implementation does not hard-code that rate into Matrix32 pulse generation. The selected MCU `ra_i` or `sa_ii` rate is an input to an independent BLE frequency command worker. See [detailed tactile rate protocol](tactile_rate_mcu_v2.md) and [Feather guide](../adafruit_feather_m4/README.md).
 
-## PC communication: `communication/`
+## PC communication: [`communication/`](../communication/)
 
 | Module | Ownership |
 | --- | --- |
-| `serial_ports.py` | Passive, role-aware USB serial discovery for Feather/Nano |
-| `serial_manager.py` | CRC32 Feather telemetry parsing, connection, timestamped snapshots and latest-value access |
-| `mcu_configuration.py` | ACK-verified initial RA/SA MCU parameter handshake |
-| `clock_compensator.py`, `clock_drift_monitor.py` | Separate Feather MCU/PC time diagnostics and compensation |
-| `clock_sync.py`, `clock_estimator_diagnostics.py` | Nano USB SYNC slope/offset estimation and uncertainty diagnostics |
-| `nano_binary_protocol.py` | CRC32 binary clock SYNC packing, parsing and validation |
-| `instrumentation.py` | Instrumentation/diagnostic helpers |
+| [`serial_ports.py`](../communication/serial_ports.py) | Passive, role-aware USB serial discovery for Feather/Nano |
+| [`serial_manager.py`](../communication/serial_manager.py) | CRC32 Feather telemetry parsing, connection, timestamped snapshots and latest-value access |
+| [`mcu_configuration.py`](../communication/mcu_configuration.py) | ACK-verified initial RA/SA MCU parameter handshake |
+| [`clock_compensator.py`](../communication/clock_compensator.py), [`clock_drift_monitor.py`](../communication/clock_drift_monitor.py) | Separate Feather MCU/PC time diagnostics and compensation |
+| [`clock_sync.py`](../communication/clock_sync.py), [`clock_estimator_diagnostics.py`](../communication/clock_estimator_diagnostics.py) | Nano USB SYNC slope/offset estimation and uncertainty diagnostics |
+| [`nano_binary_protocol.py`](../communication/nano_binary_protocol.py) | CRC32 binary clock SYNC packing, parsing and validation |
+| [`instrumentation.py`](../communication/instrumentation.py) | Instrumentation/diagnostic helpers |
 
 ### Distinguish the clocks
 
@@ -72,7 +72,7 @@ The experimental update cadence has been approximately **44.5 Hz** (about 22.5 m
 
 See [clock mapping and uncertainty](clock_mapping_and_time_domains.md).
 
-## Matrix32: `matrix32/` and controller scripts
+## Matrix32: [`matrix32/`](../matrix32/) and controller scripts
 
 - [`matrix32/device.py`](../matrix32/device.py): BLE GATT device API, readiness, configuration, start/stop, live frequency update.
 - [`matrix32/ble.py`](../matrix32/ble.py): Linux BLE discovery and link helpers.
@@ -92,9 +92,9 @@ Runnable entry points:
 
 In the controlled live path, the PC starts the selected stimulation configuration only after verifying the MCU's current input and the Matrix32 configuration ACKs. It sends ACK-checked `SF` changes sequentially and avoids sending the same SF on every unchanged MCU snapshot. For requested rates below 2 Hz it treats output as muted (SC1=0, then SF=2 workaround) instead of demanding an unsupported SF1 START. On stale input (default **250 ms**) or failure it attempts STOP, but STOP confirmation is software-side, **not a measurement of electrical output**.
 
-The current tested target is Matrix32 **channel 1** and a verified isolated dummy load. Never infer current or delivered charge from `currentCommand` alone.
+The integrated target is Matrix32 **channel 1** on the documented [100.0 kΩ cathode-to-common-anode dummy load](electrical_bench_setup.md). The referenced TPP1000 passive-probe ground is earth-referenced and must not be described as intrinsically isolated. Never infer current or delivered charge from `currentCommand` alone.
 
-## Recording: `recording/`
+## Recording: [`recording/`](../recording/)
 
 - `data_recorder.py`: CSV rows and frozen `*_settings.json` manifest for MCU snapshots. It starts only after both MCU configuration ACKs.
 - `matrix32_trace.py`: monotonic-timestamped Matrix32 command/ACK JSONL capture (if `--record` enabled).
