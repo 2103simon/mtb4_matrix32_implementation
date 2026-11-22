@@ -2,15 +2,15 @@
 
 This module controls a **Tektronix MDO4104B-6** over USBTMC/SCPI, records finite acquisitions, decodes the independent **Arduino Nano Every D7 Gray reference**, and relates those scope observations to the PC's MCU/Matrix32 command logs.
 
-[Repository overview](../README.md) · [Linux installation and safe wiring](../docs/installation_and_operations.md) · [Clock mapping](../docs/clock_mapping_and_time_domains.md) · [Full integrated bench procedure](../docs/integrated_matrix32_scope_recording.md)
+[Repository overview](../README.md) · [Linux installation and safe wiring](../docs/installation_and_operations.md) · [Clock mapping](../docs/clock_mapping_and_time_domains.md) · [Full integrated bench procedure](../docs/integrated_matrix32_scope_recording.md) · [CH1 100 kΩ dummy load and grounding](../docs/electrical_bench_setup.md)
 
-> **Bench hardware warning:** CH1 can measure a hazardous Matrix32 output. Use a verified isolated dummy load and approved suitable probes. Never connect a grounded scope probe clip arbitrarily to a floating stimulation return or a person. Scope-only or Gray-only tests do not energize the Matrix32; the integrated runner does only with explicit armed flags.
+> **Bench hardware warning:** CH1 can measure a hazardous Matrix32 output. Use the documented CH1 100.0 kΩ resistive dummy load and an operator-approved earth-reference/probing arrangement; the source rig uses an earth-referenced TPP1000 passive probe, not intrinsically isolated differential probing. Never connect a grounded scope probe clip arbitrarily to a floating stimulation return or a person. Scope-only or Gray-only tests do not energize the Matrix32; the integrated runner does only with explicit armed flags.
 
 ## Scope prerequisites and connection
 
 - Supported target: Tektronix MDO4104B-6 accessible as a Linux `/dev/usbtmc*` node.
-- For CH2 Gray timecode: Nano Every D7 digital marker and an appropriate independently isolated Nano/scope ground reference; nominal 0–5 V levels.
-- For integrated recording CH1: physical Matrix32 CH1 voltage across isolated dummy load with safe voltage/probe configuration.
+- For CH2 Gray timecode: Nano Every D7 digital marker and a reviewed Nano/scope ground/reference circuit; nominal 0–5 V levels. All scope-channel reference leads may share protective earth.
+- For integrated recording CH1: voltage across the operator-reported **100.0 kΩ** cathode-to-common-anode resistor; source rig uses a TPP1000 **10×** probe referenced to common anode. Review earth compatibility and probe ratings before use.
 - Run a scope script with no `--run` first to print/validate its intended settings without touching devices.
 - The scope discovery code [`scope_device.py`](scope_device.py) selects an unambiguous supported instrument and verifies the instrument identity using `*IDN?`. The low-level USBTMC SCPI operations and waveform binary-transfer implementation are in [`tek_mdo_usb.py`](tek_mdo_usb.py).
 
