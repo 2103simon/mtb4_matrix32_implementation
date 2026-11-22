@@ -68,3 +68,9 @@ stimulation outputs or electrode grounds.
 
 No external libraries are required. This PlatformIO migration alone
 does not establish hardware timing accuracy.
+
+## Mapping D7 Gray markers to PC time
+
+For a complete explanation of how the physical CH2 Gray frame is matched with its USB `FRAME ... EDGE_US ...` message, and how CRC32 four-timestamp SYNC exchanges provide a *provisional* Nano-to-PC affine mapping, see [clock mapping and time domains](../docs/clock_mapping_and_time_domains.md). The per-record fit is independent for each finite scope acquisition, and does not reconstruct samples absent during pauses.
+
+Project-wide installation, safe wiring, experiments and analysis entry points are in the [root README](../README.md).
