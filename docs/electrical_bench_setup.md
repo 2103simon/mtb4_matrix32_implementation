@@ -1,6 +1,6 @@
 # CH1 Matrix32 dummy-load and oscilloscope wiring
 
-This is the **current documentation reference for CH1-only integrated recordings** in this repository. It adapts the operator-reported bench wiring from [the source project's bench-load topology](https://github.com/2103simon/matrix32_nerve_stimulation/blob/cleanup/analysis-consolidation/docs/bench_load_topology.md), rather than independently claiming an electrical inspection or safety certification.
+This is the **current documentation reference for CH1-only integrated recordings** in this repository. The physical wiring is the same as in the related [matrix32_nerve_stimulation project (default `main` branch)](https://github.com/2103simon/matrix32_nerve_stimulation/tree/main). The detailed [bench-load topology and setup photographs](https://github.com/2103simon/matrix32_nerve_stimulation/blob/cleanup/analysis-consolidation/docs/bench_load_topology.md) currently reside on its **`cleanup/analysis-consolidation` branch**, which is the source used for the resistor values and probe arrangement documented below. The project's `main` branch is expected to be updated from that branch; until then, use the linked branch-specific topology for the exact source details. These descriptions do not substitute for independent inspection or electrical safety qualification.
 
 > **Only Matrix32 CH1 is stimulated and measured as a Matrix32 output here.** Do not connect a person or stimulation electrodes. Confirm actual wiring and earth-reference compatibility with the responsible operator before an armed experiment. Prior successful recordings do **not** establish safety.
 
@@ -76,6 +76,7 @@ If any grounding/isolation condition is uncertain, **do not perform an armed tri
 
 ## References
 
+- [Related Matrix32 nerve-stimulation repository — default `main` branch](https://github.com/2103simon/matrix32_nerve_stimulation/tree/main) (stable project entry point; the detailed topology may not yet be merged there)
 - [Source project: full multi-channel dummy-load wiring, photos and limitations](https://github.com/2103simon/matrix32_nerve_stimulation/blob/cleanup/analysis-consolidation/docs/bench_load_topology.md)
 - [Source project: Tektronix USB bench setup](https://github.com/2103simon/matrix32_nerve_stimulation/blob/cleanup/analysis-consolidation/docs/tektronix_mdo4104b_usb.md)
 - [Integrated recording procedure](integrated_matrix32_scope_recording.md)
