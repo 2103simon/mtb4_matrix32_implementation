@@ -1,6 +1,6 @@
 # Software architecture, protocols and module ownership
 
-Start with the [top-level README](../README.md), then use this reference to find the module that owns an observed behavior or experiment. The current default branch is `master`; not every experiment script is an entry point for clinical or human use.
+Start with the [top-level README](../README.md), then use this reference to find the module that owns an observed behavior or experiment. The primary development branch is `main`; not every experiment script is an entry point for clinical or human use.
 
 ## End-to-end runtime
 
