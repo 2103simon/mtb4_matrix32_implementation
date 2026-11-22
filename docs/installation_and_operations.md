@@ -125,7 +125,7 @@ timeout --signal=INT --kill-after=20s 180s \
   python -u oscilloscope/record_integrated_matrix32.py --run
 ```
 
-Only once the isolated dummy load, scope probing and physical disconnect have been independently confirmed may an authorized operator explicitly enable bench output:
+Only once the rated CH1 resistor load, compatible electrical reference and probing arrangement, and physical disconnect have been independently confirmed may an authorized operator explicitly enable bench output:
 
 ```bash
 timeout --signal=INT --kill-after=20s 180s \
