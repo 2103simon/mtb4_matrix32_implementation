@@ -20,19 +20,20 @@ This is the **current documentation reference for CH1-only integrated recordings
 
 ### Functional connection diagram
 
-\`\`\`text
+```text
 Matrix32 CH1 cathode ----+---- scope CH1 TPP1000 probe tip
                          |
                          +----[ R1 = 100.0 kOhm ]----+
 Matrix32 CH2 cathode ---------[ R2 =  99.4 kOhm ]----+---- Matrix32 common anode
 Matrix32 CH3 cathode ---------[ R3 =  99.5 kOhm ]----+           |
-                                                      |    probe ground reference*
-Matrix32 CH4-CH32: OPEN / no connected resistors      |
-992 kOhm spare near CH2: NOT ELECTRICALLY CONNECTED   |
-                                                      |
-Nano Every D7 -------------------------------> scope CH2 tip
-Nano ground ---------------------------------> scope CH2 reference†
-\`\`\`
+                                                                 +-- probe ground reference*
+
+Matrix32 CH4-CH32: OPEN / no connected resistors
+992 kOhm spare near CH2: NOT ELECTRICALLY CONNECTED
+
+Nano Every D7 -------------------------------------> scope CH2 tip
+Nano ground ---------------------------------------> scope CH2 reference†
+```
 
 `*` In the referenced setup, passive probe ground clips were connected to the **common anode**; ordinary oscilloscope BNC shells / probe grounds are protective-earth referenced. **That makes this a potentially earth-referenced measurement, not an isolated differential measurement.** Do not mistake shared wiring for isolation.
 
