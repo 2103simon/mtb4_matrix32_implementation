@@ -24,6 +24,17 @@ LIVE_FREQUENCY_MIN_ACK_TO_WRITE_MS = 7.5
 LIVE_FREQUENCY_MAX_ACK_TO_WRITE_MS = 5000.0
 
 
+class LiveCurrentUpdateError(RuntimeError):
+    """A live SC transaction failed; .record retains host-side evidence."""
+
+    def __init__(self, record):
+        self.record = record
+        super().__init__(
+            "Live current update {} (CH{}: {} -> {} command units)".format(
+                record["status"], record["channel"],
+                record["old_current_command"], record["new_current_command"]))
+
+
 class LiveWidthUpdateError(RuntimeError):
     """A live SW transaction failed; .record retains its partial evidence."""
 
@@ -91,6 +102,8 @@ class Matrix32Device:
         # deadline must not wait for a stalled configuration transaction.
         self._configuration_lock = asyncio.Lock()
         self._control_generation = 0
+        self._live_current_task = None
+        self.live_current_records = []
         self._live_width_task = None
         self.live_width_records = []
         self._live_frequency_task = None
@@ -155,6 +168,8 @@ class Matrix32Device:
         self.running = False
         self.config_verified = False
         self.verified_config_snapshot = None
+        if self._live_current_task is not None and not self._live_current_task.done():
+            self.live_current_records[-1]["ack"]["abort_requested"] = True
         if self._live_width_task is not None and not self._live_width_task.done():
             self.live_width_records[-1]["ack"]["abort_requested"] = True
         if (self._live_frequency_task is not None
@@ -692,6 +707,172 @@ class Matrix32Device:
             record["status"] = "TRANSPORT_ERROR"
             record["error"] = "{}: {}".format(type(exc).__name__, exc)
             raise LiveWidthUpdateError(record) from exc
+        finally:
+            copy_evidence()
+            record["completed_monotonic_s"] = time.monotonic()
+            record["elapsed_ms"] = round(
+                (record["completed_monotonic_s"] - requested) * 1000, 3)
+            if exchange.done():
+                release_exchange(exchange)
+            else:
+                record["cleanup_pending"] = True
+                exchange.add_done_callback(release_exchange)
+
+    async def apply_live_current(
+            self, channel, current_command, *, timeout_s=2.0, timing_marker=None):
+        """Send one ACK-required 32-current SC vector during running output.
+
+        The channel must already be active in an unchanged, ACK-verified
+        configuration. All other fields and channels are preserved. A same-
+        value request is transmitted, making A->A a real command control.
+        Integer 0..65535 is ONLY a protocol serialization bound. SC=0 while
+        running is unqualified: ACK does not prove physical zero output.
+        No STOP, START, retry, or implicit activation is sent.
+
+        timeout_s covers the complete exchange, including an optional timing
+        marker handshake, subscribe, write and unsubscribe. When supplied,
+        timing_marker.mark() must ACK before the BLE write is issued. If a
+        transport ignores cancellation, the caller returns
+        with an error while the lock remains held until that task finishes.
+        An independent STOP supervisor must remain active; cancellation does
+        not prove that a pending write never reached the device.
+        """
+        if type(channel) is not int or not 1 <= channel <= 32:
+            raise ValueError("Live update channel must be an integer in 1..32")
+        if type(current_command) is not int or not 0 <= current_command <= 65535:
+            raise ValueError("Live SC must be an integer 0..65535 (zero is bench-only)")
+        if (type(timeout_s) not in (int, float) or not math.isfinite(timeout_s)
+                or not 0 < timeout_s <= 10):
+            raise ValueError("Live update operation timeout must be >0 and <=10 seconds")
+        # Do not queue live transitions behind another indication owner.
+        if self._configuration_lock.locked():
+            raise RuntimeError("Another Matrix32 configuration/indication transaction is pending")
+        await self._configuration_lock.acquire()
+        try:
+            await self._close_live_frequency_session()
+            self._require_connection()
+            if not self.running:
+                raise RuntimeError("Live current update requires running stimulation")
+            if self.read_char_uuid is None:
+                raise RuntimeError("Matrix32Device indication characteristic is unavailable")
+            if (not self.config_verified
+                    or self.config != self.verified_config_snapshot):
+                raise RuntimeError("Live current update requires the exact ACK-verified configuration")
+            old_config = deepcopy(self.config)
+            channels = old_config["sa"]
+            currents = old_config["sc"]
+            if (any(type(ch) is not int or not 1 <= ch <= 32 for ch in channels)
+                    or len(set(channels)) != len(channels)
+                    or len(currents) != len(channels)
+                    or any(type(w) is not int or not 0 <= w <= 65535 for w in currents)):
+                raise ValueError("Verified active-channel currents must be explicit valid integers")
+            if channel not in channels:
+                raise ValueError("Live current update cannot activate an inactive channel")
+            proposed = deepcopy(old_config)
+            index = channels.index(channel)
+            old_current = currents[index]
+            proposed["sc"][index] = current_command
+            message = next(
+                item for item in build_config_messages(proposed)
+                if item.startswith(b">SC;"))
+        except BaseException:
+            self._configuration_lock.release()
+            raise
+
+        requested = time.monotonic()
+        generation = self._control_generation
+        ack_record = {}
+        record = {
+            "sequence_id": len(self.live_current_records) + 1,
+            "command": "SC", "channel": channel,
+            "old_current_command": old_current, "new_current_command": current_command,
+            "same_value": old_current == current_command,
+            "old_config": old_config, "requested_config": proposed,
+            "request_hex": message.hex(" "), "response_hex": None,
+            "status": "IN_FLIGHT", "timeout_s": timeout_s,
+            "request_monotonic_s": requested,
+            "write_begin_monotonic_s": None, "write_return_monotonic_s": None,
+            "ack_monotonic_s": None, "completed_monotonic_s": None,
+            "elapsed_ms": None, "configuration_verified_after": False,
+            "cleanup_pending": False, "ack": ack_record,
+            "marker": None, "marker_ack_to_ble_write_ms": None,
+        }
+        self.live_current_records.append(record)
+        self.config_verified = False
+        self.verified_config_snapshot = None
+        exchange = asyncio.create_task(write_config_with_ack(
+            self.client, self.write_char_uuid, self.read_char_uuid, message,
+            timeout_s=timeout_s, record=ack_record, marker=timing_marker))
+        self._live_current_task = exchange
+
+        def copy_evidence():
+            for key in ("response_hex", "write_begin_monotonic_s",
+                        "write_return_monotonic_s", "ack_monotonic_s"):
+                record[key] = ack_record.get(key)
+            record["marker"] = ack_record.get("marker")
+            marker_record = record.get("marker")
+            marker_ack = (
+                marker_record.get("ack_monotonic_s")
+                if isinstance(marker_record, dict) else None)
+            write_begin = record.get("write_begin_monotonic_s")
+            record["marker_ack_to_ble_write_ms"] = (
+                round((write_begin - marker_ack) * 1000, 3)
+                if marker_ack is not None and write_begin is not None else None)
+
+        def release_exchange(task):
+            # Consume the result even after the caller timed out/cancelled.
+            try:
+                task.result()
+            except BaseException:
+                pass
+            copy_evidence()
+            record["cleanup_pending"] = False
+            record["exchange_completed_monotonic_s"] = time.monotonic()
+            if self._live_current_task is task:
+                self._live_current_task = None
+            self._configuration_lock.release()
+
+        try:
+            done, _pending = await asyncio.wait({exchange}, timeout=timeout_s)
+            if not done:
+                record["status"] = "TIMEOUT"
+                ack_record["abort_requested"] = True
+                exchange.cancel()
+                raise LiveCurrentUpdateError(record)
+            try:
+                exchange.result()
+            except ConfigurationAckError as exc:
+                record["status"] = exc.record["status"]
+                raise LiveCurrentUpdateError(record) from exc
+            if generation != self._control_generation:
+                record["status"] = "CONTROL_ABORTED"
+                raise LiveCurrentUpdateError(record)
+            if not self.connected:
+                record["status"] = "BLE_DISCONNECTED"
+                raise LiveCurrentUpdateError(record)
+            if not self.running:
+                record["status"] = "STOPPED_DURING_UPDATE"
+                raise LiveCurrentUpdateError(record)
+            if self.config != old_config:
+                record["status"] = "CONFIG_CHANGED_DURING_UPDATE"
+                raise LiveCurrentUpdateError(record)
+            self.config = deepcopy(proposed)
+            self.verified_config_snapshot = deepcopy(proposed)
+            self.config_verified = True
+            record["configuration_verified_after"] = True
+            record["status"] = "OK"
+            return record
+        except asyncio.CancelledError:
+            record["status"] = "CANCELLED"
+            ack_record["abort_requested"] = True
+            exchange.cancel()
+            raise
+        except LiveCurrentUpdateError:
+            raise
+        except Exception as exc:
+            record["status"] = "TRANSPORT_ERROR"
+            record["error"] = "{}: {}".format(type(exc).__name__, exc)
+            raise LiveCurrentUpdateError(record) from exc
         finally:
             copy_evidence()
             record["completed_monotonic_s"] = time.monotonic()

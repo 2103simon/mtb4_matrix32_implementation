@@ -1,474 +1,385 @@
+"""Plot MCU taxels and unconstrained RA-I / SA-II requested rates.
+
+New firmware: YYYYMMDD_HHMMSS_tactile_rates.csv
+Legacy firmware: YYYYMMDD_HHMMSS_taxel.csv + _events.csv
+
+Examples (from repository root):
+    python analyze_mcu_recording.py
+    python analyze_mcu_recording.py --datetime 20261119_082300
+    python analyze_mcu_recording.py --taxel 3 --zoom-sec 0.5
+"""
+import argparse
+import csv
 import json
-import numpy as np
 from pathlib import Path
+
 import matplotlib.pyplot as plt
+import numpy as np
 
-# Project root directory
+
 BASE_DIR = Path(__file__).resolve().parent
-
-# Configuration file
 CONFIG_PATH = BASE_DIR / "config" / "config.json"
+OUTPUT_FOLDER = BASE_DIR / "analysis"
+CHANNEL_COUNT = 12
 
-DATETIME = "20261118_084333"
 
-OUTPUT_FOLDER = "./analysis"
-
-def load_recordings(data_path, date_time):
-    """Load MCU CSV files, including optional host arrival timestamps."""
-    data_path = Path(data_path)
-
-    def read_csv(path):
-        # Named columns tolerate the additional host timestamp and older CSVs.
-        return np.genfromtxt(
-            path, delimiter=",", names=True, dtype=None, encoding=None, ndmin=1
+def choose_recording(data_dir, requested=None):
+    """Choose a recording ID, prioritizing complete rate CSVs."""
+    if requested:
+        return requested
+    candidates = list(data_dir.glob("*_tactile_rates.csv"))
+    # In legacy mode only taxel files exist. New-mode recorder also creates
+    # empty taxel/event CSVs, so rate CSVs must take precedence.
+    if not candidates:
+        candidates = list(data_dir.glob("*_taxel.csv"))
+    if not candidates:
+        raise FileNotFoundError(
+            f"No *_tactile_rates.csv or *_taxel.csv recordings in {data_dir}"
         )
+    latest = max(candidates, key=lambda p: p.stat().st_mtime)
+    suffix = ("_tactile_rates.csv" if latest.name.endswith("_tactile_rates.csv")
+              else "_taxel.csv")
+    return latest.name[:-len(suffix)]
 
-    taxels = read_csv(data_path / f"{date_time}_taxel.csv")
-    events = read_csv(data_path / f"{date_time}_events.csv")
-    if len(taxels) == 0:
-        raise ValueError("Taxel recording is empty")
 
-    corrected = np.asarray(taxels["corrected_timestamp_ms"], dtype=float)
-    raw = np.asarray(taxels["raw_timestamp_ms"], dtype=float)
-    values = np.column_stack([taxels[f"taxel_{i}"] for i in range(12)])
+def _read_rows(path):
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    with path.open(newline="") as handle:
+        return list(csv.DictReader(handle))
 
-    event_names = events.dtype.names
-    event_time = (
-        events["corrected_timestamp_ms"]
-        if "corrected_timestamp_ms" in event_names
-        else events["timestamp_ms"]
+
+def _array(rows, prefix):
+    return np.asarray(
+        [[float(row[f"{prefix}{i}"]) for i in range(CHANNEL_COUNT)] for row in rows],
+        dtype=float,
     )
-    event_time = np.asarray(event_time, dtype=float) - corrected[0]
-    event_ids = np.asarray(events["id0"], dtype=int)
-    channels = np.asarray(events["id1"], dtype=int)
 
-    ra_i = np.column_stack((event_time[event_ids == 0], channels[event_ids == 0]))
-    sa_ii = np.column_stack((event_time[event_ids == 1], channels[event_ids == 1]))
 
-    data = {
-        "taxel_raw_timestamps": raw,
-        "taxel_corrected_timestamps": corrected - corrected[0],
-        "taxel_data": values,
-        "ra_i_data": ra_i,
-        "sa_ii_data": sa_ii,
-    }
+def load_recordings(data_dir, recording_id):
+    """Return time-aligned pressure and requested frequency arrays.
 
-    # Optional combined recording (newer MCU recordings only).
-    if "pc_arrival_monotonic_ns" in taxels.dtype.names:
-        data["taxel_pc_ns"] = np.asarray(
-            taxels["pc_arrival_monotonic_ns"], dtype=np.int64
+    When the new 0x05 rate recording exists, it is authoritative and the
+    header-only legacy event/taxel CSVs are deliberately ignored.
+    """
+    data_dir = Path(data_dir)
+    rates_path = data_dir / f"{recording_id}_tactile_rates.csv"
+    data = {"recording_id": recording_id}
+    settings_path = data_dir / f"{recording_id}_settings.json"
+    if settings_path.is_file():
+        with settings_path.open(encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        if manifest.get("recording_id") != recording_id:
+            raise ValueError(f"Manifest recording_id mismatch: {settings_path}")
+        data["experiment_settings"] = manifest
+
+    if rates_path.exists():
+        rows = _read_rows(rates_path)
+        if not rows:
+            raise ValueError(f"Rate recording is empty: {rates_path}")
+        corrected = np.asarray(
+            [float(row["corrected_timestamp_ms"]) for row in rows], dtype=float
         )
-        data["event_corrected_ms"] = np.asarray(event_time, dtype=float)
-        data["event_ids"] = event_ids
-        data["event_channels"] = channels
+        data.update({
+            "mode": "rates",
+            "taxel_data": _array(rows, "taxel_"),
+            "ra_rate_hz": _array(rows, "ra_rate_hz_"),
+            "sa_rate_hz": _array(rows, "sa_rate_hz_"),
+            "taxel_corrected_timestamps": corrected - corrected[0],
+            "taxel_raw_timestamps": np.asarray(
+                [int(row["raw_timestamp_ms"]) for row in rows], dtype=np.uint64
+            ),
+            "taxel_pc_ns": np.asarray(
+                [int(row["pc_arrival_monotonic_ns"]) for row in rows], dtype=np.int64
+            ),
+        })
+    else:
+        taxel_rows = _read_rows(data_dir / f"{recording_id}_taxel.csv")
+        if not taxel_rows:
+            raise ValueError(f"Legacy taxel recording is empty for {recording_id}")
+        corrected = np.asarray(
+            [float(row["corrected_timestamp_ms"]) for row in taxel_rows], dtype=float
+        )
+        event_path = data_dir / f"{recording_id}_events.csv"
+        event_rows = _read_rows(event_path) if event_path.exists() else []
+        events = np.asarray(
+            [[float(row.get("corrected_timestamp_ms", row.get("timestamp_ms"))) - corrected[0],
+              int(row["id0"]), int(row["id1"])]
+             for row in event_rows],
+            dtype=float,
+        ).reshape(-1, 3)
+        data.update({
+            "mode": "events",
+            "taxel_data": _array(taxel_rows, "taxel_"),
+            "taxel_corrected_timestamps": corrected - corrected[0],
+            "taxel_raw_timestamps": np.asarray(
+                [int(row["raw_timestamp_ms"]) for row in taxel_rows], dtype=np.uint64
+            ),
+            "events": events,
+        })
+        if "pc_arrival_monotonic_ns" in taxel_rows[0]:
+            data["taxel_pc_ns"] = np.asarray(
+                [int(row["pc_arrival_monotonic_ns"]) for row in taxel_rows],
+                dtype=np.int64,
+            )
 
-    omega_path = data_path / f"{date_time}_omega.csv"
+    omega_path = data_dir / f"{recording_id}_omega.csv"
     if omega_path.exists():
-        omega = read_csv(omega_path)
-        if len(omega) == 0:
-            raise ValueError("Omega recording is empty")
-        data["omega_pc_ns"] = np.asarray(omega["pc_monotonic_ns"], dtype=np.int64)
-        data["omega_pos"] = np.column_stack(
-            [omega[f"pos_{axis}"] for axis in "xyz"]
-        )
-        data["omega_vel"] = np.column_stack(
-            [omega[f"vel_{axis}"] for axis in "xyz"]
-        )
-        data["omega_force"] = np.column_stack(
-            [omega[f"force_{axis}"] for axis in "xyz"]
-        )
-
+        omega_rows = _read_rows(omega_path)
+        if omega_rows:
+            data["omega_pc_ns"] = np.asarray(
+                [int(row["pc_monotonic_ns"]) for row in omega_rows], dtype=np.int64
+            )
+            for key in ("pos", "vel", "force"):
+                data[f"omega_{key}"] = np.asarray(
+                    [[float(row[f"{key}_{axis}"]) for axis in "xyz"]
+                     for row in omega_rows], dtype=float
+                )
     return data
 
 
-def calculate_taxel_derivatives(data):
+def find_max_activity_window(data, window_sec=0.5):
+    """Return the highest-activity interval on the MCU time axis (ms)."""
+    t = data["taxel_corrected_timestamps"]
+    values = data["taxel_data"]
+    if len(t) < 2:
+        return float(t[0]), float(t[0] + window_sec * 1000)
+    changes = np.zeros(len(t), dtype=float)
+    changes[1:] = np.abs(np.diff(values, axis=0)).sum(axis=1)
+    prefix = np.r_[0., np.cumsum(changes)]
+    end_idx = np.searchsorted(t, t + window_sec * 1000, side="right")
+    scores = prefix[end_idx] - prefix[np.arange(len(t))]
+    best = int(np.argmax(scores))
+    return float(t[best]), float(t[best] + window_sec * 1000)
 
-    taxel_data = data["taxel_data"]
-    timestamps = data["taxel_corrected_timestamps"]
 
-    derivatives = np.gradient(
-        taxel_data,
-        timestamps / 1000.0,
-        axis=0
+def _plot_rate_axes(axs, t, data, mask, channel_colors, selected_taxel=None):
+    """Plot requested frequency traces; never infer rates from event spikes."""
+    for ax, key, label in zip(
+        axs,
+        ("ra_rate_hz", "sa_rate_hz"),
+        ("RA-I requested rate (Hz)", "SA-II requested rate (Hz)"),
+    ):
+        rates = data[key][mask]
+        if selected_taxel is None:
+            for channel in range(CHANNEL_COUNT):
+                ax.plot(t, rates[:, channel], color=channel_colors[channel],
+                        linewidth=1, alpha=0.85)
+        else:
+            ax.plot(t, rates[:, selected_taxel],
+                    color=channel_colors[selected_taxel], linewidth=1.5)
+        ax.set_ylabel(label)
+        ax.set_ylim(bottom=0)
+        ax.grid(True, alpha=0.25)
+
+
+def _experiment_label(data):
+    """Concise plot annotation sourced from the saved experiment manifest."""
+    settings = data.get("experiment_settings")
+    if not settings:
+        return ""
+    config = settings.get("configuration", {})
+    encoding = config.get("tactile_encoding", {})
+    source = config.get("stimulation_source", {})
+    if not encoding or not source:
+        return ""
+    return (
+        f"RA threshold={encoding.get('raThreshold', '?')}, "
+        f"SA max={encoding.get('saMaxFrequencyHz', '?')} Hz, "
+        f"selected taxel={source.get('taxel', '?')} "
+        f"({source.get('encoding', '?')})"
     )
 
-    return derivatives
 
-def find_max_activity_window(data, window_sec=2.0):
-
-    timestamps = np.asarray(
-        data["taxel_corrected_timestamps"]
-    )
-
-    values = np.asarray(
-        data["taxel_data"]
-    )
-
-    # Convert window duration to milliseconds
-    window_ms = window_sec * 1000
-
-    # Calculate absolute changes between consecutive samples
-    dx = np.abs(np.diff(values.astype(float), axis=0))
-
-    # Sum changes across all 12 taxels
-    activity = np.sum(dx, axis=1)
-
-    # Cumulative activity
-    cumulative = np.concatenate((
-        [0],
-        np.cumsum(activity)
-    ))
-
-    # Sliding window start positions
-    start_indices = np.arange(len(timestamps))
-
-    # Find corresponding end indices
-    end_indices = np.searchsorted(
-        timestamps,
-        timestamps + window_ms,
-        side="right"
-    )
-
-    # Accumulated activity in each window
-    window_activity = (
-        cumulative[end_indices - 1]
-        - cumulative[start_indices]
-    )
-
-    # Find most active window
-    max_idx = np.argmax(window_activity)
-
-    start_time = timestamps[max_idx]
-    end_time = start_time + window_ms
-
-    print(
-        f"Most active window: "
-        f"{start_time:.1f} - {end_time:.1f} ms"
-    )
-
-    print(
-        f"Accumulated activity: "
-        f"{window_activity[max_idx]:.2f}"
-    )
-
-    return start_time, end_time
-
-def plot_traces(data):
-
-    # Extract data
-    taxel_timestamps = data["taxel_corrected_timestamps"]
-    taxel_values = data["taxel_data"]
-    taxel_deriv = data["taxel_deriv"]
-    ra_i_events = data["ra_i_data"]
-    sa_ii_events = data["sa_ii_data"]
-
-    # Create figure
-    fig, axs = plt.subplots(
-        3, 1,
-        figsize=(14, 10),
-        sharex=True,
-        layout="constrained"
-    )
-
-    # 1. Raw taxel traces
-    lines = axs[0].plot(taxel_timestamps, taxel_values)
-
-    # Extract channel colors
-    channel_colors = [line.get_color() for line in lines]
-
-    axs[0].legend(
-        [f"Taxel {i}" for i in range(12)],
-        ncol=6,
-        fontsize=8,
-        loc="upper center"
-    )
-    axs[0].set_ylabel("Taxel value")
-
-    # 4. RA-I events
-    axs[1].scatter(
-        ra_i_events[:, 0],
-        ra_i_events[:, 1],
-        c=[channel_colors[int(ch)] for ch in ra_i_events[:, 1]],
-        marker="|"
-    )
-    axs[1].set_ylabel("RA-I channel")
-    axs[1].set_yticks(range(12))
-    
-
-    # # 3. Taxel derivatives
-    # derivative_lines = axs[2].plot(
-    #     taxel_timestamps,
-    #     taxel_deriv
-    # )
-
-    # # Give derivatives the same colors
-    # for i, line in enumerate(derivative_lines):
-    #     line.set_color(channel_colors[i])
-
-    # axs[2].set_ylabel("dx/dt")
-
-    # 2. SA-II events
-    axs[2].scatter(
-        sa_ii_events[:, 0],
-        sa_ii_events[:, 1],
-        c=[channel_colors[int(ch)] for ch in sa_ii_events[:, 1]],
-        marker="|"
-    )
-    axs[2].set_ylabel("SA-II channel")
-    axs[2].set_yticks(range(12))
-    axs[2].set_xlabel("Time (ms)")
-
-    fig.align_ylabels()
-
-    plt.savefig(f"{OUTPUT_FOLDER}/{DATETIME}_traces.png")
-
-    plt.close(fig)
-
-def plot_traces_zoom(data, window_sec=2.0):
-
-    # ----------------------------------
-    # 1. Find most active window
-    # ----------------------------------
-
-    start_time, end_time = find_max_activity_window(
-        data,
-        window_sec=window_sec
-    )
-
-    # ----------------------------------
-    # 2. Extract data
-    # ----------------------------------
-
-    taxel_timestamps = data["taxel_corrected_timestamps"]
-    taxel_values = data["taxel_data"]
-    taxel_deriv = data["taxel_deriv"]
-
-    ra_i_events = data["ra_i_data"]
-    sa_ii_events = data["sa_ii_data"]
-
-    # ----------------------------------
-    # 3. Filter taxel measurements
-    # ----------------------------------
-
-    taxel_mask = (
-        (taxel_timestamps >= start_time) &
-        (taxel_timestamps <= end_time)
-    )
-
-    t_zoom = taxel_timestamps[taxel_mask]
-    values_zoom = taxel_values[taxel_mask]
-
-    # Handle derivative timestamps
-    if len(taxel_deriv) == len(taxel_timestamps):
-        deriv_timestamps = taxel_timestamps
-    elif len(taxel_deriv) == len(taxel_timestamps) - 1:
-        deriv_timestamps = taxel_timestamps[1:]
+def plot_traces(data, output, interval=None, selected_taxel=None, x_axis="mcu"):
+    """Three aligned panels: raw taxels, RA requested rate, SA requested rate."""
+    if x_axis == "pc":
+        if "taxel_pc_ns" not in data:
+            raise ValueError("Recording has no PC arrival timestamps")
+        t = (data["taxel_pc_ns"] - data["taxel_pc_ns"][0]) / 1e6
     else:
-        raise ValueError("Unexpected derivative array length")
+        t = data["taxel_corrected_timestamps"]
 
-    deriv_mask = (
-        (deriv_timestamps >= start_time) &
-        (deriv_timestamps <= end_time)
-    )
+    if interval is None:
+        mask = np.ones(len(t), dtype=bool)
+    else:
+        mask = (t >= interval[0]) & (t <= interval[1])
+    if not mask.any():
+        raise ValueError("No samples in selected plot interval")
 
-    deriv_t_zoom = deriv_timestamps[deriv_mask]
-    deriv_zoom = taxel_deriv[deriv_mask]
+    tx = t[mask]
+    fig, axs = plt.subplots(3, 1, figsize=(15, 11), sharex=True,
+                            layout="constrained")
+    taxels = data["taxel_data"][mask]
+    if selected_taxel is None:
+        lines = axs[0].plot(tx, taxels, linewidth=1)
+        colors = [line.get_color() for line in lines]
+        axs[0].legend([f"Taxel {i}" for i in range(CHANNEL_COUNT)],
+                      ncol=6, fontsize=8, loc="upper center")
+    else:
+        # Still assign stable channel colors across plots.
+        color_cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        colors = [color_cycle[i % len(color_cycle)] for i in range(CHANNEL_COUNT)]
+        axs[0].plot(tx, taxels[:, selected_taxel],
+                    color=colors[selected_taxel], linewidth=1.5,
+                    label=f"Taxel {selected_taxel}")
+        axs[0].legend(loc="upper right")
+    axs[0].set_ylabel("Taxel pressure (0–255)")
+    axs[0].set_ylim(0, 255)
+    axs[0].grid(True, alpha=0.25)
 
-    # ----------------------------------
-    # 4. Filter events
-    # ----------------------------------
+    if data["mode"] == "rates":
+        _plot_rate_axes(axs[1:], tx, data, mask, colors, selected_taxel)
+    else:
+        # Retain legacy support only when no rate recording exists.
+        events = data["events"]
+        for ax, kind, name in zip(
+            axs[1:], (0, 1), ("RA-I spikes (legacy)", "SA-II spikes (legacy)")
+        ):
+            matches = events[events[:, 1] == kind]
+            if interval is not None:
+                matches = matches[(matches[:, 0] >= interval[0])
+                                  & (matches[:, 0] <= interval[1])]
+            if selected_taxel is not None:
+                matches = matches[matches[:, 2] == selected_taxel]
+            ax.scatter(matches[:, 0], matches[:, 2], marker="|", s=25,
+                       c=[colors[int(channel)] for channel in matches[:, 2]])
+            ax.set_ylabel(name)
+            ax.set_yticks([selected_taxel] if selected_taxel is not None
+                          else range(CHANNEL_COUNT))
+            ax.grid(True, alpha=0.25)
 
-    ra_mask = (
-        (ra_i_events[:, 0] >= start_time) &
-        (ra_i_events[:, 0] <= end_time)
-    )
-
-    sa_mask = (
-        (sa_ii_events[:, 0] >= start_time) &
-        (sa_ii_events[:, 0] <= end_time)
-    )
-
-    ra_zoom = ra_i_events[ra_mask]
-    sa_zoom = sa_ii_events[sa_mask]
-
-    # ----------------------------------
-    # 5. Create figure
-    # ----------------------------------
-
-    fig, axs = plt.subplots(
-        3, 1,
-        figsize=(14, 10),
-        sharex=True,
-        layout="constrained"
-    )
-
-    # ----------------------------------
-    # 6. Raw taxel measurements
-    # ----------------------------------
-
-    lines = axs[0].plot(t_zoom, values_zoom)
-
-    channel_colors = [
-        line.get_color() for line in lines
-    ]
-
-    axs[0].legend(
-        [f"Taxel {i}" for i in range(12)],
-        ncol=6,
-        fontsize=8,
-        loc="upper center"
-    )
-
-    axs[0].set_ylabel("Taxel value")
-
-    axs[1].scatter(
-        ra_zoom[:, 0],
-        ra_zoom[:, 1],
-        c=[
-            channel_colors[int(ch)]
-            for ch in ra_zoom[:, 1]
-        ],
-        marker="|"
-    )
-
-    axs[1].set_ylabel("RA-I channel")
-    axs[1].set_yticks(range(12))
-# ----------------------------------
-    # 7. SA-II events
-    # ----------------------------------
-
-    axs[2].scatter(
-        sa_zoom[:, 0],
-        sa_zoom[:, 1],
-        c=[
-            channel_colors[int(ch)]
-            for ch in sa_zoom[:, 1]
-        ],
-        marker="|"
-    )
-
-    axs[2].set_ylabel("SA-II channel")
-    axs[2].set_yticks(range(12))
-
-    # ----------------------------------
-    # 8. Taxel derivatives
-    # ----------------------------------
-
-    # derivative_lines = axs[2].plot(
-    #     deriv_t_zoom,
-    #     deriv_zoom
-    # )
-
-    # for i, line in enumerate(derivative_lines):
-    #     line.set_color(channel_colors[i])
-
-    # axs[2].set_ylabel("dx/dt")
-
-    # ----------------------------------
-    # 9. RA-I events
-    # ----------------------------------
-
-    
-    axs[2].set_xlabel("Time (ms)")
-
-    # ----------------------------------
-    # 10. Finalize
-    # ----------------------------------
-
-    for ax in axs:
-        ax.set_xlim(start_time, end_time)
-
+    axs[-1].set_xlabel("Elapsed PC arrival time (ms)" if x_axis == "pc"
+                        else "Elapsed corrected MCU time (ms)")
+    if interval is not None:
+        axs[-1].set_xlim(*interval)
     fig.suptitle(
-        f"Highest taxel activity ({window_sec:.2f} s window)"
+        f"{data['recording_id']} — {'MCU rates' if data['mode'] == 'rates' else 'legacy spikes'}"
+        + (f" — taxel {selected_taxel}" if selected_taxel is not None else "")
+        + (f"\n{_experiment_label(data)}" if _experiment_label(data) else "")
     )
-
-    fig.align_ylabels()
-
-    plt.savefig(f"{OUTPUT_FOLDER}/{DATETIME}_traces_zoom.png")
-
+    fig.savefig(output, dpi=150)
     plt.close(fig)
 
 
-def plot_combined(data):
-    """Plot Omega and MCU measurements in one figure on the host clock axis.
-
-    Packet reception times include serial latency. Event positions are estimated
-    from corrected MCU time using the taxel arrival-time offset (not calibrated).
-    """
-    if "taxel_pc_ns" not in data:
-        raise ValueError("MCU recording lacks monotonic arrival timestamps")
-
-    t0 = min(int(data["taxel_pc_ns"][0]), int(data["omega_pc_ns"][0]))
-    def seconds(ns):
-        return (np.asarray(ns, dtype=np.int64) - t0) / 1e9
-
-    omega_t = seconds(data["omega_pc_ns"])
-    taxel_t = seconds(data["taxel_pc_ns"])
-
-    # Recover individual event spacing instead of placing entire packets at
-    # their shared arrival time. Assumes corrected MCU clock is already close
-    # to PC clock rate; the fixed serial latency remains unknown.
-    corrected_ms = data["taxel_corrected_timestamps"]
-    expected_taxel_t = corrected_ms / 1000.0
-    offset_s = np.median(taxel_t - expected_taxel_t)
-    event_t = data["event_corrected_ms"] / 1000.0 + offset_s
-
-    fig, axs = plt.subplots(
-        6, 1, figsize=(15, 16), sharex=True, layout="constrained"
-    )
-    labels = ("X", "Y", "Z")
-    for ax, key, ylabel in zip(
+def plot_combined(data, output, selected_taxel=None):
+    """Optional Omega + MCU plot using the shared PC monotonic arrival axis."""
+    if "omega_pc_ns" not in data or "taxel_pc_ns" not in data:
+        return False
+    t0 = min(int(data["omega_pc_ns"][0]), int(data["taxel_pc_ns"][0]))
+    omega_t = (data["omega_pc_ns"] - t0) / 1e9
+    tactile_t = (data["taxel_pc_ns"] - t0) / 1e9
+    fig, axs = plt.subplots(6, 1, figsize=(15, 16), sharex=True,
+                            layout="constrained")
+    for ax, key, label in zip(
         axs[:3],
         ("omega_pos", "omega_vel", "omega_force"),
         ("Omega position (m)", "Omega velocity (m/s)", "Omega force (N)"),
     ):
-        ax.plot(omega_t, data[key], label=labels)
-        ax.set_ylabel(ylabel)
-        ax.legend(ncol=3, fontsize=8, loc="upper right")
+        ax.plot(omega_t, data[key])
+        ax.set_ylabel(label)
+        ax.grid(True, alpha=0.25)
 
-    lines = axs[3].plot(taxel_t, data["taxel_data"])
-    colors = [line.get_color() for line in lines]
-    axs[3].set_ylabel("Taxel value")
-    axs[3].legend(
-        [f"Taxel {i}" for i in range(12)],
-        ncol=6, fontsize=8, loc="upper right"
-    )
+    color_cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    colors = [color_cycle[i % len(color_cycle)] for i in range(CHANNEL_COUNT)]
+    indices = [selected_taxel] if selected_taxel is not None else range(CHANNEL_COUNT)
+    for i in indices:
+        axs[3].plot(tactile_t, data["taxel_data"][:, i], color=colors[i],
+                    label=f"Taxel {i}")
+    axs[3].set_ylabel("Taxel pressure")
+    axs[3].legend(ncol=6, fontsize=8)
 
-    for ax, event_type, ylabel in zip(
-        axs[4:], (0, 1), ("RA-I channel", "SA-II channel")
-    ):
-        mask = data["event_ids"] == event_type
-        channels = data["event_channels"][mask]
-        ax.scatter(
-            event_t[mask], channels,
-            c=[colors[int(ch)] for ch in channels],
-            marker="|", s=24
+    if data["mode"] == "rates":
+        for ax, key, label in zip(
+            axs[4:],
+            ("ra_rate_hz", "sa_rate_hz"),
+            ("RA-I requested rate (Hz)", "SA-II requested rate (Hz)"),
+        ):
+            for i in indices:
+                ax.plot(tactile_t, data[key][:, i], color=colors[i], linewidth=1)
+            ax.set_ylabel(label)
+            ax.set_ylim(bottom=0)
+            ax.grid(True, alpha=0.25)
+    else:
+        # Legacy event times are corrected MCU timestamps, aligned using the
+        # median PC arrival offset. This is only approximate.
+        offset_s = np.median(
+            tactile_t - data["taxel_corrected_timestamps"] / 1000.0
         )
-        ax.set_ylabel(ylabel)
-        ax.set_yticks(range(12))
+        events = data["events"]
+        for ax, kind, label in zip(
+            axs[4:], (0, 1), ("RA-I spikes", "SA-II spikes")
+        ):
+            selected = events[events[:, 1] == kind]
+            if selected_taxel is not None:
+                selected = selected[selected[:, 2] == selected_taxel]
+            ax.scatter(selected[:, 0] / 1000.0 + offset_s, selected[:, 2],
+                       marker="|", s=24,
+                       c=[colors[int(ch)] for ch in selected[:, 2]])
+            ax.set_ylabel(label)
+            ax.set_yticks(indices)
 
     axs[-1].set_xlabel("PC monotonic time since first sample (s)")
-    fig.suptitle("Omega and MCU recordings (approximate host-clock alignment)")
-    fig.savefig(f"{OUTPUT_FOLDER}/{DATETIME}_traces_combined.png", dpi=150)
+    fig.suptitle("Omega and tactile measurements (host-clock alignment)"
+                 + (f"\n{_experiment_label(data)}" if _experiment_label(data) else ""))
+    fig.savefig(output, dpi=150)
     plt.close(fig)
+    return True
 
 
 def main():
-    with open(CONFIG_PATH, "r") as f:
-        config = json.load(f)
-    
-    data = load_recordings(config["recordings_dir"], DATETIME)
-    
-    data["taxel_deriv"] = calculate_taxel_derivatives(data)
-    
-    if "omega_pc_ns" in data and "taxel_pc_ns" in data:
-        plot_combined(data)
-        print("Saved traces_combined.png")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--datetime",
+        help="Full recording ID (including settings suffix), or omit for latest",
+    )
+    parser.add_argument("--taxel", type=int, choices=range(CHANNEL_COUNT),
+                        metavar="0-11", help="Show only this taxel across all three panels")
+    parser.add_argument("--zoom-sec", type=float, default=0.5,
+                        help="Duration of most-active zoom plot in seconds (default 0.5)")
+    parser.add_argument("--pc-time", action="store_true",
+                        help="Use PC arrival timestamps instead of corrected MCU time")
+    args = parser.parse_args()
+    if args.zoom_sec <= 0:
+        parser.error("--zoom-sec must be positive")
+
+    with CONFIG_PATH.open() as handle:
+        config = json.load(handle)
+    data_dir = Path(config["recordings_dir"])
+    if not data_dir.is_absolute():
+        data_dir = BASE_DIR / data_dir
+    recording_id = choose_recording(data_dir, args.datetime)
+    data = load_recordings(data_dir, recording_id)
+    if "experiment_settings" in data:
+        print(f"Loaded experiment settings: {data_dir / (recording_id + '_settings.json')}")
+        print(_experiment_label(data))
     else:
-        # Keep the original MCU-only plots for older recordings.
-        plot_traces(data)
-        plot_traces_zoom(data, 0.5)
-    
+        print("No settings manifest found; plotting legacy recording metadata.")
+    OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
+
+    axis = "pc" if args.pc_time else "mcu"
+    suffix = f"_taxel{args.taxel}" if args.taxel is not None else ""
+    full_path = OUTPUT_FOLDER / f"{recording_id}_traces{suffix}.png"
+    plot_traces(data, full_path, selected_taxel=args.taxel, x_axis=axis)
+    print(f"Saved {full_path} ({len(data['taxel_data'])} samples, {data['mode']} mode)")
+
+    # Active-window detection is on corrected MCU time. Convert its bounds to
+    # PC arrival time only when plotting on the PC clock.
+    start_ms, end_ms = find_max_activity_window(data, args.zoom_sec)
+    if axis == "pc":
+        mcu_t = data["taxel_corrected_timestamps"]
+        pc_t = (data["taxel_pc_ns"] - data["taxel_pc_ns"][0]) / 1e6
+        start_ms = float(np.interp(start_ms, mcu_t, pc_t))
+        end_ms = float(np.interp(end_ms, mcu_t, pc_t))
+    zoom_path = OUTPUT_FOLDER / f"{recording_id}_traces_zoom{suffix}.png"
+    plot_traces(data, zoom_path, interval=(start_ms, end_ms),
+                selected_taxel=args.taxel, x_axis=axis)
+    print(f"Saved {zoom_path}")
+
+    combined_path = OUTPUT_FOLDER / f"{recording_id}_traces_combined{suffix}.png"
+    if plot_combined(data, combined_path, selected_taxel=args.taxel):
+        print(f"Saved {combined_path}")
+
 
 if __name__ == "__main__":
     main()

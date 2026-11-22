@@ -1,8 +1,11 @@
 {
   "tactile_encoding": {
-    "raThresholdSlider": {"min": 1, "max": 10, "default": 3, "tickInterval": 1, "tickPosition": "TicksBelow"},
-    "refPeriodSlider": {"min": 1, "max": 10, "default": 3, "tickInterval": 1, "tickPosition": "TicksBelow"},
-    "saMaxFreqSlider": {"min": 50, "max": 500, "default": 150, "tickInterval": 50, "tickPosition": "TicksBelow"}
+    "raThreshold": 3,
+    "saMaxFrequencyHz": 150
+  },
+  "stimulation_source": {
+    "taxel": 11,
+    "encoding": "sa_ii"
   },
   "nb_channels": 12,
   "taxel_max_val": 255,
@@ -18,7 +21,7 @@
     "export_dir": "logs"
   },
   "serial": {
-    "port": "/dev/ttyACM0",
+    "port": null,
     "input_baud_rate": 115200
   },
   "omega": {
@@ -27,7 +30,7 @@
   },
   "clock_compensation": {
     "enabled": true,
-    "initial_ppm": 3625.0,
+    "initial_ppm": 3625,
     "adaptive_enabled": true,
     "sample_source": "taxel",
     "update_interval_samples": 2000,
@@ -35,7 +38,14 @@
     "min_fit_samples": 5000,
     "min_fit_r2": 0.995,
     "ema_alpha": 0.15,
-    "max_step_ppm_per_update": 100.0,
+    "max_step_ppm_per_update": 100,
     "log_updates": true
+  },
+  "matrix32_stimulation": {
+    "channel": 1,
+    "currentCommand": 50,
+    "phaseWidthUs": 200,
+    "outputVoltageCommand": 50,
+    "interPulseTimingCommand": 10
   }
 }

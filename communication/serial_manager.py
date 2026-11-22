@@ -2,12 +2,13 @@
 Serial communication manager for MCU data reception.
 
 Handles binary protocol communication with the microcontroller over UART,
-parsing taxel pressure values and neuromorphic events.
+parsing taxel pressure values, neuromorphic events, and rate snapshots.
 
 Protocol format (framed, CRC-protected):
 - length(2, BE) + type(1) + payload(N) + crc32(4, BE)
 - type=0x02: Taxel payload = timestamp(4, BE) + 12 pressure bytes
 - type=0x04: Events payload = reference_timestamp(4, BE) + repeated [ID0(1), ID1(1), offset_ms(2, BE)]
+- type=0x05: Rates payload = timestamp(4, BE) + taxel[12](u8) + RA[12](u32 BE, centi-Hz) + SA[12](u32 BE, centi-Hz)
 - type=0x10: Command payload = command_id(1) [+ value_u16(2, BE)]
 - type=0x11: ACK payload = command_id(1) + status(1) + applied_value_u16(2, BE)
 
@@ -26,6 +27,8 @@ import zlib
 import threading
 import serial
 import queue
+
+from communication.serial_ports import resolve_port
 
 from typing import Optional
 
@@ -58,6 +61,8 @@ class SerialManager():
     SHUTDOWN_TIMEOUT_MS = 2000
     FRAME_TYPE_TAXEL = 0x02
     FRAME_TYPE_EVENTS = 0x04
+    FRAME_TYPE_TACTILE_RATES = 0x05
+    TACTILE_RATES_PAYLOAD_SIZE = 112
     FRAME_TYPE_COMMAND = 0x10
     FRAME_TYPE_ACK = 0x11
 
@@ -83,6 +88,8 @@ class SerialManager():
         # Data callbacks
         # Thread-safe communication queue
         self.data_queue = queue.Queue()
+        self._latest_rates_lock = threading.Lock()
+        self._latest_rates_snapshot = None
 
         self._is_running: bool = False
         self._safe_close: bool = True
@@ -90,7 +97,9 @@ class SerialManager():
         self.logger = logger or logging.getLogger(__name__)
         self.config = config or {}
         self.baudrate = self._get_baudrate_from_config()
+        self.connected_port = None
         self._rx_buffer = bytearray()
+        self._resynchronizing = False
         self._link_ready_emitted = False
         self._taxel_data_received = False
         self._emit_pc_receive_time = self._clock_drift_monitor_enabled_from_config()
@@ -160,6 +169,21 @@ class SerialManager():
         """
         return self._is_running
 
+    def get_latest_rates_snapshot(self):
+        """Return the newest complete rate snapshot, or None (thread-safe).
+
+        The recording queue remains lossless; this overwriting slot is for
+        future stimulation consumers that must not replay stale samples.
+        """
+        with self._latest_rates_lock:
+            if self._latest_rates_snapshot is None:
+                return None
+            snapshot = self._latest_rates_snapshot
+            return {**snapshot,
+                    "taxels": snapshot["taxels"].copy(),
+                    "ra_rates_hz": snapshot["ra_rates_hz"].copy(),
+                    "sa_rates_hz": snapshot["sa_rates_hz"].copy()}
+
     def has_received_telemetry(self) -> bool:
         """Return whether a valid taxel or event frame arrived this session."""
         return self._link_ready_emitted
@@ -184,18 +208,22 @@ class SerialManager():
 
         self._link_ready_emitted = False
         self._taxel_data_received = False
+        with self._latest_rates_lock:
+            self._latest_rates_snapshot = None
 
-    def start_comm(self, port: str):
+    def start_comm(self, port: str | None = None):
         if self._thread and self._thread.is_alive():
             self.logger.warning("Serial communication already running")
             return
 
         try:
+            port = resolve_port(port, "feather")
             self.ser = serial.Serial(
                 port,
                 self.baudrate,
                 timeout=0.1
             )
+            self.connected_port = port
 
             self.logger.info(
                 f"Opened serial port {port} at {self.baudrate}"
@@ -208,8 +236,11 @@ class SerialManager():
         self._stop_event.clear()
 
         self._rx_buffer.clear()
+        self._resynchronizing = False
         self._link_ready_emitted = False
         self._taxel_data_received = False
+        with self._latest_rates_lock:
+            self._latest_rates_snapshot = None
 
         self._clock_compensator.reset_session()
 
@@ -272,17 +303,45 @@ class SerialManager():
             except (AttributeError, OSError, serial.SerialException) as e:
                 self.logger.error(f"Error closing serial port: {e}")
 
+    def _find_valid_frame_offset(self):
+        """Locate a complete CRC-valid frame after losing frame alignment.
+
+        An invalid packet can contain plausible length headers. Returning
+        early for one such *incomplete* candidate would leave subsequent valid
+        frames stuck in the buffer. A CRC-verified candidate provides a safe
+        point at which to resume processing.
+        """
+        buffer = self._rx_buffer
+        for offset in range(1, len(buffer) - 6):
+            length = (buffer[offset] << 8) | buffer[offset + 1]
+            if not 1 <= length <= self.MAX_FRAME_LENGTH:
+                continue
+            end = offset + 2 + length + 4
+            if end > len(buffer):
+                continue
+            received_crc = struct.unpack_from('>I', buffer, offset + 2 + length)[0]
+            computed_crc = zlib.crc32(buffer[offset + 2:offset + 2 + length]) & 0xFFFFFFFF
+            if received_crc == computed_crc:
+                return offset
+        return None
+
     def _process_rx_buffer(self, pc_arrival_monotonic_ns: int) -> None:
         """Parse as many valid frames as possible from the receive buffer."""
         while len(self._rx_buffer) >= 7:
             length = (self._rx_buffer[0] << 8) | self._rx_buffer[1]
             if length < 1 or length > self.MAX_FRAME_LENGTH:
                 # Invalid length header; discard one byte and resync.
+                self._resynchronizing = True
                 del self._rx_buffer[0]
                 continue
 
             total_size = 2 + length + 4
             if len(self._rx_buffer) < total_size:
+                if self._resynchronizing:
+                    offset = self._find_valid_frame_offset()
+                    if offset is not None:
+                        del self._rx_buffer[:offset]
+                        continue
                 return
 
             frame_type = self._rx_buffer[2]
@@ -291,10 +350,16 @@ class SerialManager():
             computed_crc = zlib.crc32(bytes([frame_type]) + payload) & 0xFFFFFFFF
 
             if received_crc != computed_crc:
-                self.logger.warning(
-                    "CRC mismatch in serial frame; dropping one byte to resync")
+                if not self._resynchronizing:
+                    self.logger.warning(
+                        "CRC mismatch in serial frame; searching for next valid frame")
+                self._resynchronizing = True
                 del self._rx_buffer[0]
                 continue
+
+            # Valid CRC establishes an actual frame boundary, including for
+            # legacy or currently unsupported frame types.
+            self._resynchronizing = False
 
             if frame_type == self.FRAME_TYPE_TAXEL:
                 if len(payload) != 16:
@@ -305,7 +370,7 @@ class SerialManager():
                 raw_timestamp_ms = struct.unpack('>I', payload[0:4])[0]
                 taxel_values = list(payload[4:16])
                 needs_pc_time = self._emit_pc_receive_time or self._capture_pc_receive_time_for_compensation
-                pc_receive_ns = time.time_ns() if needs_pc_time else None
+                pc_receive_ns = pc_arrival_monotonic_ns if needs_pc_time else None
                 corrected_timestamp_ms = self._clock_compensator.compensate(
                     raw_timestamp_ms,
                     pc_receive_ns=pc_receive_ns,
@@ -327,6 +392,40 @@ class SerialManager():
                     raw_timestamp_ms,
                     pc_receive_ns
                 ))
+
+            elif frame_type == self.FRAME_TYPE_TACTILE_RATES:
+                if len(payload) != self.TACTILE_RATES_PAYLOAD_SIZE:
+                    self.logger.warning(
+                        "Invalid tactile rates payload length: %d", len(payload))
+                    del self._rx_buffer[:total_size]
+                    continue
+
+                raw_timestamp_ms = struct.unpack_from('>I', payload, 0)[0]
+                taxels = list(payload[4:16])
+                ra_rates_hz = [v / 100.0 for v in struct.unpack_from('>12I', payload, 16)]
+                sa_rates_hz = [v / 100.0 for v in struct.unpack_from('>12I', payload, 64)]
+                needs_pc_time = (self._emit_pc_receive_time
+                                 or self._capture_pc_receive_time_for_compensation)
+                pc_receive_ns = pc_arrival_monotonic_ns if needs_pc_time else None
+                corrected_timestamp_ms = self._clock_compensator.compensate(
+                    raw_timestamp_ms,
+                    pc_receive_ns=pc_receive_ns,
+                    allow_adaptive_update=(self._clock_compensation_sample_source == "taxel"),
+                )
+                snapshot = {
+                    "raw_timestamp_ms": raw_timestamp_ms,
+                    "corrected_timestamp_ms": corrected_timestamp_ms,
+                    "pc_arrival_monotonic_ns": pc_arrival_monotonic_ns,
+                    "taxels": taxels,
+                    "ra_rates_hz": ra_rates_hz,
+                    "sa_rates_hz": sa_rates_hz,
+                }
+                with self._latest_rates_lock:
+                    self._latest_rates_snapshot = snapshot
+                if not self._taxel_data_received:
+                    self._taxel_data_received = True
+                    self.logger.info("First valid tactile rate snapshot received")
+                self.data_queue.put(("tactile_rates", snapshot))
 
             elif frame_type == self.FRAME_TYPE_EVENTS:
                 if len(payload) < 4 or ((len(payload) - 4) % 4) != 0:
@@ -383,6 +482,7 @@ class SerialManager():
             if not self._link_ready_emitted and frame_type in {
                 self.FRAME_TYPE_TAXEL,
                 self.FRAME_TYPE_EVENTS,
+                self.FRAME_TYPE_TACTILE_RATES,
             }:
                 self._link_ready_emitted = True
                 self.data_queue.put(("link_ready",))
@@ -436,7 +536,7 @@ class SerialManager():
 
         return bytes([cmd_id]) + struct.pack('>H', value)
 
-    def send_command(self, command: str) -> None:
+    def send_command(self, command: str) -> bool:
         """
         Send framed binary command to MCU for parameter configuration.
 
@@ -444,20 +544,27 @@ class SerialManager():
             command (str): Logical command string (e.g., "RA_THR=5\n").
 
         Supported commands:
-            - RA_THR=<value>: Set RA-I threshold (0-10)
-            - REF=<value>: Set refractory period (1-10 ms)
-            - SA_FREQ=<value>: Set SA-II max frequency (1-300 Hz)
+            - RA_THR=<value>: Set RA-I threshold (1-255)
+            - REF=<value>: Set legacy refractory period (1-100 ms)
+            - SA_FREQ=<value>: Set SA-II maximum frequency (10-1000 Hz)
             - GET_CONFIG: Request current parameter values
+
+        Returns True only if the full frame was written successfully.
         """
         if not isinstance(command, str):
             raise TypeError("command must be a string")
-        if getattr(self.ser, "is_open", False):
-            try:
-                payload = self._encode_command_payload(command)
-                frame = self._build_frame(self.FRAME_TYPE_COMMAND, payload)
-                self.ser.write(frame)
-                self.ser.flush()
-                self.logger.info(f"Sent framed command: {command.strip()}")
-            except (AttributeError, OSError, ValueError, TypeError, serial.SerialTimeoutException, serial.SerialException) as e:
-                self.logger.error(
-                    f"Failed to send command '{command.strip()}': {e}")
+        if not getattr(self.ser, "is_open", False):
+            self.logger.error("Cannot send MCU command: serial port is closed")
+            return False
+        try:
+            payload = self._encode_command_payload(command)
+            frame = self._build_frame(self.FRAME_TYPE_COMMAND, payload)
+            bytes_written = self.ser.write(frame)
+            if bytes_written != len(frame):
+                raise OSError(f"Short serial write: {bytes_written}/{len(frame)} bytes")
+            self.ser.flush()
+            self.logger.info("Sent framed command: %s", command.strip())
+            return True
+        except (AttributeError, OSError, ValueError, TypeError, serial.SerialTimeoutException, serial.SerialException) as e:
+            self.logger.error("Failed to send command '%s': %s", command.strip(), e)
+            return False

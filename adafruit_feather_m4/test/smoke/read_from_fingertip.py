@@ -33,11 +33,17 @@ import numpy as np
 import serial
 from tqdm import tqdm
 
+# This smoke script is nested in the Feather PlatformIO project.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from communication.serial_ports import resolve_port
+
 # sometimes permission denied on linux, use:
 # sudo chmod 666 /dev/ttyACM0
 
 
-def analyze_taxel_timing(port, baudrate=115200, duration_sec=10.0):
+def analyze_taxel_timing(port=None, baudrate=115200, duration_sec=10.0):
     """Analyze timing characteristics of sensor data packets from the MCU.
 
     Connects to the serial port and collects data for the specified duration,
@@ -45,7 +51,8 @@ def analyze_taxel_timing(port, baudrate=115200, duration_sec=10.0):
     accumulates all sensor data for subsequent analysis and visualization.
 
     Args:
-        port (str): Serial port device path (e.g., '/dev/ttyACM0').
+        port (str | None): Optional explicit Feather M4 serial device path.
+            Omitted port selects the board using USB identity.
         baudrate (int, optional): Serial communication speed. Defaults to 115200.
         duration_sec (float, optional): Recording duration in seconds. Defaults to 10.0.
 
@@ -68,6 +75,7 @@ def analyze_taxel_timing(port, baudrate=115200, duration_sec=10.0):
     """
     imu_struct = struct.Struct('fff')  # For unpacking IMU data
 
+    port = resolve_port(port, "feather")
     try:
         with serial.Serial(port, baudrate, timeout=1) as ser:
             print(f"Connected to {port} at {baudrate} baud.")
@@ -543,7 +551,7 @@ def report_statistics(taxel_data, imu_data, ra_data=None, sa_data=None, us_data=
 
 
 if __name__ == "__main__":
-    port = "/dev/ttyACM0"
+    port = resolve_port(None, "feather")
     baudrate = 115200
     duration_sec = 10.0  # Record for 10 seconds by default
 

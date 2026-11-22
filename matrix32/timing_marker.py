@@ -40,48 +40,9 @@ class TimingMarkerError(RuntimeError):
 
 
 def discover_timing_marker_port():
-    """Return the unique Arduino-like serial port or fail with diagnostics."""
-    try:
-        from serial.tools import list_ports
-    except ImportError as exc:  # pragma: no cover - environment specific
-        raise RuntimeError(
-            "pyserial is required for the S07 timing marker"
-        ) from exc
-
-    ports = list(list_ports.comports())
-    matches = []
-    for port in ports:
-        text = " ".join(
-            str(value or "")
-            for value in (
-                getattr(port, "description", None),
-                getattr(port, "manufacturer", None),
-                getattr(port, "product", None),
-                getattr(port, "hwid", None),
-            )
-        ).lower()
-        if "arduino" in text or "nano every" in text:
-            matches.append(str(port.device))
-
-    if len(matches) == 1:
-        return matches[0]
-
-    available = [
-        "{} ({})".format(
-            getattr(port, "device", "?"),
-            getattr(port, "description", "unknown"),
-        )
-        for port in ports
-    ]
-    if not matches:
-        raise RuntimeError(
-            "No unique Arduino timing-marker serial port found. Available: "
-            + (", ".join(available) if available else "none")
-        )
-    raise RuntimeError(
-        "Multiple Arduino-like timing-marker ports found: {}. "
-        "Specify --port explicitly.".format(", ".join(matches))
-    )
+    """Find a uniquely identifiable Nano Every without opening a serial port."""
+    from communication.serial_ports import discover_port
+    return discover_port("nano")
 
 
 class SerialTimingMarker:
@@ -89,17 +50,15 @@ class SerialTimingMarker:
 
     def __init__(
         self,
-        port,
+        port=None,
         *,
         baudrate=DEFAULT_BAUDRATE,
         ack_timeout_s=DEFAULT_ACK_TIMEOUT_S,
         serial_factory=None,
     ):
-        if not port:
-            raise ValueError("Timing-marker serial port is required")
         if not 0 < float(ack_timeout_s) <= 2.0:
             raise ValueError("Timing-marker ACK timeout must be >0 and <=2 seconds")
-        self.port = str(port)
+        self.port = port
         self.baudrate = int(baudrate)
         self.ack_timeout_s = float(ack_timeout_s)
         self._serial_factory = serial_factory
@@ -119,6 +78,8 @@ class SerialTimingMarker:
                 ) from exc
             factory = serial.Serial
 
+        if self.port is None:
+            self.port = discover_timing_marker_port()
         self.serial = factory(
             self.port,
             self.baudrate,
