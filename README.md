@@ -2,9 +2,9 @@
 
 Research/bench software for reading **MTB4 fingertip tactile sensors** through an **Adafruit Feather M4 CAN Express**, translating selected taxel activity into frequency requests for an **E-Matrix32** stimulator over Bluetooth Low Energy (BLE), and measuring the electrical output with a **Tektronix MDO4104B-6** oscilloscope. An **Arduino Nano Every** supplies a Gray-coded hardware time reference so separate oscilloscope and PC timestamps can be compared.
 
-> **Experimental bench apparatus, not a clinically validated medical device.** Never attach a person or stimulation electrodes during exploratory testing. Use an appropriately rated **isolated dummy load**, a safe approved differential/isolated measurement arrangement where required, and an accessible physical output disconnect. A BLE ACK or a software STOP does **not** electrically prove that output is safe or off.
+> **Experimental bench apparatus, not a clinically validated medical device.** Never attach a person or stimulation electrodes during exploratory testing. Use an appropriately rated **resistive dummy load**, an independently approved earth-reference/differential/isolated measurement arrangement where required, and an accessible physical output disconnect. A BLE ACK or a software STOP does **not** electrically prove that output is safe or off.
 
-This README documents the current default branch, **`master`** (the branch named `main` in some local workflows). **Scope hardware runs and firmware uploading require local hardware and operator verification**; passing unit tests alone cannot establish electrical safety or timing accuracy.
+This README documents the repository's current default branch, **`master`**. **Scope hardware runs and firmware uploading require local hardware and operator verification**; passing unit tests alone cannot establish electrical safety or timing accuracy.
 
 ## Contents
 
@@ -35,7 +35,7 @@ Linux PC: SerialManager → recording + selected-taxel rate
            ├── BLE → E-Matrix32, CH1 stimulation (SF frequency updates)
            │              │
            │              ▼
-           │        isolated dummy load ───→ Tektronix scope CH1
+           │        100 kΩ CH1 dummy load ──→ Tektronix scope CH1
            │
 Arduino Nano Every (independent `micros()` clock)
   10 Hz frame: D7 16-bit Gray marker ───────→ Tektronix scope CH2
