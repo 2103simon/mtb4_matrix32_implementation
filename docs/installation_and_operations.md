@@ -16,7 +16,7 @@ The exact OS package names for USBTMC kernel support, udev rules and PlatformIO 
 ```bash
 git clone https://github.com/2103simon/mtb4_matrix32_implementation.git
 cd mtb4_matrix32_implementation
-git switch master
+git switch main
 
 python3 -m venv .venv
 source .venv/bin/activate
