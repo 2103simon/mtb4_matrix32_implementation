@@ -27,8 +27,8 @@ The live stimulation settings (SC, SW, SV, ST) are read from [`config/config.jso
 Run from repository root using your selected venv (shown here as `python`).
 
 ```bash
-git switch master
-git pull origin master
+git switch main
+git pull origin main
 python -m unittest discover -s tests -p 'test_integrated_matrix32_recording.py' -v
 python -m unittest discover -s tests -p 'test_analyze_integrated*.py' -v
 
