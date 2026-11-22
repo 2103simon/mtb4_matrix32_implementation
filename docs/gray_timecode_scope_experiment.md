@@ -79,8 +79,8 @@ This is a **provisional cross-device mapping**, not calibrated absolute latency.
 Run from repository root:
 
 ```bash
-git switch master
-git pull origin master
+git switch main
+git pull origin main
 
 # Device-free tests
 python -m unittest discover -s tests -p 'test_gray*.py' -v
