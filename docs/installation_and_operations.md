@@ -16,7 +16,7 @@ The exact OS package names for USBTMC kernel support, udev rules and PlatformIO 
 ```bash
 git clone https://github.com/2103simon/mtb4_matrix32_implementation.git
 cd mtb4_matrix32_implementation
-git switch feature/live-oscilloscope-recording
+git switch master
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -24,7 +24,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-The scientific analysis imports NumPy; Matplotlib currently installs NumPy as a dependency, but installing/checking a direct `numpy` dependency is recommended if adapting the dependency file. `requirements.txt` pins `bleak==0.22.3` (the historically validated combination with Linux BlueZ 5.53); updates require explicit regression testing. Python source also uses `asyncio.TaskGroup`, so use **Python 3.11 or later**.
+The scientific analysis imports NumPy, which is explicitly declared in `requirements.txt`. `requirements.txt` pins `bleak==0.22.3` (the historically validated combination with Linux BlueZ 5.53); updates require explicit regression testing. Python source also uses `asyncio.TaskGroup`, so use **Python 3.11 or later**.
 
 PlatformIO can be installed using the official documented method or into a separate tooling environment. Check `pio --version` / `platformio --version` before flashing. The Python project venv does not itself flash the boards.
 
@@ -83,7 +83,11 @@ This **does not configure or stimulate**; stop it before launching an integrated
 
 ## 5. Scope and dummy-load wiring rules
 
-- Scope **CH1**: Matrix32 **physical** CH1 output **only across a verified, appropriate isolated dummy load**. Ground clips from normal bench scopes are not arbitrary floating differential probes. Before connecting, determine whether the output is floating/high voltage and use an appropriately rated approved differential/isolated probing method.
+**Authoritative bench description for this repository:** [CH1 Matrix32 dummy-load and electrical-reference setup](electrical_bench_setup.md). The source rig uses an operator-reported **100.0 kΩ** resistor between CH1 cathode and the shared anode, and **TPP1000 10×** probing. The referenced passive-probe grounding arrangement ties the Matrix32 shared anode to the scope's protective-earth reference; it is **not intrinsically isolated**, and its compatibility with this exact setup remains to be checked by the operator. No Matrix32 output channel other than CH1 is enabled by the integrated runner.
+
+
+
+- Scope **CH1**: Matrix32 **physical** CH1 output across the documented **100.0 kΩ CH1 resistor dummy load**, after verification of actual ratings and wiring. Ground clips from normal bench scopes are not arbitrary floating differential probes. Before connecting, determine whether the output is floating/high voltage and use an appropriately rated approved differential/isolated probing method.
 - Scope **CH2**: Nano D7 timecode line, with proper Nano ground reference in a correctly isolated scope measurement setup. **Never attach Nano ground to any stimulation electrode/return simply because a scope channel needs a reference**.
 - Default CH2 scale: **2 V/div**, rising trigger at **+1 V**; default CH1: **10 V/div**, but change the CH1 scale/probe configuration to match the real approved setup.
 - Confirm the scope reads 2 s/div, 1,000,000 points, SAMPLE mode, SEQUENCE stop, 0% horizontal position, and delay OFF when running the integrated procedure.
