@@ -4,7 +4,7 @@ This is the **current documentation reference for CH1-only integrated recordings
 
 > **Only Matrix32 CH1 is stimulated and measured as a Matrix32 output here.** Do not connect a person or stimulation electrodes. Confirm actual wiring and earth-reference compatibility with the responsible operator before an armed experiment. Prior successful recordings do **not** establish safety.
 
-## CH1 dummy load
+## Three-branch physical dummy load (CH1-only stimulation)
 
 | Property | Documented setup | Status |
 | --- | --- | --- |
@@ -13,25 +13,32 @@ This is the **current documentation reference for CH1-only integrated recordings
 | Oscilloscope | Tektronix **MDO4104B-6** | Source-project instrument |
 | CH1 probe | Tektronix **TPP1000 10× passive probe**; tip/hook on CH1 cathode; ground reference on Matrix32 shared anode | Operator-reported assembly |
 | Gray clock | Separate **Nano Every D7 → scope CH2** | This project's acquisition configuration |
-| Matrix32 CH2–CH32 | **Not commanded or analyzed** as stimulation channels in this project | Whether CH2/CH3 physical resistor branches from the source project's three-channel rig remain connected has **not** been established here |
+| Matrix32 CH2 cathode | **R2 = 99.4 kΩ** to shared anode; **physically connected** | Operator confirmed same breadboard arrangement as source rig |
+| Matrix32 CH3 cathode | **R3 = 99.5 kΩ** to shared anode; **physically connected** | Operator confirmed same breadboard arrangement as source rig |
+| Matrix32 CH4–CH32 | **Open/unconnected** in the referenced bench topology | Operator confirmed exact same setup as source rig |
+| Spare resistor | **992 kΩ** positioned beside CH2 resistor but **not connected** | Unchanged from source-rig description |
 
 ### Functional connection diagram
 
-```text
+\`\`\`text
 Matrix32 CH1 cathode ----+---- scope CH1 TPP1000 probe tip
                          |
-                         +----[ R1 = 100.0 kOhm ]---- Matrix32 common anode
-                                                    |
-                                             scope CH1 probe reference*
-Nano Every D7 --------------------------------> scope CH2 tip
-Nano ground ----------------------------------> scope CH2 reference†
-```
+                         +----[ R1 = 100.0 kOhm ]----+
+Matrix32 CH2 cathode ---------[ R2 =  99.4 kOhm ]----+---- Matrix32 common anode
+Matrix32 CH3 cathode ---------[ R3 =  99.5 kOhm ]----+           |
+                                                      |    probe ground reference*
+Matrix32 CH4-CH32: OPEN / no connected resistors      |
+992 kOhm spare near CH2: NOT ELECTRICALLY CONNECTED   |
+                                                      |
+Nano Every D7 -------------------------------> scope CH2 tip
+Nano ground ---------------------------------> scope CH2 reference†
+\`\`\`
 
 `*` In the referenced setup, passive probe ground clips were connected to the **common anode**; ordinary oscilloscope BNC shells / probe grounds are protective-earth referenced. **That makes this a potentially earth-referenced measurement, not an isolated differential measurement.** Do not mistake shared wiring for isolation.
 
 `†` CH2 is a **separate Nano reference circuit**. A standard multichannel scope typically has a common reference across channels. The actual Nano ground, Matrix32 common anode and protective-earth topology **must be reviewed together** before enabling Matrix32 output; a diagram showing separate signal paths does not demonstrate electrical isolation.
 
-The source project's larger bench rig also documented CH2 with **99.4 kΩ** and CH3 with **99.5 kΩ** resistors to the same common anode, and a **992 kΩ spare resistor not connected**. Those are *reference-rig* details, **not connections required for this project's CH1-only experiment**. This document does not claim the unused branches have been removed; inspect the physical rig if that distinction matters for leakage/current-path interpretation.
+**Operator confirmation:** This project uses **exactly the same physical three-branch resistor breadboard** as the source repository: R1, R2, and R3 all connect their respective cathodes to the **same shared anode**, in parallel as separate cathode-to-anode branches, **not as three resistors connected in series**. Only the Matrix32 **CH1 output is commanded** and its physical output is recorded here on oscilloscope CH1; the connected CH2/CH3 branches remain part of the physical circuit and may affect interpretation of the shared node or inactive-channel pickup. The 992 kΩ spare remains disconnected, as documented for the identical reference setup. Scope CH2 in *this project* carries the Nano D7 Gray marker; it does **not** measure Matrix32 cathode CH2.
 
 ## Scope settings in the integrated recording
 
@@ -58,7 +65,7 @@ For example, **if** 50 V was independently measured *across* the resistor, the i
 Before live `--run --arm --dummy-load-confirmed` use:
 
 1. Confirm **CH1 cathode → 100.0 kΩ rated resistor → shared anode** using a suitable powered-down test procedure. Document resistor voltage/power ratings and independent verification if available.
-2. Confirm which other physical branches remain connected to the shared anode; CH1-only *software commands* do not prove other resistors are absent.
+2. Confirm the **three physically connected branches** remain as documented: CH1–R1=100.0 kΩ, CH2–R2=99.4 kΩ, CH3–R3=99.5 kΩ, all to the shared anode; the 992 kΩ spare remains disconnected and CH4–CH32 remain open. CH1-only *software commands* do not physically remove the CH2/CH3 resistor paths.
 3. Confirm scope probe ground/BNC earth continuity and **whether the Matrix32 manufacturer/provider approves earth-referencing its shared anode** in this exact configuration. The referenced operator reported provider-recommended similar wiring but no independently archived manufacturer isolation approval.
 4. Confirm CH2 Nano reference wiring is compatible with the CH1 scope reference arrangement; do not tie outputs/grounds together by assumption or defeat the oscilloscope's protective earth.
 5. Confirm correct probe attenuation, headroom, chosen CH1 V/div, isolated/differential probing **where needed**, an accessible physical disconnect, and no person/electrodes attached.
