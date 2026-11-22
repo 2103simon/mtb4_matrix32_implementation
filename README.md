@@ -4,7 +4,7 @@ Research/bench software for reading **MTB4 fingertip tactile sensors** through a
 
 > **Experimental bench apparatus, not a clinically validated medical device.** Never attach a person or stimulation electrodes during exploratory testing. Use an appropriately rated **isolated dummy load**, a safe approved differential/isolated measurement arrangement where required, and an accessible physical output disconnect. A BLE ACK or a software STOP does **not** electrically prove that output is safe or off.
 
-This README documents the current `feature/live-oscilloscope-recording` implementation. **Scope hardware runs and firmware uploading require local hardware and operator verification**; passing unit tests alone cannot establish electrical safety or timing accuracy.
+This README documents the current default branch, **`master`** (the branch named `main` in some local workflows). **Scope hardware runs and firmware uploading require local hardware and operator verification**; passing unit tests alone cannot establish electrical safety or timing accuracy.
 
 ## Contents
 
@@ -71,7 +71,7 @@ All commands below are issued **from the repository root** unless a `cd` is show
 ```bash
 git clone https://github.com/2103simon/mtb4_matrix32_implementation.git
 cd mtb4_matrix32_implementation
-git switch feature/live-oscilloscope-recording
+git switch master
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -143,6 +143,12 @@ timeout --signal=INT --kill-after=20s 180s \
 The normal acquisition configures the scope, waits for the MCU configuration ACKs **and Matrix32 START completion**, takes 30 Nano SYNC measurements, arms the scope, records a nominal **20 s / 1,000,000-point** CH1+CH2 window (2 s/div, 0% trigger), takes 30 more SYNC measurements, attempts Matrix32 STOP and only then downloads the waveforms. **One integrated invocation currently captures one scope record.** Output is saved under `data/recordings/<UTC>_integrated_matrix32_scope/`.
 
 See the full [integrated recording and electrical precautions](docs/integrated_matrix32_scope_recording.md).
+
+## CH1 electrical dummy-load setup
+
+The integrated bench uses the **CH1 branch** of the [Matrix32 reference dummy-load rig](docs/electrical_bench_setup.md): a nominal **100.0 kΩ resistor between Matrix32 CH1 cathode and the common anode**. CH1 is observed using a Tektronix **TPP1000 10× passive probe**; the independent Nano Gray signal is observed on scope CH2.
+
+**Important:** The reference setup connected ordinary probe ground clips to the Matrix32 common anode, potentially bonding it to oscilloscope protective earth. This is **not automatically an isolated differential measurement**. The compatibility of that electrical reference with the Matrix32 and Nano/scope connections must be checked before an armed test. CH2/CH3 resistor branches described in the reference rig are **not used for stimulation in this project**; their physical connection status in this setup is not confirmed. See the [CH1 wiring diagram, values, limitations and safety gate](docs/electrical_bench_setup.md).
 
 ## Configuration and stimulation control
 
@@ -263,7 +269,7 @@ Read the fully worked [clock-mapping and uncertainty guide](docs/clock_mapping_a
 | [`config/`](config/config.json) | Runtime experiment and output configuration |
 | [`tests/`](tests/) | Host-side deterministic regression tests; no substitute for live bench validation |
 | [`docs/`](docs/) | Experiment procedures, timing evidence, firmware, serial discovery, design notes |
-| `analysis/` | Existing standalone plots; new integrated reports are under each run's `analysis/` |
+| [`analysis/`](analysis/) | Committed standalone MCU analysis plots; new integrated reports are under each run's `analysis/` |
 
 ## Verification and limitations
 
@@ -283,6 +289,6 @@ Read the fully worked [clock-mapping and uncertainty guide](docs/clock_mapping_a
 - **No visible CH1 pulses:** confirm dummy-load wiring/probe attenuation, CH1 scale, nonzero selected tactile rate, BLE START/STOP event order and stale-data shutdown. Do not interpret missing data as physical zero without checking the instrument.
 - **Unexpected Gray clock RMS:** inspect D7 waveform integrity, trigger position, frame overruns, local fit classification and USB SYNC intervals. A 100 µs qualification threshold is a diagnostic criterion, not a physical absolute-accuracy guarantee.
 - **Tests:** `python -m unittest discover -s tests -p 'test_*.py' -v`.
-- [Installation and operating guide](docs/installation_and_operations.md) · [System modules](docs/pipeline_and_components.md) · [Timing and Gray-code mapping](docs/clock_mapping_and_time_domains.md) · [Feather firmware](adafruit_feather_m4/README.md) · [Scope scripts](oscilloscope/README.md) · [Integrated experiment](docs/integrated_matrix32_scope_recording.md).
+- [CH1 bench wiring](docs/electrical_bench_setup.md) · [Installation and operating guide](docs/installation_and_operations.md) · [System modules](docs/pipeline_and_components.md) · [Timing and Gray-code mapping](docs/clock_mapping_and_time_domains.md) · [Feather firmware](adafruit_feather_m4/README.md) · [Scope scripts](oscilloscope/README.md) · [Integrated experiment](docs/integrated_matrix32_scope_recording.md).
 
 This project is under active experimental development; the actual firmware and acquisition logs are authoritative when old experiment notes conflict with a new implementation.
