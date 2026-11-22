@@ -4,7 +4,7 @@ Research/bench software for reading **MTB4 fingertip tactile sensors** through a
 
 > **Experimental bench apparatus, not a clinically validated medical device.** Never attach a person or stimulation electrodes during exploratory testing. Use an appropriately rated **resistive dummy load**, an independently approved earth-reference/differential/isolated measurement arrangement where required, and an accessible physical output disconnect. A BLE ACK or a software STOP does **not** electrically prove that output is safe or off.
 
-This README documents the repository's current default branch, **`master`**. **Scope hardware runs and firmware uploading require local hardware and operator verification**; passing unit tests alone cannot establish electrical safety or timing accuracy.
+This README documents the repository's primary branch, **`main`**. **Scope hardware runs and firmware uploading require local hardware and operator verification**; passing unit tests alone cannot establish electrical safety or timing accuracy.
 
 ## Contents
 
@@ -71,7 +71,7 @@ All commands below are issued **from the repository root** unless a `cd` is show
 ```bash
 git clone https://github.com/2103simon/mtb4_matrix32_implementation.git
 cd mtb4_matrix32_implementation
-git switch master
+git switch main
 
 python3 -m venv .venv
 source .venv/bin/activate
