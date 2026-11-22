@@ -83,7 +83,7 @@ This **does not configure or stimulate**; stop it before launching an integrated
 
 ## 5. Scope and dummy-load wiring rules
 
-**Authoritative bench description for this repository:** [CH1 Matrix32 dummy-load and electrical-reference setup](electrical_bench_setup.md). The source rig uses an operator-reported **100.0 kΩ** resistor between CH1 cathode and the shared anode, and **TPP1000 10×** probing. The referenced passive-probe grounding arrangement ties the Matrix32 shared anode to the scope's protective-earth reference; it is **not intrinsically isolated**, and its compatibility with this exact setup remains to be checked by the operator. No Matrix32 output channel other than CH1 is enabled by the integrated runner.
+**Authoritative bench description for this repository:** [CH1 Matrix32 dummy-load and electrical-reference setup](electrical_bench_setup.md). The operator confirmed the same physical three-branch rig: **CH1–100.0 kΩ**, **CH2–99.4 kΩ**, **CH3–99.5 kΩ** from their respective cathodes to the shared anode, with the **992 kΩ spare disconnected** and **TPP1000 10×** probing. The referenced passive-probe grounding arrangement ties the Matrix32 shared anode to the scope's protective-earth reference; it is **not intrinsically isolated**, and its compatibility with this exact setup remains to be checked by the operator. No Matrix32 output channel other than CH1 is enabled by the integrated runner.
 
 
 
