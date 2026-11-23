@@ -140,7 +140,7 @@ timeout --signal=INT --kill-after=20s 180s \
   --run --arm --dummy-load-confirmed
 ```
 
-The normal acquisition configures the scope, waits for the MCU configuration ACKs **and Matrix32 START completion**, takes 30 Nano SYNC measurements, arms the scope, records a nominal **20 s / 1,000,000-point** CH1+CH2 window (2 s/div, 0% trigger), takes 30 more SYNC measurements, attempts Matrix32 STOP and only then downloads the waveforms. **One integrated invocation captures one record by default; use `--count N` for N separate records under one continuous MCU/Matrix32 session.** Output is saved under `data/recordings/<UTC>_integrated_matrix32_scope/`.
+The normal acquisition configures the scope, waits for the MCU configuration ACKs **and Matrix32 START completion**, takes 30 Nano SYNC measurements, arms the scope, records a nominal **20 s / 1,000,000-point** CH1+CH2 window (2 s/div, 0% trigger), takes 30 more SYNC measurements, and downloads the frozen CH1+CH2 waveforms before rearming. **For multiple records the Matrix32 controller remains active during these unobserved transfer gaps** and is stopped only after the final record (or upon a handled failure). **One integrated invocation captures one record by default; use `--count N` for N separate records under one continuous MCU/Matrix32 session.** Output is saved under `data/recordings/<UTC>_integrated_matrix32_scope/`.
 
 See the full [integrated recording and electrical precautions](docs/integrated_matrix32_scope_recording.md).
 
