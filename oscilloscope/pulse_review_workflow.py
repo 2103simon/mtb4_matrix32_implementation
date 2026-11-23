@@ -119,11 +119,16 @@ def _diagnostic_rejections(t, v, result):
     baseline = float(threshold.get("baseline_v", 0))
     threshold_v = float(threshold.get("threshold_v", -1))
     drop = baseline - threshold_v
-    events = sorted(result.get("rejected", []) + result.get("suppressed", []),
-                    key=lambda row: (row["time_s"], row["sample_index"]))
+    indexed = (
+        [(row, f"R{i:05d}") for i, row in
+         enumerate(result.get("rejected", []), 1)]
+        + [(row, f"S{i:05d}") for i, row in
+           enumerate(result.get("suppressed", []), 1)]
+    )
+    indexed.sort(key=lambda pair: (pair[0]["time_s"], pair[0]["sample_index"]))
     accepted = sorted(row["time_s"] for row in result["accepted_pulses"])
     rows = []
-    for row in events:
+    for row, event_id in indexed:
         center, index = float(row["time_s"]), int(row["sample_index"])
         end = min(len(t), bisect.bisect_left(t, center + .00035))
         window = v[index:end] if end > index else v[index:index+1]
@@ -134,11 +139,7 @@ def _diagnostic_rejections(t, v, result):
                      range(max(0, a-4), min(len(accepted)-1, a+3))]
         typical = float(np.median(neighbors)) if neighbors else .01
         rows.append({
-            "id": f"{'R' if row in result['rejected'] else 'S'}{sum(
-                other['time_s'] <= center for other in (
-                    result['rejected'] if row in result['rejected']
-                    else result['suppressed']
-                )):05d}",
+            "id": event_id,
             "sample_index": index, "time_s": center,
             "voltage_v": float(row["voltage_v"]),
             "original_status": row["status"],
@@ -146,7 +147,7 @@ def _diagnostic_rejections(t, v, result):
                                if trough < baseline - max(12., 1.5*drop)
                                and peak > baseline + max(8., drop)
                                else "SECONDARY_OR_WEAK_CROSSING_REVIEW"),
-            "quiet_before_us": None, "negative_min_v": trough,
+            "quiet_before_us": 0.0, "negative_min_v": trough,
             "positive_max_v": peak, "expected_slot_s": None,
             "delta_to_expected_us": None,
             "figure": None,
@@ -277,13 +278,13 @@ def report_markdown(result, output, manifest, figures):
     lines = [
         f"# Matrix32 CH1 negative-onset review — record {result['record_index']}",
         "",
-        f"**Detector:** \`{result['detector']}\`  ",
+        f"**Detector:** `{result['detector']}`  ",
         f"**Status:** {audit['status']}; review: {audit['operator_approval']}. ",
         "Automated candidates do not establish stimulation accuracy.",
         "", "## 1. Acquisition and provenance", "",
         "| Property | Value |", "| --- | --- |",
-        f"| CH1 waveform | \`{result['source_ch1']}\` |",
-        f"| CH1 SHA-256 | \`{manifest['source_ch1_sha256']}\` |",
+        f"| CH1 waveform | `{result['source_ch1']}` |",
+        f"| CH1 SHA-256 | `{manifest['source_ch1_sha256']}` |",
         f"| Samples | {result['sampling_points']:,} |",
         f"| Span | {audit['capture_span_s']:.6f} s |",
         f"| Sample spacing | {result['sampling_interval_us']:.3f} us |",
@@ -295,7 +296,7 @@ def report_markdown(result, output, manifest, figures):
         f"| Record-boundary rejects | {result.get('record_start_boundary_rejected_count', 0)} |",
         f"| Interior rejects | {result.get('interior_rejected_count', 0)} |",
         f"| Near storage rail counts | {result.get('near_storage_rail_count')} |",
-        f"| Sensitivity 80%/100%/120% counts | \`{result.get('threshold_sensitivity_event_counts')}\` |",
+        f"| Sensitivity 80%/100%/120% counts | `{result.get('threshold_sensitivity_event_counts')}` |",
         f"| Baseline (V) | {threshold.get('baseline_v')} |",
         f"| Noise sigma (V) | {threshold.get('noise_sigma_v')} |",
         f"| Threshold (V) | {threshold.get('threshold_v')} |",
@@ -326,7 +327,7 @@ def report_markdown(result, output, manifest, figures):
         "Optionally enter genuinely missed pulses in "
         "[manual_additions.csv](manual_additions.csv). "
         "Do not modify generated event tables.",
-        "", "After complete review, run \`apply_pulse_review.py\` with "
+        "", "After complete review, run `apply_pulse_review.py` with "
         "an explicit named reviewer, --confirm-accepted and "
         "--confirm-complete. This produces a separate approved onset "
         "timeline and intervals, never modifies the original detector "
