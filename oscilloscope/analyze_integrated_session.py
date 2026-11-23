@@ -672,7 +672,7 @@ def analyze_session(root, meta, *, threshold_v=2, deadtime_ms=1,
         Path(report).write_text(
             f"# Integrated Matrix32 session: {session['run_id']}\n\n"
             + session_report(approved_summaries, len(records))
-            + "\n---\n\n## Legacy positive-edge exploratory diagnostics\n\n"
+            + "\n---\n\n## Supporting MCU/BLE telemetry and legacy positive-edge diagnostics\n\n"
             + original, encoding="utf-8")
     print(f"[SESSION] {len(reports)} independent scope record(s); "
           f"{session['total_observed_scope_s']:.3f}s observed total; "
