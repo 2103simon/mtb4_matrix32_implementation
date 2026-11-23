@@ -1,4 +1,4 @@
-"""Decode Arduino Nano Gray timecode from Tektronix CH4 CSV.
+"""Decode Arduino Nano Gray timecode from Tektronix CH2 CSV.
 
 Reads time_s,voltage_v; recognizes complete framed messages only.
 No attempt to reconstruct physically unrecorded gaps or to infer host sync.
@@ -134,6 +134,81 @@ def decode_pulses(pulses, *, tolerance_s=0.00045):
     return decoded
 
 
+def audit_physical_pulses(pulses, frames, *, tolerance_s=0.00045):
+    """Account for EVERY complete high pulse on the physical CH2 waveform.
+
+    START and END plus 1-bit slots are distinguished by timing and width.
+    Unassigned pulses are retained explicitly for edge-review, never silently
+    ignored; a successful frame decode alone is not a completeness proof.
+    """
+    assigned = set()
+    per_frame = []
+    for frame in frames:
+        t0 = frame["scope_start_s"]
+        frame_parts = []
+        expectations = [("START", t0, START_S)]
+        expectations.extend(
+            (f"BIT_{bit_idx:02d}",
+             t0 + DATA_S + bit_idx * SLOT_S, ONE_S)
+            for bit_idx, value in enumerate(frame["bits_msb_first"])
+            if value == "1"
+        )
+        expectations.append(("END", t0 + END_S, END_WIDTH_S))
+        for name, t_expected, width_expected in expectations:
+            matches = [
+                i for i, (t, width) in enumerate(pulses)
+                if i not in assigned
+                and abs(t - t_expected) <= tolerance_s
+                and abs(width - width_expected) <= tolerance_s
+            ]
+            if len(matches) != 1:
+                frame_parts.append({
+                    "role": name, "matched": False,
+                    "matching_pulse_count": len(matches),
+                })
+                continue
+            i = matches[0]
+            assigned.add(i)
+            frame_parts.append({
+                "role": name, "matched": True, "pulse_index": i,
+                "start_s": pulses[i][0], "width_s": pulses[i][1],
+                "rise_residual_us": (pulses[i][0] - t_expected) * 1e6,
+                "width_residual_us": (pulses[i][1] - width_expected) * 1e6,
+            })
+        per_frame.append({
+            "counter_mod_65536": frame["counter_mod_65536"],
+            "scope_start_s": t0,
+            "expected_pulses": len(expectations),
+            "matched_pulses": sum(part["matched"] for part in frame_parts),
+            "all_start_data_end_pulses_accounted_for": all(
+                part["matched"] for part in frame_parts
+            ),
+            "pulses": frame_parts,
+        })
+    unassigned = [
+        {"pulse_index": i, "start_s": float(t), "width_s": float(width)}
+        for i, (t, width) in enumerate(pulses)
+        if i not in assigned
+    ]
+    return {
+        "complete_high_pulse_count": len(pulses),
+        "decoded_frame_count": len(frames),
+        "assigned_pulse_count": len(assigned),
+        "unassigned_pulse_count": len(unassigned),
+        "unassigned_pulses": unassigned,
+        "frames": per_frame,
+        "all_complete_high_pulses_accounted_for": (
+            bool(frames) and not unassigned
+            and all(x["all_start_data_end_pulses_accounted_for"] for x in per_frame)
+        ),
+        "audit_scope": (
+            "All complete thresholded high pulses (START, each 1 bit, END) "
+            "are accounted for; does not prove missing weak edges or "
+            "truncated start/end boundary pulses were observed."
+        ),
+    }
+
+
 def decode_csv(path, threshold=2.0, tolerance_s=0.00045):
     pulses, stats = edges_from_csv(path, threshold=threshold)
     frames = decode_pulses(pulses, tolerance_s=tolerance_s)
@@ -144,6 +219,7 @@ def decode_csv(path, threshold=2.0, tolerance_s=0.00045):
         "waveform": stats,
         "frames": frames,
         "decoded_frame_count": len(frames),
+        "edge_audit": audit_physical_pulses(pulses, frames, tolerance_s=tolerance_s),
         "time_alignment_verified": False,
         "interpretation": (
             "Each Gray counter identifies its position modulo 65536 in the "
@@ -157,7 +233,7 @@ def decode_csv(path, threshold=2.0, tolerance_s=0.00045):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("csv", nargs="+", type=Path,
-                   help="One or more CH4 CSV waveforms from separate acquisitions")
+                   help="One or more CH2 CSV waveforms from separate acquisitions")
     p.add_argument("--threshold", type=float, default=2.0)
     p.add_argument("--tolerance-us", type=float, default=450)
     p.add_argument("--output", type=Path, help="Write JSON report")
