@@ -345,7 +345,8 @@ def report_markdown(result, output, manifest, figures):
     for picture in figures:
         if picture == "waveform_full.png" or picture == "waveform_event_detail.png":
             lines += [f"![{picture}](figures/{picture})", ""]
-    flagged = [p for p in figures if p.startswith("figures/rejected/")]\n    relaxed_figures = [p for p in figures if p.startswith("flagged_accepted/")]
+    flagged = [p for p in figures if p.startswith("figures/rejected/")]
+    relaxed_figures = [p for p in figures if p.startswith("flagged_accepted/")]
     if flagged:
         lines += [
             f"All {len(flagged)} rejected/suppressed crossings have individual "
