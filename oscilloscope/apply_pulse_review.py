@@ -123,6 +123,14 @@ def apply(output, source_ch1, *, reviewer, confirm_accepted, confirm_complete):
             raise ValueError(f"Unknown review decision for {id_}: {decision}")
         if decision == "" and event["kind"] == "accepted" and confirm_accepted:
             decision = "INCLUDE"
+        if decision in ("INCLUDE", "EXCLUDE") and (
+            event["kind"] in ("rejected", "suppressed")
+            or (event["kind"] == "accepted" and decision == "EXCLUDE")
+        ) and not row["note"].strip():
+            raise ValueError(
+                f"Explicit {decision} decision for {id_} requires a note "
+                "describing raw waveform evidence"
+            )
         if decision in ("", "UNCERTAIN"):
             unresolved.append(id_)
         if decision == "INCLUDE":
@@ -167,8 +175,9 @@ def apply(output, source_ch1, *, reviewer, confirm_accepted, confirm_complete):
             "Review flagged R/S candidates individually; accepted P rows "
             "may be globally confirmed using --confirm-accepted."
         )
-    if not approved:
-        raise ValueError("No included onsets; cannot approve pulse timeline")
+    # A human may approve a fully reviewed record with NO pulse onsets,
+    # e.g. a deliberately silent interval. This means no onsets observed
+    # above available instrument sensitivity, NOT electrical zero current.
     approved.sort(key=lambda row: (row["time_s"], row["id"]))
     for a, b in zip(approved, approved[1:]):
         if b["time_s"] <= a["time_s"]:
@@ -216,6 +225,29 @@ def apply(output, source_ch1, *, reviewer, confirm_accepted, confirm_complete):
     atomic_json(existing, approval)
     if verified_approval(output) is None:
         raise RuntimeError("Written approval did not pass source-lock replay")
+    # Update readable report without changing any source-hashed detector table.
+    metrics_file = output / "metrics.json"
+    if metrics_file.exists():
+        metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+        metrics["operator_approval"] = "SOURCE_LOCKED_REVIEW_CONFIRMED"
+        metrics["operator_approval_sha256"] = sha256(existing)
+        metrics["human_included_onsets"] = len(approved)
+        metrics["human_included_intervals"] = len(periods)
+        atomic_json(metrics_file, metrics)
+    report_file = output / "report.md"
+    if report_file.exists():
+        with report_file.open("a", encoding="utf-8") as stream:
+            stream.write(
+                "\\n## 6. Source-locked operator review completed\\n\\n"
+                f"- Reviewer: **{reviewer}**.\\n"
+                f"- Human included onsets: **{len(approved)}**.\\n"
+                f"- Complete within-record intervals: **{len(periods)}**.\\n"
+                "- [Signed review and hashes](review_approval.json)\\n"
+                "- [Approved onsets](approved_onsets.csv)\\n"
+                "- [Approved consecutive intervals](approved_intervals.csv)\\n\\n"
+                "This approval covers onset inventory within this one scope "
+                "record, not absolute physical latency or guaranteed current-off.\\n"
+            )
     return approval
 
 
