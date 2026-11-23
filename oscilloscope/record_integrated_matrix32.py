@@ -56,6 +56,9 @@ def parser():
     p.add_argument("--sync-count", type=int, default=30,
                    help="Number of binary CRC32 sync exchanges before AND after recording")
     p.add_argument("--stale-ms", type=int, default=250)
+    p.add_argument("--capture-before-start", action="store_true",
+                   help="Bench-only: arm scope after MCU ACKs even if positive sensor input "
+                        "has not yet triggered Matrix32 START; records may contain no output")
     p.add_argument("--controller-ready-timeout", type=float, default=45.0,
                    help="Seconds to wait for Feather config and, with --arm, "
                         "ACK-verified Matrix32 START before scope is armed")
@@ -70,6 +73,8 @@ def plan(args, p):
         p.error("--arm requires BOTH --run and --dummy-load-confirmed")
     if args.dummy_load_confirmed and not args.arm:
         p.error("--dummy-load-confirmed is only used together with --arm")
+    if args.capture_before_start and (not args.run or not args.arm or not args.dummy_load_confirmed):
+        p.error("--capture-before-start requires --run --arm --dummy-load-confirmed")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.label):
         p.error("Invalid --label")
     if not 1 <= args.count <= 12:
@@ -119,6 +124,7 @@ def plan(args, p):
         "verified_dummy_load_operator_confirmation": bool(args.dummy_load_confirmed),
         "mcu_stale_timeout_ms": args.stale_ms,
         "controller_ready_timeout_s": args.controller_ready_timeout,
+        "capture_before_matrix32_start": args.capture_before_start,
         "acquisition_order": "controller_ready_then_pre_sync_then_arm_scope",
         "no_person_connected": True,
         "clock_offset_calibrated": False,
@@ -134,10 +140,11 @@ def plan(args, p):
 class StimulationChild:
     """Isolated process preserves existing Matrix32 BLE watchdog and shutdown."""
 
-    def __init__(self, root, *, arm, stale_ms):
+    def __init__(self, root, *, arm, stale_ms, capture_before_start=False):
         self.root = Path(root)
         self.arm = arm
         self.stale_ms = stale_ms
+        self.capture_before_start = capture_before_start
         self.process = None
         self.log = None
         self.log_thread = None
@@ -207,7 +214,8 @@ class StimulationChild:
         if self.process is None:
             raise RuntimeError("Controller has not been started")
         deadline = time.monotonic() + timeout
-        expected = self.matrix32_started if self.arm else self.mcu_ready
+        expected = (self.matrix32_started if self.arm and not self.capture_before_start
+                    else self.mcu_ready)
         while not expected.is_set():
             self.check()
             if self.start_failure.is_set():
@@ -218,7 +226,7 @@ class StimulationChild:
             if time.monotonic() >= deadline:
                 raise TimeoutError(
                     f"Controller not ready after {timeout:g}s: "
-                    + ("no ACK-verified Matrix32 START" if self.arm
+                    + ("no ACK-verified Matrix32 START" if self.arm and not self.capture_before_start
                        else "MCU configuration handshake incomplete")
                     + "; see matrix32_runner.log"
                 )
@@ -231,6 +239,8 @@ class StimulationChild:
             "mcu_configured_observed_monotonic_ns": self.mcu_ready_observed_ns,
             "matrix32_start_observed_monotonic_ns": self.matrix32_started_observed_ns,
             "startup_electrical_output_verified": False,
+            "scope_capture_precedes_matrix32_start": bool(
+                self.arm and self.capture_before_start and not self.matrix32_started.is_set()),
         }
 
     def stop(self):
@@ -286,7 +296,8 @@ def run(args, requested):
         "records": [], "sync_measurements": [],
         "host_clock_synchronization_verified": False,
     }
-    child = StimulationChild(root, arm=args.arm, stale_ms=args.stale_ms)
+    child = StimulationChild(root, arm=args.arm, stale_ms=args.stale_ms,
+                             capture_before_start=args.capture_before_start)
     nano_started = False
     try:
         nano_port = resolve_port(args.nano_port, "nano")
@@ -328,7 +339,8 @@ def run(args, requested):
                     )
                     meta["controller_ready_observed_monotonic_ns"] = time.monotonic_ns()
                     print("[MATRIX32] MCU configured"
-                          + ("; Matrix32 START returned" if args.arm
+                          + ("; Matrix32 START returned" if args.arm and not args.capture_before_start
+                             else "; armed scope may precede Matrix32 START" if args.arm
                              else "; dry-run controller ready")
                           + f"; preparing {args.count} separate scope records",
                           flush=True)
