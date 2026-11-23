@@ -195,6 +195,14 @@ Output:
 
 A 1-second sliding-window frequency trend is useful for overview but can produce zero eligible *steady-state* windows when SF changes every few tens of milliseconds. The separate per-cycle dynamic analysis handles rapid changes cautiously: ACK transitions, muted intervals and times near updates are excluded or marked not comparable. All resulting cross-clock classifications are **provisional** because USB one-way asymmetry and physical Matrix32 apply times remain uncalibrated.
 
+## Zero-frequency combined-write feasibility
+
+Cross-reference: `2103simon/matrix32_nerve_stimulation`, branch `cleanup/analysis-consolidation`, especially `docs/live_frequency_updates.md` and `docs/matrix32_ble_stack_fingerprint_research.md`. The related repository retains the Matrix32 V1.3 manual.
+
+The supported command encoder sends a full 32-channel `>SC;...<` current vector and a separate `>SF;...<` global-frequency frame. There is **no established combined/atomic SC+SF command**. The Matrix32 returns generic `>OK<` indications without a command identifier. Concatenating frames into one BLE write would not establish that both were parsed or accepted, and moving SF=400 before SC=0 has physically taken effect could temporarily increase the output rate at the old current.
+
+The qualified optimized SF transport has one outstanding command and a minimum 7.5 ms ACK-to-next-write interval. Short-gap experiments found a link stall. **Decision:** retain sequential ACK-verified SC=0 then SF=400; do not introduce unqualified packet batching or drop either application ACK. Neither ACK proves electrical output is zero. A combined mode requires explicit protocol support and a separate dummy-load transition/ACK qualification before deployment.
+
 ## Tests
 
 ```bash
