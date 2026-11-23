@@ -231,7 +231,8 @@ class PerRecordScopeTests(unittest.TestCase):
             self.assertEqual(result["inter_record_gaps"][0]["estimated_gap_s"], 8.)
             markdown = (root / "analysis/integrated_report.md").read_text()
             self.assertIn("operator-approved", markdown)
-            self.assertNotIn("positive-edge detector is run", markdown)
+            self.assertNotIn("total_scope_positive_events", markdown)
+            self.assertNotIn("positive_rising_events", markdown)
             self.assertFalse(result["continuous_time_series_were_concatenated"])
 
 
