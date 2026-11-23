@@ -584,9 +584,9 @@ def session_report(summaries, total_record_count):
     total_intervals = sum(r["interval_count"] for r in summaries)
     lines = [
         "## Primary result: operator-approved S02 negative onsets", "",
-        "This section is based only on source-locked reviewer-approved CH1 "
-        "onsets. Preliminary positive-edge counts are retained solely "
-        "as a separate legacy detector comparison.",
+        "This section is based exclusively on source-locked reviewer-approved "
+        "S02 negative CH1 onsets. The deprecated positive-edge analysis "
+        "is neither run nor included.",
         "",
         f"**Approved records:** {len(summaries)} / {total_record_count}. "
         f"**Approved onsets:** {total_onsets}. "
