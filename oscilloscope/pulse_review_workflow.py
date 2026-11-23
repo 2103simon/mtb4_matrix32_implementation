@@ -283,6 +283,10 @@ def report_markdown(result, output, manifest, figures):
     """Human-readable S02-style record report with live review links."""
     output = Path(output)
     threshold = result.get("threshold", {})
+    intervals_s = np.asarray(
+        [row["period_s"] for row in result["periods"]], dtype=float
+    )
+    candidate_rates = 1.0 / intervals_s if len(intervals_s) else np.array([])
     audit = {
         "schema": "matrix32_pulse_metrics_v1",
         "record_index": result["record_index"],
@@ -292,6 +296,29 @@ def report_markdown(result, output, manifest, figures):
         "sampling_interval_us": result["sampling_interval_us"],
         "capture_span_s": result["capture_end_s"]-result["capture_start_s"],
         "accepted_candidate_count": len(result["accepted_pulses"]),
+        "unverified_interval_count": len(intervals_s),
+        "unverified_mean_period_ms": (
+            float(np.mean(intervals_s)*1000) if len(intervals_s) else None
+        ),
+        "unverified_median_period_ms": (
+            float(np.median(intervals_s)*1000) if len(intervals_s) else None
+        ),
+        "unverified_period_p10_ms": (
+            float(np.percentile(intervals_s, 10)*1000)
+            if len(intervals_s) else None
+        ),
+        "unverified_period_p90_ms": (
+            float(np.percentile(intervals_s, 90)*1000)
+            if len(intervals_s) else None
+        ),
+        "unverified_median_inverse_period_hz": (
+            float(np.median(candidate_rates))
+            if len(candidate_rates) else None
+        ),
+        "unverified_interval_sd_ms": (
+            float(np.std(intervals_s, ddof=1)*1000)
+            if len(intervals_s) > 1 else None
+        ),
         "rejected_candidate_count": len(result["rejected"]),
         "suppressed_candidate_count": len(result["suppressed"]),
         "threshold_sensitivity_event_counts": (
@@ -340,6 +367,17 @@ def report_markdown(result, output, manifest, figures):
         f"{len(result['periods'])} consecutive **unverified** intervals. "
         "A missed physical pulse can invalidate neighboring intervals. "
         "No cycles are concatenated across separate scope records.",
+        "", "| Candidate interval measurement | Unverified result |",
+        "| --- | ---: |",
+        f"| Mean period | {audit['unverified_mean_period_ms']} ms |",
+        f"| Median period | {audit['unverified_median_period_ms']} ms |",
+        f"| Period p10 / p90 | {audit['unverified_period_p10_ms']} / "
+        f"{audit['unverified_period_p90_ms']} ms |",
+        f"| Period sample SD | {audit['unverified_interval_sd_ms']} ms |",
+        f"| Median inverse interval | "
+        f"{audit['unverified_median_inverse_period_hz']} Hz |",
+        "These are descriptive statistics of *automated candidates* only; "
+        "they are not validated Matrix32 frequency or jitter measurements.",
         "", "## 4. Diagnostic figures", "",
     ]
     for picture in figures:
