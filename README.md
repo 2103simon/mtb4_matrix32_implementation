@@ -140,7 +140,7 @@ timeout --signal=INT --kill-after=20s 180s \
   --run --arm --dummy-load-confirmed
 ```
 
-The normal acquisition configures the scope, waits for the MCU configuration ACKs **and Matrix32 START completion**, takes 30 Nano SYNC measurements, arms the scope, records a nominal **20 s / 1,000,000-point** CH1+CH2 window (2 s/div, 0% trigger), takes 30 more SYNC measurements, attempts Matrix32 STOP and only then downloads the waveforms. **One integrated invocation currently captures one scope record.** Output is saved under `data/recordings/<UTC>_integrated_matrix32_scope/`.
+The normal acquisition configures the scope, waits for the MCU configuration ACKs **and Matrix32 START completion**, takes 30 Nano SYNC measurements, arms the scope, records a nominal **20 s / 1,000,000-point** CH1+CH2 window (2 s/div, 0% trigger), takes 30 more SYNC measurements, attempts Matrix32 STOP and only then downloads the waveforms. **One integrated invocation captures one record by default; use `--count N` for N separate records under one continuous MCU/Matrix32 session.** Output is saved under `data/recordings/<UTC>_integrated_matrix32_scope/`.
 
 See the full [integrated recording and electrical precautions](docs/integrated_matrix32_scope_recording.md).
 
@@ -226,7 +226,7 @@ python -u oscilloscope/analyze_integrated_matrix32.py \
 
 The analyzer reports measured **candidate positive-phase pulses** from CH1; per-cycle physical frequencies; BLE ACK-indicated SF; and provisional compatibility/mismatch when timing evidence allows. It also retains a sliding-window view for trends. **BLE ACKs are not physical pulse-edge timestamps**, and protocol success does not verify exact device-application time.
 
-For repeated **Gray-only** capture with pauses (not Matrix32 stimulation), see [Gray acquisition experiments](docs/gray_timecode_scope_experiment.md) and `oscilloscope/test_gray_epoch_pause.py`. For scope-only finite and repeated capture, see [oscilloscope guide](oscilloscope/README.md).
+For an integrated **six- or nine-record** session, use `--count 6` or `--count 9` after verifying the full bench and an initial short sequence. Each acquisition is independently synchronized; the oscilloscope is **not recording during waveform transfers** and the Matrix32 controller stays active until the final record. See the [integrated recording guide](docs/integrated_matrix32_scope_recording.md) for the longer watchdog and electrical precautions.\n\nFor repeated **Gray-only** capture with pauses (not Matrix32 stimulation), see [Gray acquisition experiments](docs/gray_timecode_scope_experiment.md) and `oscilloscope/test_gray_epoch_pause.py`. For scope-only finite and repeated capture, see [oscilloscope guide](oscilloscope/README.md).
 
 ## How time synchronization works
 
