@@ -249,6 +249,56 @@ observation at this instrument's sensitivity, **not** a guarantee of
 zero electrical output. The session report separately counts only
 approved records; other records remain **unknown**, not zero.
 
+## 6a. Complete per-pulse S01/S02-style report (six-record sessions)
+
+The source-identical S02-v5 negative-voltage onset detector remains in
+`analysis_primitives/negative_events.py` and is called unchanged by
+`oscilloscope/review_pulse_detection.py`. Existing S01/S02 plotting helpers
+are reused by `oscilloscope/pulse_review_workflow.py`: full-record
+CH1 min/max traces with marked P/R/S crossings, raw original-sample zooms,
+and individual two-panel S02 rejection/suppression plots.
+
+The extended per-record `analysis/record_0000N/pulse_review/report.md`
+now includes a complete **untruncated** S01/S02-style P/R/S event table
+from `oscilloscope/event_review_report.py` and links to the full
+`pulse_inventory_context.csv`. Rows include time, voltage,
+previous accepted-onset interval, status, individual flag, editable
+decision state and available taxel-11/selected-taxel,
+requested RA-I/SA-II rate, most recent successful SF and SC ACK context.
+Per-record context includes clock status, selected MCU rate/taxel range
+and provisional matched SF/zero-SC ACK counts.
+
+**Flag `None` is an automatic event-level detector status, NOT approval.**
+P entries without additional flags may be confirmed together using
+`--confirm-accepted` *only after full waveform review*.
+R/S entries require explicit individual INCLUDE/EXCLUDE decisions and
+raw-evidence notes, as do manually modified accepted decisions.
+Q threshold-sensitive candidates remain separate and require manual
+addition with evidence if genuine.
+
+MCU and command data are associated using the same **provisional**
+per-record host-clock map as the existing integrated analyzer.
+If no usable map exists, context remains unknown rather than
+inventing synchronization. An ACK is not a physical apply timestamp.
+The original raw waveforms, event inventories, review decisions and
+source-locked signoff workflow are never modified by the derived
+context CSV. Re-running detection preserves human edits or fails closed
+if the underlying evidence changes.
+
+After updating your checkout, rerun offline analysis for each record:
+
+```bash
+RUN=data/recordings/20261123T072229250984Z_integrated_matrix32_scope
+python -u oscilloscope/analyze_integrated_matrix32.py --run-dir "$RUN"
+python -u oscilloscope/review_pulse_detection.py --run-dir "$RUN" --record 1
+# Inspect analysis/record_00001/pulse_review/report.md and pulse_inventory_context.csv
+# Then run --record 2, ... , --record 6, or omit --record for all.
+```
+
+**Performance note:** 5M samples per channel, many physical onsets
+and individual flagged-event images can produce large Markdown and CSV
+reports. Analyze records individually if memory is constrained.
+
 ## 7. Frequency observability and cycle-boundary constraints
 
 As demonstrated in the reference Matrix32 study, live SF updates apply
