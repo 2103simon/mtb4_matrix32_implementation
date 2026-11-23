@@ -22,7 +22,8 @@ from oscilloscope.record_scope import atomic_json
 FIELDS = (
     "record_index", "start_onset_id", "end_onset_id",
     "start_scope_s", "end_scope_s", "mid_scope_s", "period_ms",
-    "physical_inverse_period_hz", "mcu_taxel_value_nearest_provisional",
+    "physical_inverse_period_hz", "period_range_flag",
+    "mcu_taxel_value_nearest_provisional",
     "mcu_requested_hz_nearest_provisional", "mcu_sample_age_ms_provisional",
     "ack_expected_hz_provisional", "ack_state_age_ms_provisional",
     "ack_state_at_start", "ack_state_at_end", "ack_state_assessment",
@@ -120,6 +121,10 @@ def compute_approved_intervals(*, index, approved_onsets, scope_start,
             "start_scope_s": float(left), "end_scope_s": float(right),
             "mid_scope_s": mid, "period_ms": dt*1000,
             "physical_inverse_period_hz": phys,
+            "period_range_flag": (
+                "LONG_GAP_BEYOND_2HZ_MIN_ACTIVE_RATE" if dt > .5
+                else "SHORTER_THAN_400HZ_MAX_PERIOD" if dt < .0025
+                else "WITHIN_2_TO_400HZ_PERIOD_RANGE"),
             "mcu_taxel_value_nearest_provisional": None,
             "mcu_requested_hz_nearest_provisional": None,
             "mcu_sample_age_ms_provisional": None,
@@ -202,6 +207,12 @@ def compute_approved_intervals(*, index, approved_onsets, scope_start,
         "period_ms": _quantiles([r["period_ms"] for r in rows]),
         "inverse_period_hz": _quantiles(
             [r["physical_inverse_period_hz"] for r in rows]),
+        "interval_range_flag_counts": dict(Counter(
+            r["period_range_flag"] for r in rows)),
+        "within_nominal_active_rate_inverse_period_hz": _quantiles([
+            r["physical_inverse_period_hz"] for r in rows
+            if r["period_range_flag"] == "WITHIN_2_TO_400HZ_PERIOD_RANGE"
+        ]),
         "diagnostic_ack_assessment_counts": dict(counts),
         "diagnostic_comparable_intervals": comparable,
         "diagnostic_compatible_intervals": compatibles,
@@ -402,6 +413,8 @@ def report_markdown(summary):
         f"| Median inverse-period frequency | {inv['median']} Hz |",
         f"| Minimum / maximum inverse-period frequency | "
         f"{inv['min']} / {inv['max']} Hz |",
+        f"| Nominal 2–400 Hz physical-period-range flags | "
+        f"{summary['interval_range_flag_counts']} |",
         f"| Approved onsets per acquired second (including silent windows) | "
         f"{summary['observed_onsets_per_acquired_second']} onsets/s |",
         f"| Inverse-period frequency p10 / p90 | {inv['p10']} / {inv['p90']} Hz |",
@@ -451,8 +464,12 @@ def report_markdown(summary):
         "",
         "## Interpretation and limitations", "",
         "- Each frequency is 1 / (time between two consecutive *approved* onsets).",
-        "- A median inverse period describes active cycles, not the "
-        "time-averaged pulse rate across silent periods.",
+        "- A median inverse period describes the distribution of measured "
+        "onset-to-onset intervals, NOT an unconditional active-cycle "
+        "rate: some intervals may span silence or changes.",
+        "- Periods longer than 500 ms or shorter than 2.5 ms are "
+        "explicitly flagged against the nominal active 2–400 Hz range; "
+        "this flag does not remove any approved onset or interval.",
         "- Only intervals within this one scope record are used.",
         "- Zero approved onsets means no pulses observed at this scope sensitivity; "
         "it does not independently prove zero electrical current.",
