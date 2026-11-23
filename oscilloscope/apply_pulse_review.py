@@ -182,6 +182,12 @@ def apply(output, source_ch1, *, reviewer, confirm_accepted, confirm_complete):
     for a, b in zip(approved, approved[1:]):
         if b["time_s"] <= a["time_s"]:
             raise ValueError("Duplicate/non-increasing included onset timestamps")
+        if b["time_s"]-a["time_s"] < 0.00075:
+            raise ValueError(
+                "Included physical onsets are less than 0.75 ms apart: "
+                f"{a['id']} and {b['id']}. Check secondary biphasic edges "
+                "and conflicting R/S/Q/manual inclusions before signing off."
+            )
     periods = []
     for a, b in zip(approved, approved[1:]):
         delta = b["time_s"]-a["time_s"]
