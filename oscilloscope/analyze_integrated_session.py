@@ -283,6 +283,57 @@ def analyze_one(root, record, mcu, events, ack_states, *, threshold_v,
             "Matrix32 physical application time.",
         ],
     }
+    # Optional human-reviewed S02-style CH1 onset inventory. Never promote
+    # an unreviewed negative candidate or substitute legacy positive
+    # threshold crossing for a source-locked approved onset.
+    from oscilloscope.apply_pulse_review import load_approved_onsets
+    review_dir = root / "analysis" / tag / "pulse_review"
+    record_ch1 = root / record["channels"]["CH1"]["path"]
+    if (review_dir / "review_approval.json").exists():
+        try:
+            approval, approved_onsets = load_approved_onsets(
+                review_dir, record_ch1
+            )
+            approved_times = np.asarray(
+                [float(row["time_s"]) for row in approved_onsets],
+                dtype=float,
+            )
+            accepted_intervals = np.diff(approved_times)
+            report["reviewed_negative_onsets"] = {
+                "status": "OPERATOR_SOURCE_LOCKED_APPROVED",
+                "reviewer": approval["reviewer"],
+                "source_ch1_sha256": approval["source_ch1_sha256"],
+                "onset_count": int(len(approved_times)),
+                "interval_count": int(len(accepted_intervals)),
+                "median_interval_ms": (
+                    float(np.median(accepted_intervals)*1000)
+                    if len(accepted_intervals) else None
+                ),
+                "median_inverse_period_hz": (
+                    float(np.median(1.0/accepted_intervals))
+                    if len(accepted_intervals) else None
+                ),
+                "approved_onsets_csv": str(review_dir / "approved_onsets.csv"),
+                "approved_intervals_csv": str(review_dir / "approved_intervals.csv"),
+                "ack_attribution": "NOT_YET_VALIDATED",
+                "comment": (
+                    "Only operator-approved CH1 events used here. "
+                    "No cross-record intervals and no ACK/application "
+                    "latency asserted."
+                ),
+            }
+        except (ValueError, KeyError, OSError) as exc:
+            report["reviewed_negative_onsets"] = {
+                "status": "STALE_OR_INVALID_APPROVAL",
+                "reason": str(exc),
+                "onset_count": None,
+            }
+    else:
+        report["reviewed_negative_onsets"] = {
+            "status": "NOT_APPROVED",
+            "onset_count": None,
+            "ack_attribution": "NOT_ELIGIBLE",
+        }
     report["plots"] = make_plots(
         root, t, volts, starts, local_mcu, in_scope_events, mapping,
         taxel, zoom_start, zoom_sec, record_index=idx,
@@ -366,6 +417,15 @@ def session_markdown(root, session):
             f"{status} | [Record {index}](record_{index:05d}/report.md) |"
         )
     lines.extend([
+        "", "## Operator-approved negative pulse detection", "",
+        f"Approved records: "
+        f"{session.get('human_approved_scope_records', 0)} of "
+        f"{session['scope_record_count']}. "
+        f"Total onsets from these approved records ONLY: "
+        f"{session.get('human_approved_onsets_only', 0)}. "
+        "Unreviewed records are excluded, NOT treated as zero pulses.",
+        "No approved onset interval spans two scope recordings. "
+        "Review approval is not clock or BLE-application-time qualification.",
         "", "## Gaps between acquisitions", "",
         "| After | Before | Estimated unobserved time | Status |",
         "| ---: | ---: | ---: | --- |",
@@ -493,6 +553,9 @@ def analyze_session(root, meta, *, threshold_v=2, deadtime_ms=1,
              "mcu": r["mcu"], "matrix32_commands": r["matrix32_commands"],
              "clock_mapping": r["clock_mapping"],
              "scope_to_host_overlap": r["scope_to_host_overlap"],
+             "reviewed_negative_onsets": r.get("reviewed_negative_onsets", {
+                 "status": "NOT_APPROVED", "onset_count": None,
+             }),
              "record_report": r["record_report"],
              "record_summary": r["record_summary"],
              "dynamic_summary": {
@@ -503,6 +566,20 @@ def analyze_session(root, meta, *, threshold_v=2, deadtime_ms=1,
              }}
             for r in reports
         ],
+        "human_approved_scope_records": sum(
+            r.get("reviewed_negative_onsets", {}).get("status")
+            == "OPERATOR_SOURCE_LOCKED_APPROVED" for r in reports
+        ),
+        "human_approved_onsets_only": sum(
+            int(r["reviewed_negative_onsets"]["onset_count"])
+            for r in reports
+            if r.get("reviewed_negative_onsets", {}).get("status")
+            == "OPERATOR_SOURCE_LOCKED_APPROVED"
+        ),
+        "human_approved_onsets_coverage": (
+            "Partial unless every independent record was human reviewed. "
+            "Never infer pulse rates across gaps."
+        ),
         "inter_record_gaps": gaps,
         "continuous_time_series_were_concatenated": False,
         "physical_samples_interpolated_across_gaps": False,
