@@ -362,10 +362,14 @@ def report_markdown(result, output, manifest, figures):
     }
     approval_file = output / "review_approval.json"
     if approval_file.exists():
-        approved = json.loads(approval_file.read_text(encoding="utf-8"))
-        if approved.get("source_ch1_sha256") == manifest["source_ch1_sha256"] \
-                and approved.get("source_tables_sha256") == manifest["source_tables_sha256"]:
-            audit["operator_approval"] = "SOURCE_LOCKED_REVIEW_PRESENT"
+        # Verify the editable decisions, source-locked CSV tables and approved
+        # timeline hashes, not just the raw waveform source identity.
+        from oscilloscope.apply_pulse_review import verified_approval
+        approved = verified_approval(output)
+        if approved is not None:
+            audit["operator_approval"] = "SOURCE_LOCKED_REVIEW_CONFIRMED"
+            audit["operator_reviewed_onsets"] = approved["included_onsets"]
+            audit["operator_reviewed_intervals"] = approved["included_intervals"]
         else:
             audit["operator_approval"] = "STALE_REVIEW_DO_NOT_USE"
     atomic_json(output / "metrics.json", audit)
