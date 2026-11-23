@@ -1,5 +1,6 @@
 """Hardware-free tests of source-preserving Matrix32 negative-event review."""
 import hashlib
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -12,7 +13,7 @@ sys.path.insert(0, str(ROOT))
 from analysis_primitives.negative_events import (
     NEGATIVE_EVENT_DETECTOR_VERSION
 )
-from oscilloscope.review_pulse_detection import detect_review
+from oscilloscope.review_pulse_detection import detect_review, json_safe
 
 
 class PulseReviewTests(unittest.TestCase):
@@ -61,6 +62,25 @@ class PulseReviewTests(unittest.TestCase):
             x["status"] in ("CANDIDATE_REVIEW", "RELAXED_QUIET_REVIEW")
             for x in audit["accepted_pulses"]
         ))
+
+    def test_detector_audit_is_json_serializable_with_numpy_scalars(self):
+        t = np.arange(0, 0.08, 20e-6)
+        v = np.zeros(len(t), dtype=float)
+        for start in (0.010, 0.030, 0.050):
+            v[(t >= start) & (t < start + 120e-6)] = -25.
+            v[(t >= start + 120e-6) & (t < start + 240e-6)] = 24.
+        audit = detect_review(t, v)
+        payload = json_safe(audit)
+        encoded = json.dumps(payload)
+        self.assertIsInstance(encoded, str)
+        self.assertIsInstance(payload["threshold"]["signal_gate_passed"], bool)
+        self.assertTrue(payload["threshold"]["signal_gate_passed"])
+        self.assertEqual(len(payload["accepted_pulses"]), 3)
+        self.assertEqual(
+            json.loads(json.dumps(json_safe({"nested": [np.bool_(True),
+                      np.int64(7), np.float32(1.25)]}))),
+            {"nested": [True, 7, 1.25]},
+        )
 
     def test_flat_waveform_rejected_by_signal_gate(self):
         t = np.arange(0, 0.08, 20e-6)
