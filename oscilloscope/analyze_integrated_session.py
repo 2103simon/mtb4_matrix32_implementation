@@ -86,6 +86,23 @@ def summarize_full_stream(mcu, events):
     pc = np.asarray(mcu["taxel_pc_ns"], dtype=np.int64)
     diff = np.diff(pc)
     valid = diff[diff > 0]
+    # All time measurements here are native PC monotonic; no scope-to-Nano
+    # clock fit is needed for continuous MCU/ACK throughput statistics.
+    full_span_s = float((int(pc[-1]) - int(pc[0])) / 1e9)
+    ok_sf = sorted(
+        [e for e in events if e.get("event") == "sf_ack"
+         and e.get("status") == "OK" and "pc_monotonic_ns" in e],
+        key=lambda e: int(e["pc_monotonic_ns"]),
+    )
+    sf_times = np.asarray([int(e["pc_monotonic_ns"]) for e in ok_sf],
+                          dtype=np.int64)
+    sf_deltas = np.diff(sf_times)
+    positive_sf_deltas = sf_deltas[sf_deltas > 0]
+    sf_requested = [e for e in events if e.get("event") == "sf_requested"]
+    sf_failed = [e for e in events if e.get("event") == "sf_failed"]
+    acked_frequencies = sorted({
+        int(e["frequency_hz"]) for e in ok_sf if e.get("frequency_hz") is not None
+    })
     return {
         "recording_id": mcu["recording_id"],
         "rate_snapshots": int(len(pc)),
@@ -98,8 +115,50 @@ def summarize_full_stream(mcu, events):
         "host_arrival_rate_hz": (
             float(1e9/np.median(valid)) if len(valid) else None
         ),
+        "arrival_interval_p10_ms": (
+            float(np.percentile(valid, 10)/1e6) if len(valid) else None
+        ),
+        "arrival_interval_p90_ms": (
+            float(np.percentile(valid, 90)/1e6) if len(valid) else None
+        ),
+        "total_mcu_arrivals_per_second": (
+            float((len(pc)-1)/full_span_s) if full_span_s > 0 else None
+        ),
+        "arrival_nonpositive_delta_count": int(len(diff)-len(valid)),
+        "arrival_intervals_above_twice_median_count": (
+            int(np.count_nonzero(valid > 2 * np.median(valid)))
+            if len(valid) else None
+        ),
         "ble_events": len(events),
         "ble_events_by_type": dict(Counter(e.get("event", "?") for e in events)),
+        "sf_requested_event_count": len(sf_requested),
+        "sf_ack_ok_count": len(ok_sf),
+        "sf_failed_event_count": len(sf_failed),
+        "sf_ack_non_ok_count": sum(
+            e.get("event") == "sf_ack" and e.get("status") != "OK"
+            for e in events
+        ),
+        "sf_ack_ok_rate_per_mcu_recording_second": (
+            float(len(ok_sf)/full_span_s) if full_span_s > 0 else None
+        ),
+        "sf_ack_ok_rate_per_ack_span_second": (
+            float((len(ok_sf)-1) / ((int(sf_times[-1])-int(sf_times[0]))/1e9))
+            if len(ok_sf) > 1 and sf_times[-1] > sf_times[0] else None
+        ),
+        "sf_ack_ok_median_interack_ms": (
+            float(np.median(positive_sf_deltas)/1e6)
+            if len(positive_sf_deltas) else None
+        ),
+        "sf_ack_ok_p90_interack_ms": (
+            float(np.percentile(positive_sf_deltas, 90)/1e6)
+            if len(positive_sf_deltas) else None
+        ),
+        "sf_ack_ok_distinct_frequencies_hz": acked_frequencies,
+        "sf_ack_matching_warning": (
+            "Event counts are not per-command identity matches. "
+            "ACKs indicate protocol success; actual electrical output "
+            "must be checked on physically observed CH1 intervals."
+        ),
         "is_scope_recording": False,
     }
 
@@ -184,7 +243,21 @@ def analyze_one(root, record, mcu, events, ack_states, *, threshold_v,
             "events": len(in_scope_events) if mapping else None,
             "counts_by_event": dict(Counter(
                 e.get("event", "?") for e in in_scope_events)),
+            "sf_ack_ok_count": (
+                sum(e.get("event") == "sf_ack" and e.get("status") == "OK"
+                    for e in in_scope_events) if mapping else None
+            ),
+            "sf_ack_ok_rate_per_scope_mapped_second": (
+                sum(e.get("event") == "sf_ack" and e.get("status") == "OK"
+                    for e in in_scope_events)
+                / ((overlap["last_sample_host_ns_est"]
+                    - overlap["first_sample_host_ns_est"]) / 1e9)
+                if mapping is not None
+                and overlap["last_sample_host_ns_est"]
+                > overlap["first_sample_host_ns_est"] else None
+            ),
             "events_are_full_stream": False,
+            "scope_overlap_is_provisional": True,
         },
         "scope_to_host_overlap": overlap,
         "clock_mapping": mapping,
@@ -315,6 +388,29 @@ def session_markdown(root, session):
         f"The Matrix32 BLE trace contains **"
         f"{session['mcu_full_stream']['ble_events']} events** across the "
         "whole controller lifetime. These are counted only once here.",
+        "", "### PC-native acquisition and BLE command statistics", "",
+        f"- Median MCU arrival interval: "
+        f"{session['mcu_full_stream']['median_positive_arrival_interval_ms']} ms.",
+        f"- MCU arrival interval p10 / p90: "
+        f"{session['mcu_full_stream'].get('arrival_interval_p10_ms')} / "
+        f"{session['mcu_full_stream'].get('arrival_interval_p90_ms')} ms.",
+        f"- MCU intervals >2× median: "
+        f"{session['mcu_full_stream'].get('arrival_intervals_above_twice_median_count')}.",
+        f"- SF requested events: "
+        f"{session['mcu_full_stream'].get('sf_requested_event_count')}.",
+        f"- SF successful ACKs (status OK): "
+        f"{session['mcu_full_stream'].get('sf_ack_ok_count')}.",
+        f"- SF failed events: "
+        f"{session['mcu_full_stream'].get('sf_failed_event_count')}.",
+        f"- Successful SF ACKs per second of MCU recording: "
+        f"{session['mcu_full_stream'].get('sf_ack_ok_rate_per_mcu_recording_second')}.",
+        f"- Median inter-ACK interval: "
+        f"{session['mcu_full_stream'].get('sf_ack_ok_median_interack_ms')} ms.",
+        f"- Distinct successful SF ACK frequencies: "
+        f"{session['mcu_full_stream'].get('sf_ack_ok_distinct_frequencies_hz')}.",
+        "These counts are host-native telemetry, not a confirmation that "
+        "each acknowledged state appeared on CH1. Scope-window overlap "
+        "rates require the provisional time mapping.",
         "", "![Independent full MCU stream](mcu_full_stream.png)", "",
         "## Command versus physical measurement", "",
         "Each record report compares its OWN CH1 pulse events with the "
