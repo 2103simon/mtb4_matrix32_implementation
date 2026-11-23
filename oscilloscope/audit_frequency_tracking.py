@@ -373,19 +373,26 @@ def plot_outlier_windows(folder, rows, *, record):
         t = [(.5*(x["start_scope_s"]+x["end_scope_s"])-center)*1000
              for x in window]
         measured = [x["measured_frequency_hz"] for x in window]
-        ack = [x["ack_indicated_hz_stable"] or np.nan for x in window]
+        ack = [(x["ack_indicated_hz_stable"]
+                if x["ack_indicated_hz_stable"] is not None else np.nan)
+               for x in window]
+        requested = [(x["mcu_requested_hz_stable"]
+                      if x["mcu_requested_hz_stable"] is not None else np.nan)
+                     for x in window]
         fig, ax = plt.subplots(figsize=(9, 4.5),
                                layout="constrained")
         ax.plot(t, measured, marker="o", markersize=4,
                 label="Approved physical inverse periods")
         ax.plot(t, ack, marker=".", ls="--",
                 label="Stable ACK frequency (where available)")
+        ax.plot(t, requested, marker=".", ls=":",
+                label="Stable MCU requested frequency (where available)")
         ax.axvline(0, color="tab:red", alpha=.7,
                    label="Flagged interval midpoint")
         ax.set(xlabel="Time relative to outlier midpoint (ms)",
                ylabel="Frequency (Hz)",
                title=(f"Record {record}, t={t0:.3f}s: "
-                      "nearby physical intervals and ACK states"))
+                      "nearby physical intervals / MCU / ACK"))
         ax.grid(alpha=.2)
         ax.legend(fontsize=8)
         filename = f"outlier_{n:03d}.png"
