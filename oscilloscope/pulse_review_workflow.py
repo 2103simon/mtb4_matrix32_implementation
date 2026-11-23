@@ -308,7 +308,7 @@ def plot_report(output, t, volts, result):
     return shown
 
 
-def report_markdown(result, output, manifest, figures):
+def report_markdown(result, output, manifest, figures, *, root=None, record=None):
     """Human-readable S02-style record report with live review links."""
     output = Path(output)
     threshold = result.get("threshold", {})
@@ -468,5 +468,8 @@ def report_markdown(result, output, manifest, figures):
         "- [Editable review decisions](review_decisions.csv)",
         "- [Optional manually discovered pulses](manual_additions.csv)",
     ]
+    if root is not None and record is not None:
+        from oscilloscope.event_review_report import generate
+        lines += ["", *generate(root, record, result, output, manifest)]
     (output / "report.md").write_text("\n".join(lines)+"\n", encoding="utf-8")
     return audit
