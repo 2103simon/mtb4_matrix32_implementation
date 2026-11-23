@@ -413,3 +413,65 @@ python -u oscilloscope/analyze_integrated_matrix32.py --run-dir "$RUN"
 # Open "$RUN/analysis/integrated_report.md" in Markdown preview.
 ```
 
+
+
+## 9. Explain and investigate unqualified clock epochs
+
+Clock status is **not** the CH1 pulse review status. The independent
+\`analyze_gray_epoch_experiment.py\` qualifier requires:
+
+1. Scope/Nano decoded Gray-frame edge affine-fit RMS <= **100 µs**.
+2. Nano/PC SYNC midpoint-fit RMS <= **1000 µs**.
+3. Nano/PC fitted slope sensitivity to RTT selection <= **50 ppm**.
+4. A causally feasible common host offset for the four-timestamp USB SYNC.
+
+If a fit is missing, the error is reported without inferring alignment.
+A status of \`provisional_local_fit\` still does **not** certify absolute
+scope/host synchronization or Matrix32 physical command-application time.
+
+For the November 23, 2026 capture, the previously exported per-record
+summaries showed CH2 scope-edge RMS of approximately **85, 236, 105, 244,
+125, and 98 µs** for records 1–6. Thus the 100-µs Gray-fit gate alone
+explains why records 2, 3, 4 and 5 could not qualify. Check the new report
+for any *additional* independent USB/RTT checks, which the older
+integrated summary did not expose.
+
+The integrated analyzer automatically generates:
+
+- \`analysis/clock_qualification_report.md\`: original warning strings,
+  each criterion's observed value/threshold/PASS/FAIL, and an individual
+  discussion of every scope record.
+- \`analysis/clock_qualification_diagnostics.json\`: the full structured
+  audit including original statuses, failed checks and candidate diagnostics.
+- \`analysis/record_0000N/clock_residual_diagnostics.png\`: physical CH2
+  Gray-frame residual vs local scope time, original all-frame affine fit,
+  optional robust-candidate comparison and candidate outliers.
+
+A separate standalone run is also possible:
+
+\`\`\`bash
+python - <<'PY'
+from oscilloscope.clock_qualification_diagnostics import diagnose
+path, rows = diagnose(
+    "data/recordings/20261123T072229250984Z_integrated_matrix32_scope"
+)
+print(path)
+for row in rows:
+    print(row["record_index"], row["original_status"], row["failed_checks"])
+PY
+\`\`\`
+
+**Do not simply raise the RMS threshold to turn failures into successes.**
+First inspect the residuals: isolated outliers may point to individual
+mis-timestamped CH2 frames or corrupted Nano serial-edge records; a broad
+trend or many outliers may point to timing/scheduling jitter or an
+inadequate affine model. The optional MAD-based robust regression is a
+**diagnostic sensitivity test only**: it never changes \`gray_alignment.json\`,
+\`epoch_clock_analysis.json\`, the pulse review source locks, or any
+\`clock_mapping\` consumed by frequency comparisons. The clock qualifier's
+USB/RTT offset and drift checks also need to pass independently.
+
+Because even a passing local fit lacks an independently calibrated
+absolute offset, strong physical command-to-output accuracy/latency claims
+remain blocked until an electrical time marker or otherwise validated
+shared timing reference establishes the relevant error bound.
