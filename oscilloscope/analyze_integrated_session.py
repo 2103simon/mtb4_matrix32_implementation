@@ -366,8 +366,8 @@ def analyze_one(root, record, mcu, events, ack_states, *, threshold_v,
     report["record_summary"] = str(output / "summary.json")
     atomic_json(output / "summary.json", report)
     write_markdown_report(root, report, record_index=idx, per_record=True)
-    print(f"[RECORD {idx}] scope {len(t):,} pts / {t[-1]-t[0]:.3f}s, "
-          f"{pulses['positive_rising_events']} positive pulses, "
+    print(f"[LEGACY POSITIVE {idx}] scope {len(t):,} pts / {t[-1]-t[0]:.3f}s, "
+          f"{pulses['positive_rising_events']} positive-edge candidates, "
           f"MCU overlap {overlap['mcu_sample_count']}, "
           f"BLE overlap {overlap['ble_event_count']}, "
           f"dynamic {dynamic['compatible']}/{dynamic['classified']} "
