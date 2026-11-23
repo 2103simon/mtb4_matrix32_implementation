@@ -89,19 +89,22 @@ def associate(info, time_s, start, finish):
     if sample is not None and not 0 <= ns-sample[0] <= 250000000:
         sample = None
     idx = bisect.bisect_right(info["event_times"], ns)-1
-    # Latest acknowledged command is a host event, not a physical application.
-    # Search bounded events backwards without copying the entire prefix.
+    # Precomputed latest-known ACK state avoids rescanning long BLE logs
+    # once per physical onset (which would be quadratic for 5M-point runs).
     sf, sc = None, None
-    for i in range(idx, -1, -1):
-        event = info["events"][i]
-        if event.get("status") != "OK":
-            continue
-        if sf is None and event.get("event") == "sf_ack":
-            sf = event.get("frequency_hz")
-        if sc is None and event.get("event") == "sc_ack":
-            sc = event.get("current_command")
-        if sf is not None and sc is not None:
-            break
+    if idx >= 0:
+        if "sf_at_event" not in info:
+            last_sf, last_sc = None, None
+            info["sf_at_event"], info["sc_at_event"] = [], []
+            for event in info["events"]:
+                if event.get("status") == "OK":
+                    if event.get("event") == "sf_ack":
+                        last_sf = event.get("frequency_hz")
+                    elif event.get("event") == "sc_ack":
+                        last_sc = event.get("current_command")
+                info["sf_at_event"].append(last_sf)
+                info["sc_at_event"].append(last_sc)
+        sf, sc = info["sf_at_event"][idx], info["sc_at_event"][idx]
     status = "PROVISIONAL_" + str(mapping.get("status", "UNKNOWN"))
     if sample is None:
         status += "_NO_FRESH_MCU_SAMPLE"
