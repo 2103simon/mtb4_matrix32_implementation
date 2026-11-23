@@ -83,6 +83,34 @@ def detect_review(t, volts):
         results[fraction] = result
         threshold_counts[str(fraction)] = len(result["events"])
     primary = results[1.0]
+    # Source detector is unchanged; independently audit sensitivity-only
+    # events so a stable event count cannot hide different pulse locations.
+    primary_times = [float(e["time_s"]) for e in primary["events"]]
+    mismatches = []
+    for fraction in (0.8, 1.2):
+        alt_times = [float(e["time_s"]) for e in results[fraction]["events"]]
+        for event in results[fraction]["events"]:
+            time_s = float(event["time_s"])
+            if not primary_times or min(abs(time_s-p) for p in primary_times) > .0005:
+                mismatches.append({
+                    "threshold_fraction": fraction,
+                    "source": "alternative_threshold_only",
+                    "time_s": time_s, "voltage_v": float(event["voltage_v"]),
+                    "status": event["status"],
+                })
+        for event in primary["events"]:
+            time_s = float(event["time_s"])
+            if not alt_times or min(abs(time_s-p) for p in alt_times) > .0005:
+                mismatches.append({
+                    "threshold_fraction": fraction,
+                    "source": "primary_not_matched_by_alternative",
+                    "time_s": time_s, "voltage_v": float(event["voltage_v"]),
+                    "status": event["status"],
+                })
+    # A single location can be flagged at both alternate thresholds; keep
+    # the provenance, never silently merge detections or add invented onsets.
+    for i, row in enumerate(mismatches, 1):
+        row["id"] = f"Q{i:05d}"
     pulses = []
     for i, row in enumerate(primary["events"], 1):
         pulses.append({
@@ -123,6 +151,8 @@ def detect_review(t, volts):
         flags.append("COARSE_SAMPLE_SPACING_REVIEW_SHORT_PULSE_MORPHOLOGY")
     if not counts_identical:
         flags.append("ONSET_THRESHOLD_COUNT_SENSITIVITY")
+    if mismatches:
+        flags.append("THRESHOLD_SPECIFIC_ONSET_TIMES_REQUIRE_REVIEW")
     if len(rejected) > len(boundary):
         flags.append("INTERIOR_ONSET_REVIEW_REQUIRED")
     if unassociated:
@@ -144,6 +174,7 @@ def detect_review(t, volts):
         "boundary_rejected": boundary,
         "threshold": defaults,
         "threshold_sensitivity_event_counts": threshold_counts,
+        "threshold_sensitivity_unmatched_events": mismatches,
         "flags": flags,
         "complete_pulse_detection_approved": False,
         "interpretation": (
@@ -173,6 +204,7 @@ def analyze_record(root, record):
             "sampling_interval_us": float(np.median(np.diff(t)) * 1e6),
             "threshold": {},
             "threshold_sensitivity_event_counts": {},
+            "threshold_sensitivity_unmatched_events": [],
             "accepted_pulses": [], "periods": [],
             "rejected": [], "suppressed": [],
             "flags": ["DETECTOR_UNQUALIFIED"],
@@ -208,7 +240,8 @@ def analyze_record(root, record):
         k: v for k, v in result.items()
         if k not in ("accepted_pulses", "periods", "rejected",
                      "suppressed", "suppressed_associated",
-                     "suppressed_unassociated", "boundary_rejected")
+                     "suppressed_unassociated", "boundary_rejected",
+                     "threshold_sensitivity_unmatched_events")
     } | {
         "accepted_count": len(result["accepted_pulses"]),
         "period_count": len(result["periods"]),
@@ -216,6 +249,9 @@ def analyze_record(root, record):
         "suppressed_count": len(result["suppressed"]),
         "unassociated_suppressed_count": len(
             result.get("suppressed_unassociated", [])
+        ),
+        "threshold_specific_onset_review_count": len(
+            result.get("threshold_sensitivity_unmatched_events", [])
         ),
     })
     write_csv(output / "accepted_onsets.csv", result["accepted_pulses"],
@@ -228,6 +264,10 @@ def analyze_record(root, record):
               ("sample_index", "time_s", "voltage_v", "status"))
     write_csv(output / "suppressed_onsets.csv", result["suppressed"],
               ("sample_index", "time_s", "voltage_v", "status"))
+    write_csv(output / "threshold_sensitive_onsets.csv",
+              result.get("threshold_sensitivity_unmatched_events", []),
+              ("id", "threshold_fraction", "source", "time_s",
+               "voltage_v", "status"))
     # Reuse S01/S02 plotting code and create a source-locked human review.
     # Existing edited review files are never overwritten silently.
     from oscilloscope.pulse_review_workflow import (
