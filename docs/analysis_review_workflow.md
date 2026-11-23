@@ -482,18 +482,18 @@ shared timing reference establishes the relevant error bound.
 Before another hardware experiment, test whether nonlinear relative clock
 variation is predictable from *held-out* physical CH2 Gray frames:
 
-\`\`\`bash
+```bash
 cd ~/code/mtb4_matrix32_implementation
 conda activate matrix32
 python -m unittest discover -s tests -p 'test_evaluate_clock_models.py' -v
 RUN=data/recordings/20261123T072229250984Z_integrated_matrix32_scope
 python -m oscilloscope.evaluate_clock_models --run-dir "$RUN"
 code "$RUN/analysis/clock_model_cv_report.md"
-\`\`\`
+```
 
-This script works from the saved \`metadata.json\` decoded Gray frames,
-\`nano_serial.jsonl\` source frame timestamps and the existing
-\`epoch_clock_analysis.json\`. It does **not** need to re-read the 30 million
+This script works from the saved `metadata.json` decoded Gray frames,
+`nano_serial.jsonl` source frame timestamps and the existing
+`epoch_clock_analysis.json`. It does **not** need to re-read the 30 million
 CH1 samples or rerun the manually approved negative-onset detector.
 
 For **each** independent scope recording, it compares a clock affine fit
@@ -504,14 +504,14 @@ blocks), rather than scoring the timestamps used to fit that model.
 
 Primary outputs:
 
-- \`analysis/clock_model_cv_report.md\`: one table covering all six
+- `analysis/clock_model_cv_report.md`: one table covering all six
   recordings, candidate model and original status, plus explanatory
   interpretation for every record.
-- \`analysis/clock_model_cv_summary.json\`: all holdout scores,
+- `analysis/clock_model_cv_summary.json`: all holdout scores,
   absolute-error percentiles, candidate model and scope/USB diagnostics.
-- \`analysis/record_0000N/clock_model_cv_comparison.png\`: all-frame
+- `analysis/record_0000N/clock_model_cv_comparison.png`: all-frame
   training residual versus blocked withheld prediction residual.
-- \`analysis/record_0000N/clock_model_holdout_predictions.csv\`: each
+- `analysis/record_0000N/clock_model_holdout_predictions.csv`: each
   individual withheld Gray timestamp prediction error, by model.
 
 A nonlinear candidate is identified only when **both** withheld-block
@@ -529,16 +529,16 @@ ideally with an independent electrical marker, before attribution of
 specific Matrix32 requests to approved physical CH1 pulses.
 
 No model is automatically installed into
-\`epoch_clock_analysis.json\` or the integrated reports. In particular,
+`epoch_clock_analysis.json` or the integrated reports. In particular,
 cross-validation of Nano Gray timestamps **cannot prove** when the
-Nano's physical CH2 GPIO pin transitioned if its firmware \`EDGE_US\`
+Nano's physical CH2 GPIO pin transitioned if its firmware `EDGE_US`
 timestamp is displaced relative to the pin; nor can it resolve the
 unverified absolute Nano-to-PC USB offset or Matrix32 apply latency.
 
-\`\`\`bash
+```bash
 # Optional sensitivity: can the model interpolate longer 2-s and 4-s gaps?
 python -m oscilloscope.evaluate_clock_models --run-dir "$RUN" --block-s 2
-\`\`\`
+```
 
 A report suggesting *no* predictable improvement means investigate
 Nano GPIO-frame scheduling/timestamp semantics and CH2 sampling, not
