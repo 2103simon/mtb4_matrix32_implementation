@@ -225,91 +225,19 @@ def analyze_record(root, record):
               ("sample_index", "time_s", "voltage_v", "status"))
     write_csv(output / "suppressed_onsets.csv", result["suppressed"],
               ("sample_index", "time_s", "voltage_v", "status"))
-    # A plot must preserve all pulse markers, including rejected/suppressed.
-    # Use the full 20-s interval for context, then detailed 0.25-s panels.
+    # Reuse S01/S02 plotting code and create a source-locked human review.
+    # Existing edited review files are never overwritten silently.
+    from oscilloscope.pulse_review_workflow import (
+        make_scaffold, plot_report, report_markdown,
+    )
+    manifest = make_scaffold(output, path, result)
     try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        fig, ax = plt.subplots(figsize=(14, 4))
-        # Lightweight envelope: all samples contribute to each min/max bin.
-        bins = np.linspace(float(t[0]), float(t[-1]), 3001)
-        indexes = np.searchsorted(t, bins)
-        tx, low, high = [], [], []
-        for a, b in zip(indexes[:-1], indexes[1:]):
-            if b > a:
-                tx.append(float(t[a]))
-                low.append(float(np.min(volts[a:b])))
-                high.append(float(np.max(volts[a:b])))
-        ax.fill_between(tx, low, high, alpha=0.35, label="raw CH1 min/max")
-        ps = result["accepted_pulses"]
-        if ps:
-            ax.scatter([x["time_s"] for x in ps], [x["voltage_v"] for x in ps],
-                       s=3, label="accepted negative onset candidates")
-        for group, name, marker in (
-            (result["rejected"], "rejected negative onsets", "x"),
-            (result["suppressed"], "suppressed close crossings", "+"),
-        ):
-            if group:
-                ax.scatter([x["time_s"] for x in group],
-                           [x["voltage_v"] for x in group],
-                           s=15, marker=marker, label=name)
-        ax.set(xlabel="Scope local time (s)", ylabel="CH1 voltage (V)",
-               title=f"Record {idx}: unverified negative onset inventory")
-        ax.legend(loc="upper right", fontsize=8)
-        fig.tight_layout()
-        fig.savefig(output / "candidate_overview.png", dpi=150)
-        plt.close(fig)
-        # Raw-data zooms: first, center, final, plus up to six review flags.
-        # Never decimate a zoom or omit rejected/suppressed candidates.
-        zoom_centers = [
-            ("start", float(t[0]) + 0.125),
-            ("middle", (float(t[0]) + float(t[-1])) / 2),
-            ("end", float(t[-1]) - 0.125),
-        ]
-        anomalies = sorted(
-            result["rejected"] + result["suppressed"],
-            key=lambda e: float(e["time_s"]),
-        )
-        # Spread review samples across the capture, not just its start.
-        if anomalies:
-            sample_indices = np.linspace(
-                0, len(anomalies) - 1, min(6, len(anomalies)), dtype=int
-            )
-            for i, sample_index in enumerate(sample_indices, 1):
-                zoom_centers.append((
-                    f"review_{i:02d}", float(anomalies[int(sample_index)]["time_s"])
-                ))
-        for name, center in zoom_centers:
-            left = max(float(t[0]), center - 0.125)
-            right = min(float(t[-1]), center + 0.125)
-            a = int(np.searchsorted(t, left, side="left"))
-            b = int(np.searchsorted(t, right, side="right"))
-            if b - a < 3:
-                continue
-            fig, ax = plt.subplots(figsize=(14, 4))
-            ax.plot(t[a:b], volts[a:b], linewidth=0.7,
-                    label="full raw CH1 samples")
-            for group, label, marker in (
-                (result["accepted_pulses"], "accepted candidate", "o"),
-                (result["rejected"], "rejected onset", "x"),
-                (result["suppressed"], "suppressed onset", "+"),
-            ):
-                points = [x for x in group if left <= x["time_s"] <= right]
-                if points:
-                    ax.scatter(
-                        [x["time_s"] for x in points],
-                        [x["voltage_v"] for x in points],
-                        s=22, marker=marker, label=label,
-                    )
-            ax.set(xlabel="Scope local time (s)", ylabel="CH1 voltage (V)",
-                   title=f"Record {idx}: {name} raw 250ms onset review")
-            ax.legend(loc="upper right", fontsize=8)
-            fig.tight_layout()
-            fig.savefig(output / f"raw_zoom_{name}.png", dpi=150)
-            plt.close(fig)
-    except ImportError:
-        result["plot_warning"] = "Matplotlib unavailable; CSV review preserved"
+        figures = plot_report(output, t, volts, result)
+    except ImportError as exc:
+        result["plot_warning"] = f"Plot dependency missing: {exc}"
+        figures = []
+    report_markdown(result, output, manifest, figures)
+    print(f"[PULSE REPORT {idx}] {output / 'report.md'}", flush=True)
     return result
 
 
