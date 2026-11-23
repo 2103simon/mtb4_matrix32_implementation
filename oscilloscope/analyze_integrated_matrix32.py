@@ -1,4 +1,4 @@
-"""Print and plot the latest integrated Matrix32/MCU/Nano/scope recording.
+"""Analyze integrated Matrix32/MCU/Nano/scope recordings using approved negative onsets.
 
 Offline only: no serial, BLE, scope, or stimulation commands.
 Usage:
@@ -623,20 +623,12 @@ def write_markdown_report(root, report, *, record_index=1, per_record=False):
 
 
 
-def summarize(root, meta, *, threshold_v=2, deadtime_ms=1, taxel=None,
-              zoom_start=None, zoom_sec=0.5, show=False,
-              frequency_window_s=1.0, frequency_step_s=0.25,
-              frequency_tolerance_hz=3.0, frequency_tolerance_fraction=0.05):
-    """One session = N independent scope records + one continuous MCU log."""
+def summarize(root, meta, *, taxel=None, show=False):
+    """Primary integrated analysis: approved S02 negative onsets exclusively."""
     from oscilloscope.analyze_integrated_session import analyze_session
-    return analyze_session(
-        root, meta, threshold_v=threshold_v, deadtime_ms=deadtime_ms,
-        taxel=taxel, zoom_start=zoom_start, zoom_sec=zoom_sec, show=show,
-        frequency_window_s=frequency_window_s,
-        frequency_step_s=frequency_step_s,
-        frequency_tolerance_hz=frequency_tolerance_hz,
-        frequency_tolerance_fraction=frequency_tolerance_fraction,
-    )
+    # Legacy threshold/positive-edge options are intentionally removed;
+    # their detector is not part of the integrated reporting workflow.
+    return analyze_session(root, meta, taxel=taxel, show=show)
 
 
 def main(argv=None):
@@ -645,43 +637,11 @@ def main(argv=None):
                    help="Explicit integrated session folder; default latest COMPLETE")
     p.add_argument("--output-root", type=Path, default=ROOT / "data/recordings")
     p.add_argument("--taxel", type=int, default=None, choices=range(12))
-    p.add_argument("--threshold-v", type=float, default=2.0,
-                   help="Positive CH1 crossing threshold for exploratory pulses")
-    p.add_argument("--deadtime-ms", type=float, default=1.0)
-    p.add_argument("--zoom-start-s", type=float, default=None)
-    p.add_argument("--zoom-sec", type=float, default=0.5)
-    p.add_argument("--frequency-window-s", type=float, default=1.0,
-                   help="Sliding measured pulse-rate window (default 1 s)")
-    p.add_argument("--frequency-step-s", type=float, default=0.25,
-                   help="Sliding rate update step (default 0.25 s)")
-    p.add_argument("--frequency-tolerance-hz", type=float, default=3.0)
-    p.add_argument("--frequency-tolerance-fraction", type=float, default=0.05)
     p.add_argument("--show", action="store_true",
                    help="Print saved PNG filenames; no GUI is opened")
     args = p.parse_args(argv)
-    if not (math.isfinite(args.threshold_v) and args.threshold_v > 0
-            and math.isfinite(args.deadtime_ms) and args.deadtime_ms >= 0
-            and math.isfinite(args.zoom_sec) and args.zoom_sec > 0
-            and (args.zoom_start_s is None or math.isfinite(args.zoom_start_s))):
-        p.error("Threshold, deadtime and zoom range must be finite and valid")
-    if not (0 < args.frequency_window_s <= 10
-            and 0 < args.frequency_step_s <= args.frequency_window_s
-            and math.isfinite(args.frequency_window_s)
-            and math.isfinite(args.frequency_step_s)
-            and math.isfinite(args.frequency_tolerance_hz)
-            and args.frequency_tolerance_hz > 0
-            and math.isfinite(args.frequency_tolerance_fraction)
-            and 0 <= args.frequency_tolerance_fraction <= 1):
-        p.error("Invalid sliding-rate window or frequency tolerance")
     root, meta = choose_run(args.output_root, args.run_dir)
-    return summarize(root, meta, threshold_v=args.threshold_v,
-                     deadtime_ms=args.deadtime_ms, taxel=args.taxel,
-                     zoom_start=args.zoom_start_s, zoom_sec=args.zoom_sec,
-                     show=args.show, frequency_window_s=args.frequency_window_s,
-                     frequency_step_s=args.frequency_step_s,
-                     frequency_tolerance_hz=args.frequency_tolerance_hz,
-                     frequency_tolerance_fraction=args.frequency_tolerance_fraction)
-
+    return summarize(root, meta, taxel=args.taxel, show=args.show)
 
 if __name__ == "__main__":
     main()
