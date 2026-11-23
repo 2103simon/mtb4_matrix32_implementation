@@ -22,7 +22,8 @@ CANDIDATE_FIELDS = ("id", "kind", "sample_index", "time_s",
                     "detector_status", "decision", "note")
 ADDITION_FIELDS = ("id", "time_s", "decision", "note")
 SOURCE_TABLES = ("accepted_onsets.csv", "rejected_onsets.csv",
-                 "suppressed_onsets.csv", "periods_unverified.csv")
+                 "suppressed_onsets.csv", "periods_unverified.csv",
+                 "threshold_sensitive_onsets.csv")
 
 
 def sha256(path):
@@ -258,6 +259,34 @@ def plot_report(output, t, volts, result):
         plt.close(fig)
         shown.append(name)
 
+    # Flagged onsets found under alternate 80%/120% thresholds only,
+    # shown as raw-sample plots. They are NOT silently promoted to pulses.
+    threshold_only = result.get("threshold_sensitivity_unmatched_events", [])
+    for candidate in threshold_only:
+        center = float(candidate["time_s"])
+        a = int(np.searchsorted(t, center-.00045))
+        b = int(np.searchsorted(t, center+.00065))
+        if b-a < 3:
+            continue
+        folder = figures / "threshold_sensitive"
+        folder.mkdir(parents=True, exist_ok=True)
+        fig, ax = plt.subplots(figsize=(11, 4))
+        plot_traces(ax, [{
+            "time_us": (t[a:b]*1e3).tolist(),
+            "values": volts[a:b].tolist(),
+            "color": "C0", "label": "original CH1 samples",
+        }], xlim=(float(t[a])*1e3, float(t[b-1])*1e3),
+            xlabel="Scope-local time (ms)", ylabel="CH1 voltage (V)",
+            title=f"{candidate['id']}: threshold sensitivity "
+                  f"{candidate['threshold_fraction']} (not a verified onset)")
+        ax.axvline(center*1e3, ls="--", label="threshold-sensitive onset")
+        ax.legend()
+        fig.tight_layout()
+        name = f"threshold_sensitive/{candidate['id']}_raw.png"
+        fig.savefig(figures / name, dpi=160)
+        plt.close(fig)
+        shown.append(name)
+
     rejections = _diagnostic_rejections(times, values, result)
     if rejections:
         # Verbatim S02 rejection plotting implementation. This uses a broad
@@ -320,6 +349,9 @@ def report_markdown(result, output, manifest, figures):
             if len(intervals_s) > 1 else None
         ),
         "rejected_candidate_count": len(result["rejected"]),
+        "threshold_specific_review_count": len(
+            result.get("threshold_sensitivity_unmatched_events", [])),
+
         "suppressed_candidate_count": len(result["suppressed"]),
         "threshold_sensitivity_event_counts": (
             result.get("threshold_sensitivity_event_counts")),
@@ -354,6 +386,8 @@ def report_markdown(result, output, manifest, figures):
         "| Metric | Value |", "| --- | ---: |",
         f"| Accepted onset candidates | {len(result['accepted_pulses'])} |",
         f"| Rejected crossings | {len(result['rejected'])} |",
+        f"| Threshold-specific onset locations | "
+        f"{len(result.get('threshold_sensitivity_unmatched_events', []))} |",
         f"| Suppressed close crossings | {len(result['suppressed'])} |",
         f"| Record-boundary rejects | {result.get('record_start_boundary_rejected_count', 0)} |",
         f"| Interior rejects | {result.get('interior_rejected_count', 0)} |",
@@ -395,6 +429,15 @@ def report_markdown(result, output, manifest, figures):
     if relaxed_figures:
         lines += ["", "### Relaxed-quiet accepted-onset review figures", ""]
         lines.extend(f"- [{p}](figures/{p})" for p in relaxed_figures)
+    sensitive_figures = [p for p in figures if p.startswith("threshold_sensitive/")]
+    if sensitive_figures:
+        lines += ["", "### Threshold-sensitive onset review figures", ""]
+        lines.extend(f"- [{p}](figures/{p})" for p in sensitive_figures)
+        lines.append(
+            "These are alternative-threshold observations, not automatically "
+            "accepted pulses. If genuine and missing in P/R/S, enter an "
+            "M... manual addition with raw-image evidence."
+        )
     lines += [
         "", "## 5. Operator review and downstream pulse timeline", "",
         "Review every candidate and **especially** every rejected/suppressed "
@@ -416,6 +459,7 @@ def report_markdown(result, output, manifest, figures):
         "- [Rejected candidates](rejected_onsets.csv)",
         "- [Suppressed candidates](suppressed_onsets.csv)",
         "- [Flagged event figure index](rejection_reviews.csv)",
+        "- [Threshold-sensitive onset table](threshold_sensitive_onsets.csv)",
         "- [Review source-lock manifest](review_manifest.json)",
         "- [Editable review decisions](review_decisions.csv)",
         "- [Optional manually discovered pulses](manual_additions.csv)",
