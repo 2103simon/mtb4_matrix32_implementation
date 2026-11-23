@@ -60,28 +60,30 @@ The resulting records must not be concatenated as if there were continuous scope
 
 ## Supported record lengths and higher-resolution captures
 
-The operator verified these **discrete record-length selections** on the Tektronix MDO4104B-6: **1,000; 10,000; 100,000; 1,000,000; 5,000,000; 10,000,000; 20,000,000 points**. These are instrument menu choices, not an assertion that every timebase/channel combination will accept every length. The runner requests a length and then checks the *instrument-reported* record length and horizontal scale before acquiring; a mismatch aborts the acquisition.
+The operator verified these **discrete record-length selections** on the Tektronix MDO4104B-6: **1,000; 10,000; 100,000; 1,000,000; 5,000,000; 10,000,000; 20,000,000 points**. The scope's actual horizontal scale and record length are checked before acquisition; a mismatch safely aborts the run.
 
-| Proposed single acquisition | Timebase (10 divisions) | Points per channel | Nominal sample spacing | Samples per 100 µs phase | Raw two-channel 16-bit transfer |
+**Hardware observation, 2026-11-23:** requesting **3 s/div** for a nominal 30 s capture returned **2 s/div** from the instrument. The integrated runner correctly failed before acquisition with `time_div_s: expected 3.0, scope reports 2.0`. Do **not** recommend 30 s at 3 s/div on this bench. A 6 s/div request has not been verified and may also snap to a standard timebase. Prefer verified 1-2-5-series horizontal settings, subject to an actual scope-settings readback.
+
+| Candidate single acquisition | Timebase (10 divisions) | Points per channel | Nominal sample spacing | Samples per 100 µs phase | Raw two-channel 16-bit transfer |
 | --- | --- | ---: | ---: | ---: | ---: |
 | Existing baseline: 20 s | 2 s/div | 1M | 20 µs | 5 | 4 MB |
-| Better first trial: 30 s | 3 s/div | 5M | 6 µs | ~17 | 20 MB |
-| Longer / finer: 60 s | 6 s/div | 20M | 3 µs | ~33 | 80 MB |
+| **Recommended next trial: 20 s** | **2 s/div** | **5M** | **4 µs** | **25** | **20 MB** |
+| Longer: 50 s | 5 s/div | 5M | 10 µs | 10 | 20 MB |
+| Longer/finer: 50 s | 5 s/div | 10M | 5 µs | 20 | 40 MB |
+| Maximum-depth option: 50 s | 5 s/div | 20M | 2.5 µs | 40 | 80 MB |
 
-The sample spacing above is **nominal** (window/points), not a measured sample rate or proof that the scope accepts 3 s/div or 6 s/div at these record lengths. The scope may quantize/reject the horizontal scale; the existing 2.5% scale verification intentionally fails if the requested setting was not honored. Check the dry-run plan, then verify the scope's reported settings and waveform preamble in a non-stimulating trial. For a scope restricted to standard 1-2-5 divisions, a 50 s capture at 5 s/div is an alternative to 60 s at 6 s/div (20M/50 s = 2.5 µs); don't relabel 50 s as 60 s.
+These are *nominal* window/points calculations, not confirmed waveform preamble values. The 5 s/div cases require instrument verification. At 400 Hz, 20 s contains about 8,000 pulse periods and 50 s about 20,000. Longer records show more frequency transitions; higher sample density improves edge and pulse-width measurements. Neither changes the ~44 Hz BLE command update rate, application ACK latency or the uncertainty of physical apply timing.
 
-At 400 Hz a 30 s capture contains roughly 12,000 pulse periods and a 60 s capture roughly 24,000. Higher sample density improves phase-edge localization, short-pulse detection and event-review zooms; longer windows provide more transition examples. Neither improves the **~44 Hz BLE command update rate**, ACK-to-physical latency, or cross-clock alignment automatically. The CH2 Gray reference still sends one frame per 100 ms. Record-length upgrades can also expose trigger-position, memory sharing, transfer and processing limits.
+The downloader currently expands each sample to three CSV columns and holds complete waveforms in memory; the CSV validator also reads the entire waveform. At large depths, disk use, RAM, download time and analysis runtime can substantially exceed the raw binary size. Test a non-stimulating capture first and set the external process watchdog to cover setup and transfers. Independent repeated acquisitions have unobserved gaps; a single long record avoids inter-record download gaps but does not align MCU and scope clocks automatically.
 
-Two-channel raw payload estimates above exclude CSV: the current downloader expands each sample to **three text columns** and materializes a complete tuple of 16-bit samples; CSV size, RAM and transfer/analysis time can be much larger. At 20M points × 2 channels, validate disk headroom, RAM and external watchdog duration in a no-stimulation capture first. The current CSV validator also reads an entire waveform into memory. Frozen-record downloads create gaps between successive records; a *single* longer record avoids those gaps but does not make the BLE sequence continuous or prove the waveform's timing relative to MCU host timestamps.
-
-After checking hardware acceptance, example **dry-run plans**:
+**Dry-run plans** (no devices touched):
 
 ```bash
-python oscilloscope/record_integrated_matrix32.py --points 5000000 --time-div-us 3000000 --count 1
-python oscilloscope/record_integrated_matrix32.py --points 20000000 --time-div-us 6000000 --count 1
+python oscilloscope/record_integrated_matrix32.py --points 5000000 --time-div-us 2000000 --count 1
+python oscilloscope/record_integrated_matrix32.py --points 10000000 --time-div-us 5000000 --count 1
 ```
 
-Live acquisitions still require the existing operator-confirmed dummy-load, `--run --arm --dummy-load-confirmed` gating and an appropriately increased external watchdog; no long-record hardware acceptance or live-run performance has yet been demonstrated.
+The live runner retains its separate `--run --arm --dummy-load-confirmed` gates. The 30 s/5M option was **not** accepted by the oscilloscope in the observed run; do not treat a Python dry run as instrument acceptance.
 
 ## Gray timecode, Nano serial and clock experiments
 
