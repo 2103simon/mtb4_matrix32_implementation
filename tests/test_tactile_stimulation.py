@@ -199,14 +199,14 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(("live", 60), device.records)
             serial.snapshot = sample(0)
             await asyncio.sleep(0.05)
-            self.assertEqual(device.records[-2:], [("current", 0), ("live", 2)])
+            self.assertEqual(device.records[-2:], [("current", 0), ("live", 400)])
             self.assertNotIn(("stop",), device.records)
         finally:
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
 
-    async def test_default_zero_current_sf2_then_restore(self):
+    async def test_default_zero_current_sf400_then_restore(self):
         serial = FakeSerial(sample(50))
         device = FakeMatrix32()
         ready = asyncio.Event()
@@ -220,9 +220,9 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(("start", 50), device.records)
             serial.snapshot = sample(0)
             await asyncio.sleep(0.055)
-            self.assertEqual(device.records[-2:], [("current", 0), ("live", 2)])
+            self.assertEqual(device.records[-2:], [("current", 0), ("live", 400)])
             self.assertEqual(device.config["sc"], [0])
-            self.assertEqual(device.config["sf"], 2)
+            self.assertEqual(device.config["sf"], 400)
             self.assertNotIn(("stop",), device.records)
             serial.snapshot = sample(80)
             await asyncio.sleep(0.055)
@@ -234,8 +234,8 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await task
 
-    async def test_default_zero_current_when_started_at_sf2_does_not_repeat_sf(self):
-        serial = FakeSerial(sample(2))
+    async def test_default_zero_current_when_started_at_sf400_does_not_repeat_sf(self):
+        serial = FakeSerial(sample(400))
         device = FakeMatrix32()
         ready = asyncio.Event()
         ready.configured_ns = 0
@@ -248,7 +248,7 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
             serial.snapshot = sample(0)
             await asyncio.sleep(0.055)
             self.assertEqual(device.records[-1], ("current", 0))
-            self.assertEqual(sum(row == ("live", 2) for row in device.records), 0)
+            self.assertEqual(sum(row == ("live", 400) for row in device.records), 0)
         finally:
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
