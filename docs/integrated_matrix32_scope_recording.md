@@ -48,7 +48,9 @@ timeout --signal=INT --kill-after=20s 180s \
   --run --arm --dummy-load-confirmed
 ```
 
-For approximately **2 minutes of observed scope data**, add `--count 6`; for approximately **3 minutes**, add `--count 9`. These capture 6/9 **separate 20-second segments**, not a gap-free 2–3-minute waveform. The wall-clock experiment is longer due to USB transfers and clock synchronization. For nine records, increase the **external watchdog** accordingly (e.g. `900s` instead of `180s`) but never rely on it as an electrical shutdown interlock.\n\nThe `--arm` option requires **both** `--run` and `--dummy-load-confirmed`. The external `timeout` is a process watchdog for potentially blocking USBTMC calls, **not** an electrical shutdown guarantee. Verify CH1 physically off and use a physical disconnect if required.
+For approximately **2 minutes of observed scope data**, add `--count 6`; for approximately **3 minutes**, add `--count 9`. These capture 6/9 **separate 20-second segments**, not a gap-free 2–3-minute waveform. The wall-clock experiment is longer due to USB transfers and clock synchronization. For nine records, increase the **external watchdog** accordingly (e.g. `900s` instead of `180s`) but never rely on it as an electrical shutdown interlock.
+
+The `--arm` option requires **both** `--run` and `--dummy-load-confirmed`. The external `timeout` is a process watchdog for potentially blocking USBTMC calls, **not** an electrical shutdown guarantee. Verify CH1 physically off and use a physical disconnect if required.
 
 ## Actual acquisition order
 
