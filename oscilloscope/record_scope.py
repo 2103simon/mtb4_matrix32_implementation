@@ -14,8 +14,15 @@ import re
 import subprocess
 import time
 
-from tek_mdo_usb import capture, query, write
-from scope_device import resolve_scope_device, verify_scope_identity
+# Support both direct execution (`python oscilloscope/record_scope.py`)
+# and importing as a package (`from oscilloscope.record_scope import ...`).
+# The latter is used by offline analysis and unittest discovery.
+if __package__:
+    from .tek_mdo_usb import capture, query, write
+    from .scope_device import resolve_scope_device, verify_scope_identity
+else:
+    from tek_mdo_usb import capture, query, write
+    from scope_device import resolve_scope_device, verify_scope_identity
 
 
 def scope_settings(f, channels, trigger_channel=None, *, horizontal_position=False):
