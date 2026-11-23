@@ -238,15 +238,15 @@ def apply(output, source_ch1, *, reviewer, confirm_accepted, confirm_complete):
     if report_file.exists():
         with report_file.open("a", encoding="utf-8") as stream:
             stream.write(
-                "\\n## 6. Source-locked operator review completed\\n\\n"
-                f"- Reviewer: **{reviewer}**.\\n"
-                f"- Human included onsets: **{len(approved)}**.\\n"
-                f"- Complete within-record intervals: **{len(periods)}**.\\n"
-                "- [Signed review and hashes](review_approval.json)\\n"
-                "- [Approved onsets](approved_onsets.csv)\\n"
-                "- [Approved consecutive intervals](approved_intervals.csv)\\n\\n"
+                "\n## 6. Source-locked operator review completed\n\n"
+                f"- Reviewer: **{reviewer}**.\n"
+                f"- Human included onsets: **{len(approved)}**.\n"
+                f"- Complete within-record intervals: **{len(periods)}**.\n"
+                "- [Signed review and hashes](review_approval.json)\n"
+                "- [Approved onsets](approved_onsets.csv)\n"
+                "- [Approved consecutive intervals](approved_intervals.csv)\n\n"
                 "This approval covers onset inventory within this one scope "
-                "record, not absolute physical latency or guaranteed current-off.\\n"
+                "record, not absolute physical latency or guaranteed current-off.\n"
             )
     return approval
 
