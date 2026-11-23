@@ -218,6 +218,12 @@ async def send_live_current(device, current, *, capture=None, source_sample_ns=N
     return record
 
 
+# SC=0 mute: request the fastest supported scheduler period after zero-current ACK.
+# This only bounds the NEXT scheduler opportunity in the modeled device;
+# an ACK does not prove the CH1 output is electrically off.
+ZERO_CURRENT_FAST_SF_HZ = 400
+
+
 async def frequency_worker(sm, device, ready, taxel, receptor, *, arm,
                            stale_seconds=STALE_SECONDS, capture=None):
     """Single sequential BLE command worker. Never queues older frequencies."""
@@ -264,24 +270,27 @@ async def frequency_worker(sm, device, ready, taxel, receptor, *, arm,
             if stopped:
                 continue  # Never START with no positive sensor request.
             if not muted_current:
-                # Operator bench result (2026-11-20): no CH1 pulses were
-                # visible on the oscilloscope with SC1=0/SF=2.
-                # This does not prove physical zero current for every
-                # load, scope sensitivity or Matrix32 configuration.
-                # SC=0 MUST precede SF=2: no intentional rate increase
+                # Previous bench observation: CH1 pulses were not visible
+                # with SC1=0/SF=2. This does not establish off state at SF400.
+                # Matrix32 SF changes apply at a cycle boundary: after SC1=0
+                # is ACKed, set SF=400 to shorten future scheduling periods.
+                # The SC=0 write itself may wait for the PREVIOUS cycle;
+                # this sequence is NOT an immediate physical off guarantee.
+                # SC=0 MUST precede fast SF: no intentional rate increase
                 # while the original current is still configured.
                 await send_live_current(
                     device, 0, capture=capture, source_sample_ns=sample_ns
                 )
                 muted_current = True
                 print("[SC ACK] SC1=0 accepted (no visible pulses in prior bench test; verify scope)")
-                if device.config["sf"] != 2:
+                if device.config["sf"] != ZERO_CURRENT_FAST_SF_HZ:
                     if capture is not None:
-                        capture.emit("sf_requested", frequency_hz=2,
+                        capture.emit("sf_requested", frequency_hz=ZERO_CURRENT_FAST_SF_HZ,
                                      source_sample_ns=sample_ns,
-                                     zero_current_workaround=True)
+                                     zero_current_workaround=True,
+                                     fast_zero_current_scheduler=True)
                     try:
-                        sf_record = await device.apply_live_frequency(2)
+                        sf_record = await device.apply_live_frequency(ZERO_CURRENT_FAST_SF_HZ)
                     except BaseException as exc:
                         if capture is not None:
                             capture.emit("sf_failed", frequency_hz=2,
@@ -290,9 +299,10 @@ async def frequency_worker(sm, device, ready, taxel, receptor, *, arm,
                         raise
                     if capture is not None:
                         capture.emit("sf_ack", frequency_hz=2, status=sf_record["status"],
-                                     evidence=sf_record, zero_current_workaround=True)
+                                     evidence=sf_record, zero_current_workaround=True,
+                                     fast_zero_current_scheduler=True)
                     if sf_record["status"] != "OK":
-                        raise RuntimeError("Zero-current SF=2 was not ACK-verified")
+                        raise RuntimeError("Zero-current fast SF=400 was not ACK-verified")
                 last_command = 0
             continue
         if stopped:
