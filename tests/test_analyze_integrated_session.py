@@ -83,6 +83,28 @@ class PerRecordScopeTests(unittest.TestCase):
             self.assertEqual(second["status"], "unqualified")
             self.assertIsNone(tentative_host_map(root, record_index=3))
 
+    def test_mcu_and_sf_ack_throughput_are_pc_native(self):
+        mcu = synthetic_mcu()
+        events = [
+            {"event": "sf_requested", "pc_monotonic_ns": 101_000_000_000},
+            {"event": "sf_ack", "status": "OK",
+             "frequency_hz": 100, "pc_monotonic_ns": 101_010_000_000},
+            {"event": "sf_requested", "pc_monotonic_ns": 101_020_000_000},
+            {"event": "sf_ack", "status": "OK",
+             "frequency_hz": 50, "pc_monotonic_ns": 101_030_000_000},
+            {"event": "sf_failed", "pc_monotonic_ns": 101_050_000_000},
+        ]
+        row = summarize_full_stream(mcu, events)
+        self.assertEqual(row["sf_ack_ok_count"], 2)
+        self.assertEqual(row["sf_requested_event_count"], 2)
+        self.assertEqual(row["sf_failed_event_count"], 1)
+        self.assertEqual(row["sf_ack_ok_distinct_frequencies_hz"], [50, 100])
+        self.assertAlmostEqual(row["sf_ack_ok_median_interack_ms"], 20)
+        self.assertEqual(row["ble_events"], len(events))
+        self.assertEqual(row["rate_snapshots"], 5)
+        self.assertIn("arrival_interval_p90_ms", row)
+        self.assertIn("sf_ack_matching_warning", row)
+
     def test_unmapped_overlaps_are_unknown_not_zero(self):
         mcu = synthetic_mcu()
         overlap = coverage_overlaps(None, mcu, [])
