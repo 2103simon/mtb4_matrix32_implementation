@@ -99,11 +99,33 @@ class PerRecordScopeTests(unittest.TestCase):
         self.assertEqual(row["sf_requested_event_count"], 2)
         self.assertEqual(row["sf_failed_event_count"], 1)
         self.assertEqual(row["sf_ack_ok_distinct_frequencies_hz"], [50, 100])
+        self.assertEqual(row["sf_ack_ok_active_frequencies_hz"], [50, 100])
+        self.assertEqual(row["sf_ack_ok_muted_fast_scheduler_count"], 0)
         self.assertAlmostEqual(row["sf_ack_ok_median_interack_ms"], 20)
         self.assertEqual(row["ble_events"], len(events))
         self.assertEqual(row["rate_snapshots"], 5)
         self.assertIn("arrival_interval_p90_ms", row)
         self.assertIn("sf_ack_matching_warning", row)
+
+    def test_muted_scheduler_sf400_ack_is_not_active_output_evidence(self):
+        mcu = synthetic_mcu()
+        events = [
+            {"event": "sc_ack", "current_command": 0, "status": "OK",
+             "pc_monotonic_ns": 101_000_000_000},
+            {"event": "sf_ack", "status": "OK", "frequency_hz": 400,
+             "zero_current_workaround": True,
+             "pc_monotonic_ns": 101_010_000_000},
+            {"event": "sf_ack", "status": "OK", "frequency_hz": 50,
+             "restoring_current": True,
+             "pc_monotonic_ns": 101_020_000_000},
+        ]
+        stat = summarize_full_stream(mcu, events)
+        self.assertEqual(stat["sf_ack_ok_count"], 2)
+        self.assertEqual(stat["sf_ack_ok_muted_fast_scheduler_count"], 1)
+        self.assertEqual(stat["sf_ack_ok_restore_while_zero_current_count"], 1)
+        self.assertEqual(stat["sf_ack_ok_active_frequency_count"], 0)
+        self.assertEqual(stat["sf_ack_ok_active_frequencies_hz"], [])
+        self.assertEqual(stat["sf_ack_ok_distinct_frequencies_hz"], [50, 400])
 
     def test_unmapped_overlaps_are_unknown_not_zero(self):
         mcu = synthetic_mcu()
