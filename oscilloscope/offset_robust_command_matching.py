@@ -184,7 +184,13 @@ def classify_interval(start_host_ns, end_host_ns, *, mcu_pc, mcu_rates,
             age_s = (end-mcu_pc[me])/1e9
             if np.any(age_s > mcu_max_age_s) or np.any(age_s < 0):
                 r["mcu_assessment"] = "MCU_SNAPSHOT_TOO_OLD"
-            elif len(set(np.r_[start_val, end_val].tolist())) != 1:
+            elif not np.all(mcu_rates[
+                    max(0, int(np.searchsorted(
+                        mcu_pc, np.min(start), side="right")-1)):
+                    int(np.searchsorted(mcu_pc, np.max(end),
+                                        side="right"))] == start_val[0]):
+                # Check the entire uncertainty envelope, not merely a
+                # few sampled endpoints: brief MCU commands may be skipped.
                 r["mcu_assessment"] = "MCU_FREQUENCY_CHANGES_WITHIN_OFFSET_RANGE"
             else:
                 hz = float(start_val[0])
@@ -196,8 +202,14 @@ def classify_interval(start_host_ns, end_host_ns, *, mcu_pc, mcu_rates,
         a1 = np.searchsorted(ack_pc, end, side="right")-1
         if np.any(a0 < 0) or np.any(a1 < 0):
             r["ack_assessment"] = "BEFORE_FIRST_ACK"
-        elif np.any(a0 != a1):
-            r["ack_assessment"] = "TRANSITION_DURING_INTERVAL"
+        elif np.any(a0 != a1) or (int(np.searchsorted(
+                ack_pc, np.min(start), side="right")-1) !=
+                int(np.searchsorted(ack_pc, np.max(end),
+                                    side="right")-1)):
+            # Require NO ACK event anywhere in the continuous uncertain
+            # interval, even if two endpoint scenarios happen to land in
+            # different states with identical effective frequency.
+            r["ack_assessment"] = "TRANSITION_WITHIN_OFFSET_ENVELOPE"
         else:
             # An extra command can change the frequency to the same number;
             # treat a transition as non-observable even in that case.
