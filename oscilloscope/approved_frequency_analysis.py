@@ -305,6 +305,74 @@ def plot_distribution(path, rows, summary):
     return str(path)
 
 
+def plot_ack_diagnostic(path, rows):
+    """Scatter of interval-derived physical Hz vs ACK Hz, diagnostics only."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(8, 7), layout="constrained")
+    statuses = (
+        ("COMPATIBLE_DIAGNOSTIC_ONLY", "Compatible under diagnostic tolerance"),
+        ("POTENTIALLY_INCONSISTENT_REVIEW", "Potentially inconsistent; review"),
+    )
+    compared = [
+        row for row in rows
+        if row["ack_expected_hz_provisional"] is not None
+        and row["ack_state_assessment"] in dict(statuses)
+    ]
+    for status, label in statuses:
+        group = [r for r in compared if r["ack_state_assessment"] == status]
+        if group:
+            ax.scatter([r["ack_expected_hz_provisional"] for r in group],
+                       [r["physical_inverse_period_hz"] for r in group],
+                       s=11, alpha=.65, label=f"{label} (n={len(group)})")
+    if compared:
+        maximum = max(
+            max(float(r["ack_expected_hz_provisional"]),
+                float(r["physical_inverse_period_hz"]))
+            for r in compared
+        )
+        ax.plot([0, maximum], [0, maximum], ls="--", color="black",
+                lw=1, label="Identity (only a visual reference)")
+        ax.legend(loc="upper left", fontsize=8)
+    else:
+        ax.text(.5, .5, "No diagnostically comparable intervals",
+                ha="center", va="center", transform=ax.transAxes)
+    ax.set(xlabel="ACK-indicated SF (Hz; provisional host-clock map)",
+           ylabel="Approved CH1 inverse period (Hz)",
+           title="Diagnostic ACK compatibility — NOT calibrated tracking accuracy")
+    ax.grid(alpha=.2)
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return str(path)
+
+
+def plot_pulse_activity(path, onsets, scope_start, scope_end):
+    """Per-second approved onset count; silent bins are only within capture."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    times = np.asarray([float(r["time_s"]) for r in onsets], dtype=float)
+    bin_size = 1.0
+    edges = np.arange(scope_start, scope_end + bin_size, bin_size)
+    if edges[-1] < scope_end:
+        edges = np.r_[edges, scope_end]
+    counts, _ = np.histogram(times, bins=edges)
+    fig, ax = plt.subplots(figsize=(15, 4), layout="constrained")
+    ax.bar(edges[:-1], counts, width=np.diff(edges), align="edge",
+           edgecolor="none")
+    ax.set(xlim=(scope_start, scope_end),
+           xlabel="Scope-local time (s)",
+           ylabel="Approved onsets per 1-s bin",
+           title="Observed CH1 pulse activity (only acquired windows)")
+    ax.grid(axis="y", alpha=.2)
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+    return str(path)
+
+
 def report_markdown(summary):
     period = summary["period_ms"]
     inv = summary["inverse_period_hz"]
@@ -332,7 +400,10 @@ def report_markdown(summary):
         "", "![Approved physical/requested/ACK tracking]"
         "(approved_frequency_tracking.png)", "",
         "![Approved interval frequency and period distributions]"
-        "(approved_frequency_distribution.png)", "",
+        "(approved_frequency_distribution.png)", "",        "![Per-second approved onset activity]"
+        "(approved_pulse_activity.png)", "",
+        "![Diagnostic ACK compatibility scatter; uncalibrated clocks]"
+        "(approved_ack_diagnostic.png)", "",
         "## Complete interval decisions (all approved periods retained)", "",
         "The machine-readable [approved_frequency_tracking.csv]"
         "(approved_frequency_tracking.csv) includes every interval, "
@@ -394,6 +465,9 @@ def analyze_approved_record(root, record, mcu, ack_states, mapping, taxel,
                 states, mcu, taxel, encoding, mapping, scope_start, scope_end)
     plot_distribution(output / "approved_frequency_distribution.png",
                       rows, summary)
+    plot_pulse_activity(output / "approved_pulse_activity.png",
+                        onsets, scope_start, scope_end)
+    plot_ack_diagnostic(output / "approved_ack_diagnostic.png", rows)
     atomic_json(output / "approved_frequency_summary.json", summary)
     (output / "approved_frequency_report.md").write_text(
         report_markdown(summary), encoding="utf-8")
