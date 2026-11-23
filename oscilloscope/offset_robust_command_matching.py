@@ -348,6 +348,24 @@ def analyze_record(*, root, record, epoch, cv, mcu, states,
     agreed = [r for r in result_rows if r.get("all_scenarios_agree")]
     report["ack_assessment_counts"] = dict(counts)
     report["mcu_assessment_counts"] = dict(mcounts)
+    ack_stable = [r for r in result_rows
+                  if r.get("ack_assessment") == "STABLE_ACROSS_TESTED_OFFSETS"]
+    mcu_stable = [r for r in result_rows
+                  if r.get("mcu_assessment") == "STABLE_ACROSS_TESTED_OFFSETS"]
+    report["ack_stable_median_absolute_frequency_difference_hz"] = (
+        float(np.median([abs(r["ack_error_hz_if_stable"]) for r in ack_stable]))
+        if ack_stable else None
+    )
+    report["mcu_stable_median_absolute_frequency_difference_hz"] = (
+        float(np.median([abs(r["mcu_error_hz_if_stable"]) for r in mcu_stable]))
+        if mcu_stable else None
+    )
+    report["ack_stable_p90_absolute_frequency_difference_hz"] = (
+        float(np.percentile([abs(r["ack_error_hz_if_stable"])
+                             for r in ack_stable], 90))
+        if ack_stable else None
+    )
+    report["measured_ack_comparison_is_exploratory_only"] = True
     report["both_stable_across_tested_offsets"] = len(agreed)
     report["both_stable_fraction_of_all_approved_intervals"] = (
         len(agreed)/len(result_rows) if result_rows else None)
@@ -398,6 +416,47 @@ def plot_tracking(path, rows, *, index):
         ax.grid(alpha=.2)
         if ax.get_legend_handles_labels()[0]:
             ax.legend(fontsize=8)
+    fig.savefig(path, dpi=145)
+    plt.close(fig)
+
+
+def plot_command_agreement(path, rows, *, index):
+    """Measured vs stable ACK-indicated frequency (not latency proof)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    good = [r for r in rows
+            if r.get("ack_assessment") == "STABLE_ACROSS_TESTED_OFFSETS"]
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5.5),
+                             layout="constrained")
+    if good:
+        t = [(r["start_scope_s"]+r["end_scope_s"])/2 for r in good]
+        m = [r["measured_inverse_period_hz"] for r in good]
+        ack = [r["ack_expected_hz_if_stable"] for r in good]
+        axes[0].scatter(t, m, s=10, alpha=.6,
+                        label="Physical approved onset intervals")
+        axes[0].scatter(t, ack, s=10, alpha=.5,
+                        label="ACK state stable across tested offsets")
+        axes[0].legend(fontsize=8)
+        axes[1].scatter(ack, m, s=11, alpha=.55)
+        hi = max(ack+m)
+        axes[1].plot([0, hi], [0, hi], ls="--", color="black",
+                     lw=1, label="Identity reference")
+        axes[1].legend(fontsize=8)
+    else:
+        for ax in axes:
+            ax.text(.5, .5, "No ACK intervals stable across tested offsets",
+                    ha="center", va="center", transform=ax.transAxes)
+    axes[0].set(xlabel="Scope-local time (s)", ylabel="Frequency (Hz)",
+                title="Stable ACK states vs measured physical frequency")
+    axes[1].set(xlabel="ACK-indicated SF (Hz)",
+                ylabel="Measured physical 1/period (Hz)",
+                title="Diagnostic command-versus-measurement scatter")
+    fig.suptitle(
+        f"Record {index}: approved CH1; explored timing offsets only",
+        fontsize=12)
+    for ax in axes:
+        ax.grid(alpha=.2)
     fig.savefig(path, dpi=145)
     plt.close(fig)
 
@@ -507,6 +566,8 @@ def run(root, *, extra_scale=1., block_s=2., taxel=None):
         folder = root/"analysis"/f"record_{idx:05d}"
         _csv(folder/"offset_robust_intervals.csv", rows, INTERVAL_COLUMNS)
         plot_tracking(folder/"offset_robust_tracking.png", rows, index=idx)
+        plot_command_agreement(folder/"offset_robust_command_agreement.png",
+                               rows, index=idx)
         print(f"[OFFSET {idx}] model={summary['clock_model']} "
               f"status={summary['clock_candidate_status']}; "
               f"stable both={summary.get('both_stable_across_tested_offsets', 0)} "
@@ -544,8 +605,9 @@ def run(root, *, extra_scale=1., block_s=2., taxel=None):
         "The source-locked approvals and clock maps are never changed.",
         "",
         "| Record | Approved intervals | Clock candidate | Status | "
-        "USB causal interval (ms) | MCU stable | ACK stable | Both stable |",
-        "| ---: | ---: | --- | --- | ---: | ---: | ---: | ---: |",
+        "USB causal interval (ms) | MCU stable | ACK stable | Both stable | "
+        "Median abs physical−ACK (Hz)* |",
+        "| ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for r in summaries:
         a = r.get("ack_assessment_counts", {})
@@ -556,9 +618,14 @@ def run(root, *, extra_scale=1., block_s=2., taxel=None):
             f"{(r.get('offset_scenarios') or {}).get('causal_interval_width_ms')} | "
             f"{m.get('STABLE_ACROSS_TESTED_OFFSETS', 0)} | "
             f"{a.get('STABLE_ACROSS_TESTED_OFFSETS', 0)} | "
-            f"{r.get('both_stable_across_tested_offsets', 0)} |"
+            f"{r.get('both_stable_across_tested_offsets', 0)} | "
+            f"{r.get('ack_stable_median_absolute_frequency_difference_hz')} |"
         )
     md += [
+        "", "*The median absolute difference uses only the subset "
+        "with stable ACK associations across tested offsets and is "
+        "exploratory; it is not full-dataset accuracy or physical SF "
+        "application proof.",
         "", "## Record 4: location of long-block fit errors", "",
         "The [per-block CSV](record_00004/record4_clock_block_errors.csv) "
         "exposes every withheld region's RMS, p95 absolute error and bias.",
@@ -582,6 +649,8 @@ def run(root, *, extra_scale=1., block_s=2., taxel=None):
             f"(record_{idx:05d}/offset_robust_intervals.csv)", "",
             f"![Record {idx} physically measured and offset-stable ACK intervals]"
             f"(record_{idx:05d}/offset_robust_tracking.png)", "",
+            f"![Record {idx} comparison of stable ACK states with approved frequencies]"
+            f"(record_{idx:05d}/offset_robust_command_agreement.png)", "",
         ]
     md += [
         "## Interpretation", "",
