@@ -5,7 +5,7 @@ are additionally required to send Matrix32 START/SF/SC commands.
 Use only with the operator-verified CH1 resistive dummy-load bench, never a person.
 Scope CH1 = physical Matrix32 dummy-load voltage (operator wiring),
 CH2 = Nano Every D7 Gray reference + rising-edge trigger at 1 V.
-Each scope record = 2 s/div, 1M samples, 0% pretrigger; distinct acquisitions with gaps.
+Default scope record = 2 s/div, 1M samples, 0% pretrigger; distinct acquisitions with gaps.
 No stimulation is initiated without an active, fresh MCU sample.
 """
 from __future__ import annotations
@@ -74,10 +74,10 @@ def plan(args, p):
         p.error("Invalid --label")
     if not 1 <= args.count <= 12:
         p.error("--count must be 1..12")
-    if not 100 <= args.points <= 20000000:
-        p.error("--points must be 100..20000000")
-    if not (math.isfinite(args.time_div_us) and 20000 <= args.time_div_us <= 3000000):
-        p.error("--time-div-us must be 20000..3000000")
+    if args.points not in (1000, 10000, 100000, 1000000, 5000000, 10000000, 20000000):
+        p.error("--points must be a supported scope selection: 1000, 10K, 100K, 1M, 5M, 10M, 20M")
+    if not (math.isfinite(args.time_div_us) and 20000 <= args.time_div_us <= 6000000):
+        p.error("--time-div-us must be 20000..6000000")
     if not (math.isfinite(args.ch1_v_div) and 0.001 <= args.ch1_v_div <= 100):
         p.error("--ch1-v-div must be 0.001..100")
     if not (math.isfinite(args.trigger_position_pct)
