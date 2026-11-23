@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from analysis_primitives.negative_events import (
-    NEGATIVE_EVENT_DETECTOR_VERSION, estimate_threshold
+    NEGATIVE_EVENT_DETECTOR_VERSION
 )
 from oscilloscope.review_pulse_detection import detect_review
 
@@ -25,12 +25,7 @@ class PulseReviewTests(unittest.TestCase):
             "negative_events.py": "6474302ac471201f9ad3c96f787d401578f9d4ff",
             "record_start_rejection.py": "75e5ea2df74ebd6bd69469fd2773f23796e73a76",
             "suppressed_crossing_association.py": "23a3b775e3987dfd95206e0b9b810dd18e770468",
-            "period_classification.py": "a0924511e1456db963c74de72e7e374a6edb596e", 
         }
-        # period_classification has its own source blob (not baseline's).
-        source_blobs["period_classification.py"] = (
-            "a0924511e1456db963c74de72e7e374a6edb596e"
-        )
         # GitHub reports a content SHA for every source. Strict pins on the
         # four detection-relevant files prevent silent changes to rules.
         for filename in (
@@ -39,7 +34,7 @@ class PulseReviewTests(unittest.TestCase):
         ):
             with self.subTest(filename=filename):
                 data = (ROOT / "analysis_primitives" / filename).read_bytes()
-                blob = b"blob " + str(len(data)).encode() + b"\\0" + data
+                blob = b"blob " + str(len(data)).encode() + b"\0" + data
                 self.assertEqual(hashlib.sha1(blob).hexdigest(),
                                  source_blobs[filename])
 
