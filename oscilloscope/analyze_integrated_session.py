@@ -547,16 +547,60 @@ def analyze_session(root, meta, *, threshold_v=2, deadtime_ms=1,
     output.mkdir(exist_ok=True)
     full_plot = output / "mcu_full_stream.png"
     plot_traces(mcu, full_plot, selected_taxel=taxel, x_axis="pc")
+    from oscilloscope.approved_frequency_analysis import (
+        analyze_approved_record, plot_session_summary, session_report,
+    )
     reports = []
+    approved_summaries = []
     for rec in records:
-        reports.append(analyze_one(
+        report = analyze_one(
             root, rec, mcu, events, ack_states,
             threshold_v=threshold_v, deadtime_ms=deadtime_ms, taxel=taxel,
             zoom_start=zoom_start, zoom_sec=zoom_sec,
             window_s=frequency_window_s, step_s=frequency_step_s,
             tolerance_hz=frequency_tolerance_hz,
             tolerance_fraction=frequency_tolerance_fraction,
-        ))
+        )
+        # Source-locked operator-approved negative onsets are the PRIMARY
+        # physical frequency evidence. Keep positive-edge estimates only as
+        # a separately labeled historical diagnostic for comparison.
+        index = int(rec["index"])
+        approval_path = (root / "analysis" / f"record_{index:05d}"
+                         / "pulse_review" / "review_approval.json")
+        if approval_path.exists():
+            selected_taxel = int(report["mcu"]["taxel"])
+            encoding = report["mcu"]["encoding"]
+            summary = analyze_approved_record(
+                root, rec, mcu, ack_states, report["clock_mapping"],
+                selected_taxel, encoding,
+                report["scope"]["scope_time_start_s"],
+                report["scope"]["scope_time_end_s"],
+            )
+            report["approved_frequency"] = summary
+            approved_summaries.append(summary)
+            atomic_json(root / "analysis" / f"record_{index:05d}"
+                        / "summary.json", report)
+            file = root / "analysis" / f"record_{index:05d}" / "report.md"
+            legacy = file.read_text(encoding="utf-8")
+            file.write_text(
+                f"# Record {index}: physical frequency from approved negative onsets\n\n"
+                f"**Primary approved analysis:** "
+                f"[Full metrics, provisional MCU/ACK plots and intervals]"
+                f"(approved_frequency_report.md). "
+                f"**{summary['onset_count']} approved onsets; "
+                f"{summary['interval_count']} approved intervals.**\n\n"
+                f"Below is the *legacy exploratory positive-edge analysis*, "
+                f"not a substitute for approved negative onset evidence.\n\n"
+                + legacy, encoding="utf-8")
+            print(f"[APPROVED {index}] {summary['onset_count']} verified "
+                  f"negative onsets / {summary['interval_count']} intervals; "
+                  f"median inverse period "
+                  f"{summary['inverse_period_hz']['median']} Hz "
+                  "(MCU/ACK comparison provisional)")
+        reports.append(report)
+    if approved_summaries:
+        plot_session_summary(output / "approved_session_overview.png",
+                             approved_summaries)
     gaps = describe_gaps(reports)
     session = {
         "schema_version": 2,
@@ -568,6 +612,15 @@ def analyze_session(root, meta, *, threshold_v=2, deadtime_ms=1,
         "total_scope_positive_events": sum(
             r["scope"]["pulse_detection"]["positive_rising_events"]
             for r in reports),
+        "physical_pulse_source": (
+            "OPERATOR_APPROVED_S02_NEGATIVE_ONSETS" if approved_summaries
+            else "NO_APPROVED_NEGATIVE_ONSETS"),
+        "approved_negative_onset_record_count": len(approved_summaries),
+        "approved_negative_onset_count": sum(
+            r["onset_count"] for r in approved_summaries),
+        "approved_within_record_interval_count": sum(
+            r["interval_count"] for r in approved_summaries),
+        "approved_frequency_records": approved_summaries,
         "mcu_full_stream": summarize_full_stream(mcu, events),
         "records": [
             {"record_index": r["record_index"], "scope": r["scope"],
@@ -614,6 +667,13 @@ def analyze_session(root, meta, *, threshold_v=2, deadtime_ms=1,
     }
     atomic_json(output / "integrated_summary.json", session)
     report = session_markdown(root, session)
+    if approved_summaries:
+        original = Path(report).read_text(encoding="utf-8")
+        Path(report).write_text(
+            f"# Integrated Matrix32 session: {session['run_id']}\n\n"
+            + session_report(approved_summaries, len(records))
+            + "\n---\n\n## Legacy positive-edge exploratory diagnostics\n\n"
+            + original, encoding="utf-8")
     print(f"[SESSION] {len(reports)} independent scope record(s); "
           f"{session['total_observed_scope_s']:.3f}s observed total; "
           f"{len(gaps)} explicit inter-record gap(s)")
