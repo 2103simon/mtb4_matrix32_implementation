@@ -181,15 +181,13 @@ CH1 pulse observations must be checked rather than inferred from the
 capture status.
 
 ```bash
-# First inspect the plan; no hardware touched.
-python oscilloscope/record_integrated_matrix32.py --points 5000000 --time-div-us 2000000 --count 6 --capture-before-start --run --arm --dummy-load-confirmed
+# Dry-run plan, NO hardware or Matrix32 output:
+python oscilloscope/record_integrated_matrix32.py --points 5000000 --time-div-us 2000000 --count 6
 ```
 
-The command shown above includes live arming flags and must only be executed
-on the operator-approved resistor dummy-load rig with an independent physical
-disconnect. A genuinely dry-run plan omits `--run --arm --dummy-load-confirmed`
-and therefore also omits `--capture-before-start`. The option is not a
-substitute for hardware verification of SC=0/SF=400 at startup.
+For an operator-approved live bench run, `--capture-before-start` additionally
+requires `--run --arm --dummy-load-confirmed` and a physical disconnect.
+It is not a substitute for hardware verification of SC=0/SF=400 at startup.
 
 ### Experimental pulse review before frequency attribution
 
