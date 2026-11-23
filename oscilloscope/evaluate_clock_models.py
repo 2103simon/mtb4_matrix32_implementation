@@ -181,6 +181,8 @@ def assess_models(x, y, *, block_s=1., gate_us=100.):
             and fits[name]["clock_rate_stability"]["monotonic"]
             and fits[name]["clock_rate_stability"][
                 "max_local_slope_deviation_from_median_ppm"] < 250
+            and fits[name]["holdout"]["rms_us"] is not None
+            and fits[name]["holdout_2x"]["rms_us"] is not None
             and fits[name]["holdout"]["rms_us"] < gate_us
             and fits[name]["holdout_2x"]["rms_us"] < gate_us
             and (baseline is None or
@@ -224,7 +226,7 @@ def plot_model_evaluation(path, x, y, evaluation, cv_points, *, index):
                         label=f"{name} full-fit residual")
     axs[0].axhline(100, color="tab:red", ls="--", alpha=.5)
     axs[0].axhline(-100, color="tab:red", ls="--", alpha=.5)
-    axs[0].set(ylabel="Nano minus fitted? prediction - observation (µs)",
+    axs[0].set(ylabel="Predicted Nano time - observed Nano time (µs)",
                title=f"Record {index}: all-frame fit (training data only)")
     for name in MODEL_NAMES:
         rows = [r for r in cv_points if r["model"] == name]
