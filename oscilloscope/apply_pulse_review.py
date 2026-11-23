@@ -63,6 +63,30 @@ def verified_approval(output):
         return None
 
 
+
+def load_approved_onsets(output, source_ch1):
+    """Fail closed when human source-lock evidence is missing or stale.
+
+    Each returned row is a human-confirmed physical voltage onset within ONE
+    scope record, never an instantaneous ACK-to-device-apply time.
+    """
+    output = Path(output)
+    approval = verified_approval(output)
+    if approval is None:
+        raise ValueError("No valid source-locked pulse review approval")
+    if sha256(source_ch1) != approval["source_ch1_sha256"]:
+        raise ValueError("Original CH1 waveform differs from approved waveform")
+    onsets = csv_rows(output / "approved_onsets.csv")
+    if len(onsets) != approval["included_onsets"]:
+        raise ValueError("Approved onset inventory count mismatch")
+    if any(x["review_decision"] != "INCLUDE" for x in onsets):
+        raise ValueError("Unexpected status in validated onset inventory")
+    times = [float(x["time_s"]) for x in onsets]
+    if any(right <= left for left, right in zip(times, times[1:])):
+        raise ValueError("Approved pulse timeline is not strictly increasing")
+    return approval, onsets
+
+
 def apply(output, source_ch1, *, reviewer, confirm_accepted, confirm_complete):
     output, source_ch1 = Path(output), Path(source_ch1)
     reviewer = str(reviewer).strip()
