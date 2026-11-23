@@ -166,7 +166,14 @@ def assess_models(x, y, *, block_s=1., gate_us=100.):
             "clock_rate_stability": stability,
         }
     baseline = fits["affine"]["holdout"]["rms_us"]
+    affine_double = fits["affine"]["holdout_2x"]["rms_us"]
+    affine_adequate = (
+        baseline is not None and affine_double is not None
+        and baseline < gate_us and affine_double < gate_us
+        and fits["affine"]["clock_rate_stability"]["monotonic"]
+    )
     # Predeclared conservative exploratory screen, NOT original qualification.
+    # A satisfactory affine model needs no nonlinear replacement.
     viable = [
         name for name in MODEL_NAMES
         if (fits[name]["holdout"]["n"] >= 20
@@ -182,20 +189,25 @@ def assess_models(x, y, *, block_s=1., gate_us=100.):
     best = (min(viable, key=lambda name:
                 max(fits[name]["holdout"]["rms_us"],
                     fits[name]["holdout_2x"]["rms_us"]))
-            if viable else None)
+            if viable and not affine_adequate else None)
+    if affine_adequate:
+        conclusion = "Affinely modeled Gray time passes both blocked holdouts; a nonlinear replacement is not justified."
+    elif best:
+        conclusion = ("A nonlinear candidate improves blocked predictions; "
+                      "independent frame/GPIO timing verification is still needed.")
+    else:
+        conclusion = ("No model passes both blocked holdouts; test Nano GPIO "
+                      "timestamp fidelity, scope CH2 capture and clock drift.")
     return {
         "models": fits,
         "cv_fold_count": folds, "cv_double_block_fold_count": longer_folds,
         "selection_is_exploratory_only": True,
         "candidate_for_independent_validation": best,
+        "affine_predictive_model_adequate": bool(affine_adequate),
+        "diagnostic_conclusion": conclusion,
         "can_replace_official_clock_mapping": False,
         "same_cv_used_for_selection": True,
-        "recommendation": (
-            "Candidate identified: validate with independent reference "
-            "events and propagate Nano/PC offset uncertainty before use"
-            if best else
-            "No model satisfied both withheld-block screens; inspect "
-            "firmware/Gray edge timestamping and residuals before re-recording"),
+        "recommendation": conclusion,
     }, points
 
 
@@ -330,7 +342,7 @@ def run(run_dir, *, block_s=1., gate_us=100.):
         lines.append(
             f"| {r['record_index']} | {r['original_clock_status']} | "
             f"{r['original_gray_edge_rms_us']} | {affine} | "
-            f"{model or 'none'} | "
+            f"{model or ('affine retained' if r.get('affine_predictive_model_adequate') else 'none')} | "
             f"{selected.get('holdout', {}).get('rms_us')} | "
             f"{selected.get('holdout_2x', {}).get('rms_us')} | "
             f"{r['usb_causal_offset_feasible']} |"
@@ -362,6 +374,7 @@ def run(run_dir, *, block_s=1., gate_us=100.):
         if r["frame_reconstruction_issue"]:
             lines.append(f"**Input problem:** {r['frame_reconstruction_issue']}")
         else:
+            lines.append(f"**Assessment:** {r['diagnostic_conclusion']}")
             for name in MODEL_NAMES:
                 model = r["models"][name]
                 lines.append(
