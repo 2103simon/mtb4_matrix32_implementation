@@ -276,8 +276,11 @@ async def frequency_worker(sm, device, ready, taxel, receptor, *, arm,
                 # is ACKed, set SF=400 to shorten future scheduling periods.
                 # The SC=0 write itself may wait for the PREVIOUS cycle;
                 # this sequence is NOT an immediate physical off guarantee.
-                # SC=0 MUST precede fast SF: no intentional rate increase
-                # while the original current is still configured.
+                # Write SC=0 BEFORE fast SF400 to reduce the risk of a
+                # rate increase at the original current setting. However,
+                # BLE ACK ordering does NOT prove physical application
+                # ordering or that current is already zero at the output.
+                # Operate only with verified resistor load and safe probing.
                 await send_live_current(
                     device, 0, capture=capture, source_sample_ns=sample_ns
                 )
