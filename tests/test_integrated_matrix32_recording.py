@@ -173,9 +173,27 @@ class IntegratedBenchTests(unittest.TestCase):
         self.assertLess(commands.index("HORizontal:RECOrdlength 1000000"),
                         commands.index("HORizontal:POSition 0"))
 
+    def test_supported_scope_memory_depths_and_longer_capture_plans(self):
+        for points in (1000, 10000, 100000, 1000000, 5000000, 10000000, 20000000):
+            with self.subTest(points=points):
+                p = parser()
+                data = plan(p.parse_args(["--points", str(points)]), p)
+                self.assertEqual(data["points"], points)
+        for points, us, seconds in (
+                (5000000, 3000000, 30),
+                (20000000, 6000000, 60)):
+            with self.subTest(seconds=seconds):
+                p = parser()
+                data = plan(p.parse_args([
+                    "--points", str(points), "--time-div-us", str(us)
+                ]), p)
+                self.assertEqual(data["nominal_window_s"], seconds)
+
     def test_invalid_limits(self):
         p = parser()
-        for args in (["--points", "1"], ["--sync-count", "2"],
+        for args in (["--points", "1"], ["--points", "123456"],
+                     ["--points", "20000001"], ["--time-div-us", "7000000"],
+                     ["--sync-count", "2"],
                      ["--trigger-position-pct", "1000"],
                      ["--ch1-v-div", "nan"], ["--stale-ms", "2"],
                      ["--acquire-timeout", "nan"]):
