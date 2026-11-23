@@ -138,6 +138,15 @@ def _diagnostic_rejections(t, v, result):
         neighbors = [accepted[i+1]-accepted[i] for i in
                      range(max(0, a-4), min(len(accepted)-1, a+3))]
         typical = float(np.median(neighbors)) if neighbors else .01
+        quiet_band = 1.5 * max(
+            1., 6.*float(threshold.get("noise_sigma_v", 0.)),
+            .25*float(threshold.get("threshold_drop_v", 0.)),
+        )
+        j, preceding_quiet = index - 1, 0
+        while j >= 0 and abs(v[j] - baseline) <= quiet_band:
+            preceding_quiet += 1
+            j -= 1
+        sample_dt_us = float(np.median(np.diff(t[:min(1001, len(t))])) * 1e6)
         rows.append({
             "id": event_id,
             "sample_index": index, "time_s": center,
@@ -147,7 +156,7 @@ def _diagnostic_rejections(t, v, result):
                                if trough < baseline - max(12., 1.5*drop)
                                and peak > baseline + max(8., drop)
                                else "SECONDARY_OR_WEAK_CROSSING_REVIEW"),
-            "quiet_before_us": 0.0, "negative_min_v": trough,
+            "quiet_before_us": preceding_quiet * sample_dt_us, "negative_min_v": trough,
             "positive_max_v": peak, "expected_slot_s": None,
             "delta_to_expected_us": None,
             "figure": None,
@@ -158,8 +167,6 @@ def _diagnostic_rejections(t, v, result):
             f"figures/rejected/{row['id']}_t"
             f"{row['time_s'] * 1e3:010.4f}ms.png"
         )
-        # The upstream source plot title formats quiet_before_us as float.
-        row["quiet_before_us"] = 0.0
     return rows
 
 
@@ -222,6 +229,34 @@ def plot_report(output, t, volts, result):
             fig.savefig(figures / "waveform_event_detail.png", dpi=160)
             plt.close(fig)
             shown.append("waveform_event_detail.png")
+
+    # S01-style unmodified raw waveforms for EVERY relaxed-quiet accepted
+    # onset, not only for rejected/suppressed crosses.
+    for pulse in result["accepted_pulses"]:
+        if pulse["status"] != "RELAXED_QUIET_REVIEW":
+            continue
+        center = float(pulse["time_s"])
+        a = int(np.searchsorted(t, center-.00045))
+        b = int(np.searchsorted(t, center+.00065))
+        if b-a < 3:
+            continue
+        accepted_dir = figures / "flagged_accepted"
+        accepted_dir.mkdir(parents=True, exist_ok=True)
+        fig, ax = plt.subplots(figsize=(11, 4))
+        plot_traces(ax, [{
+            "time_us": (t[a:b]*1e3).tolist(),
+            "values": volts[a:b].tolist(),
+            "color": "C0", "label": "original CH1 samples",
+        }], xlim=(float(t[a])*1e3, float(t[b-1])*1e3),
+            xlabel="Scope-local time (ms)", ylabel="CH1 voltage (V)",
+            title=f"{pulse['id']}: relaxed-quiet candidate requires review")
+        ax.axvline(center*1e3, ls="--", label="candidate onset")
+        ax.legend()
+        fig.tight_layout()
+        name = f"flagged_accepted/{pulse['id']}_raw.png"
+        fig.savefig(figures / name, dpi=160)
+        plt.close(fig)
+        shown.append(name)
 
     rejections = _diagnostic_rejections(times, values, result)
     if rejections:
@@ -310,7 +345,7 @@ def report_markdown(result, output, manifest, figures):
     for picture in figures:
         if picture == "waveform_full.png" or picture == "waveform_event_detail.png":
             lines += [f"![{picture}](figures/{picture})", ""]
-    flagged = [p for p in figures if p.startswith("figures/rejected/")]
+    flagged = [p for p in figures if p.startswith("figures/rejected/")]\n    relaxed_figures = [p for p in figures if p.startswith("flagged_accepted/")]
     if flagged:
         lines += [
             f"All {len(flagged)} rejected/suppressed crossings have individual "
@@ -318,6 +353,9 @@ def report_markdown(result, output, manifest, figures):
             "",
         ]
         lines.extend(f"- [{p.split('/')[-1]}]({p})" for p in flagged)
+    if relaxed_figures:
+        lines += ["", "### Relaxed-quiet accepted-onset review figures", ""]
+        lines.extend(f"- [{p}](figures/{p})" for p in relaxed_figures)
     lines += [
         "", "## 5. Operator review and downstream pulse timeline", "",
         "Review every candidate and **especially** every rejected/suppressed "
