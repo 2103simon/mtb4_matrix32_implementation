@@ -371,6 +371,12 @@ Additional per-record outputs, automatically regenerated under
   interpretation and limitations.
 - `approved_frequency_tracking.png` — three aligned panels: approved CH1
   inverse periods, selected MCU requested rate, and ACK-indicated SF.
+- `approved_commanded_vs_measured.png` — a single trial-level frequency-axis
+  overlay of approved physical inverse periods, MCU requested rate, and ACK
+  state; every host curve is marked provisional. The report includes the
+  eligible and excluded interval counts and median absolute diagnostic
+  differences against requested rate and ACK-indicated SF. For an
+  `unqualified` clock these are illustrative, not validated errors.
 - `approved_frequency_distribution.png` — approved-period and inverse-
   frequency histograms.
 - `approved_pulse_activity.png` — approved pulse-onset counts per 1-second
