@@ -293,12 +293,12 @@ async def frequency_worker(sm, device, ready, taxel, receptor, *, arm,
                         sf_record = await device.apply_live_frequency(ZERO_CURRENT_FAST_SF_HZ)
                     except BaseException as exc:
                         if capture is not None:
-                            capture.emit("sf_failed", frequency_hz=2,
+                            capture.emit("sf_failed", frequency_hz=ZERO_CURRENT_FAST_SF_HZ,
                                          error=repr(exc),
                                          evidence=getattr(exc, "record", None))
                         raise
                     if capture is not None:
-                        capture.emit("sf_ack", frequency_hz=2, status=sf_record["status"],
+                        capture.emit("sf_ack", frequency_hz=ZERO_CURRENT_FAST_SF_HZ, status=sf_record["status"],
                                      evidence=sf_record, zero_current_workaround=True,
                                      fast_zero_current_scheduler=True)
                     if sf_record["status"] != "OK":
