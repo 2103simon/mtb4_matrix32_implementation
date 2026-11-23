@@ -279,7 +279,7 @@ def analyze_record(root, record):
     except ImportError as exc:
         result["plot_warning"] = f"Plot dependency missing: {exc}"
         figures = []
-    report_markdown(result, output, manifest, figures)
+    report_markdown(result, output, manifest, figures, root=root, record=record)
     print(f"[PULSE REPORT {idx}] {output / 'report.md'}", flush=True)
     return result
 
