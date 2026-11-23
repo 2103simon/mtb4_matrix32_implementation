@@ -174,6 +174,28 @@ def analyze_record(root, record):
             "rejected": [], "suppressed": [],
             "flags": ["DETECTOR_UNQUALIFIED"],
         }
+    # Preserve S06's near-ADC-rail detector-review gate on the original
+    # raw Tektronix codes, separately from calibrated voltage extrema.
+    with path.open(newline="", encoding="utf-8") as stream:
+        reader = csv.DictReader(stream)
+        if "raw" in (reader.fieldnames or []):
+            rail_count = sum(
+                abs(float(row["raw"])) >= 32766
+                for row in reader if row.get("raw") not in (None, "")
+            )
+        else:
+            rail_count = None
+    result["near_storage_rail_count"] = rail_count
+    if rail_count is None:
+        result["flags"].append("RAW_ADC_CODES_MISSING_CANNOT_CHECK_RAIL")
+    elif rail_count:
+        result["flags"].append("NEAR_STORAGE_RAIL_REVIEW")
+    result["interior_rejected_count"] = (
+        len(result["rejected"])-len(result.get("boundary_rejected", []))
+    )
+    result["record_start_boundary_rejected_count"] = len(
+        result.get("boundary_rejected", [])
+    )
     result["record_index"] = idx
     result["source_ch1"] = str(record["channels"]["CH1"]["path"])
     result["sampling_points"] = int(len(t))
