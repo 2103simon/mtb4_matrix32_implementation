@@ -1,6 +1,6 @@
 # Integrated Matrix32 + Feather M4 + Nano + Tektronix oscilloscope recording
 
-This is the **current standard** for CH1-only, dummy-load integrated measurements. One run gathers Feather MCU telemetry, live BLE Matrix32 command/ACK history, Arduino Nano Every Gray reference, and a simultaneous **20-second scope CH1+CH2** acquisition. All results are recorded for later independent per-record analysis.
+This is the **current standard** for CH1-only, dummy-load integrated measurements. One run gathers continuous Feather MCU telemetry, live BLE Matrix32 command/ACK history, and Arduino Nano Every Gray reference while acquiring **N independent, finite 20-second scope CH1+CH2 records** (`--count N`, default 1). Scope USB transfers introduce genuine unobserved gaps. All results are recorded for later independent per-record analysis.
 
 [Project README](../README.md) · [Electrical CH1 setup](electrical_bench_setup.md) · [Clock mapping](clock_mapping_and_time_domains.md) · [Oscilloscope scripts](../oscilloscope/README.md)
 
@@ -48,25 +48,25 @@ timeout --signal=INT --kill-after=20s 180s \
   --run --arm --dummy-load-confirmed
 ```
 
-The `--arm` option requires **both** `--run` and `--dummy-load-confirmed`. The external `timeout` is a process watchdog for potentially blocking USBTMC calls, **not** an electrical shutdown guarantee. Verify CH1 physically off and use a physical disconnect if required.
+For approximately **2 minutes of observed scope data**, add `--count 6`; for approximately **3 minutes**, add `--count 9`. These capture 6/9 **separate 20-second segments**, not a gap-free 2–3-minute waveform. The wall-clock experiment is longer due to USB transfers and clock synchronization. For nine records, increase the **external watchdog** accordingly (e.g. `900s` instead of `180s`) but never rely on it as an electrical shutdown interlock.\n\nThe `--arm` option requires **both** `--run` and `--dummy-load-confirmed`. The external `timeout` is a process watchdog for potentially blocking USBTMC calls, **not** an electrical shutdown guarantee. Verify CH1 physically off and use a physical disconnect if required.
 
 ## Actual acquisition order
 
 1. Open Nano Every USB session; issue `START` for 10 Hz Gray D7 output.
 2. Configure and verify scope CH1+CH2, CH2 rising +1 V trigger, 0% left-edge position and delay OFF. **Keep scope stopped**.
 3. Launch the existing [`run_tactile_stimulation.py`](../run_tactile_stimulation.py) controller subprocess. Wait for both Feather MCU encoding parameter ACKs; in armed mode additionally wait for **Matrix32 START completion** based on a fresh nonzero tactile rate. Default startup readiness timeout is **45 s** (`--controller-ready-timeout`: 5–120 s).
-4. Obtain **30 binary CRC32 Nano SYNC exchanges** after controller readiness.
-5. Arm the oscilloscope, then acquire a **single finite 20 s**, 1,000,000-point CH1+CH2 record while the controller continues to process the latest tactile inputs and ACK-verified live SF updates.
-6. Obtain 30 post-recording SYNC exchanges. Request the controller's graceful shutdown and best-effort Matrix32 STOP before USB waveform transfer.
-7. Download and validate both channels, preserve raw Nano logs, MCU recordings and Matrix32 BLE trace, write experiment metadata and offline clock diagnostics.
+4. For **each** record, obtain **30 binary CRC32 Nano SYNC exchanges** before arming.
+5. Arm the oscilloscope for **one finite 20 s**, 1,000,000-point CH1+CH2 acquisition while the same controller continues to process tactile inputs and live SF updates.
+6. Obtain 30 post-recording SYNC exchanges, then **download and verify the frozen CH1+CH2 waveforms without stopping the controller**. The scope is not acquiring during this transfer; the Matrix32 may still be outputting into the resistor load.
+7. Repeat steps 4–6 with a fresh, independently numbered record. **After the final record**, request controller shutdown and best-effort Matrix32 STOP. Preserve all source waveforms, Nano SYNC epochs, continuous MCU/BLE data and acquisition metadata.
 
-Only **one oscilloscope record** is acquired by the current integrated runner invocation. The offline analyzer can handle multiple CH1+CH2 entries within a future integrated session **without combining time axes**. A Nano-triggered capture is **not** triggered by a physical Matrix32 CH1 pulse.
+The integrated runner performs `--count N` **independent scope acquisitions** (1–12) under one MCU/Matrix32 controller session. Each record has its own pre/post SYNC epoch and waveform files. Scope samples **do not exist** during inter-record downloads, so those gaps must never be presented as continuous coverage. A Nano-triggered capture is **not** triggered by a physical Matrix32 CH1 pulse.
 
 A printed `[START] Matrix32 CH1` means the command returned through the software protocol; it is **not electrical proof** that pulses were present. A `[SHUTDOWN] Matrix32 STOP sent.` likewise is **not proof** that the output is electrically off. The MCU's independent **250 ms stale-input supervisor** attempts to stop output if fresh tactile samples stop arriving.
 
 ## Recording directory and provenance
 
-Every integrated run has its own `data/recordings/<UTC>_integrated_matrix32_scope/` directory:
+Every integrated run has its own `data/recordings/<UTC>_integrated_matrix32_scope/` directory; for `--count N`, add `record_00002_ch1.csv`, `record_00002_ch2.csv`, etc., and a distinct `metadata.json.records[index].clock_epoch` for every capture:
 
 ```text
 <run>/
@@ -97,7 +97,7 @@ Every integrated run has its own `data/recordings/<UTC>_integrated_matrix32_scop
       matrix32_dynamic_tracking.png
 ```
 
-The scope, Nano, MCU and BLE measurements have **different native time domains**. Do not concatenate individual scope records or label time outside a measured 20 s window as observed output. The full MCU/Matrix32 log is preserved once, even though it starts before and may end after scope acquisition.
+The scope, Nano, MCU and BLE measurements have **different native time domains**. The controller remains active across recorded acquisition gaps, so physical output can occur while the scope is **not acquiring**; the Python runner cannot infer those missing pulses. Do not concatenate individual scope records or label time outside a measured 20 s window as observed output. The full MCU/Matrix32 log is preserved once, even though it starts before and may end after scope acquisition.
 
 ## Offline analysis and human-readable report
 
