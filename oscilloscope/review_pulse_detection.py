@@ -44,6 +44,25 @@ MIN_EVENT_SEPARATION_S = 0.30 * SHORTEST_SUPPORTED_PERIOD_S
 RECORD_START_REJECT_WINDOW_S = 0.001
 
 
+def json_safe(value):
+    """Convert NumPy scalar containers to ordinary JSON types, recursively.
+
+    The source-locked S02 detector deliberately returns some numpy.bool_
+    and numpy numeric values when called with NumPy waveform arrays.
+    Preserve those values and detector logic; normalize only at the report
+    serialization boundary.
+    """
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return [json_safe(item) for item in value.tolist()]
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    return value
+
+
 def write_csv(path, rows, fields):
     path = Path(path)
     with path.open("w", newline="", encoding="utf-8") as stream:
@@ -236,7 +255,7 @@ def analyze_record(root, record):
     result["sampling_points"] = int(len(t))
     result["capture_start_s"] = float(t[0])
     result["capture_end_s"] = float(t[-1])
-    atomic_json(output / "audit.json", {
+    atomic_json(output / "audit.json", json_safe({
         k: v for k, v in result.items()
         if k not in ("accepted_pulses", "periods", "rejected",
                      "suppressed", "suppressed_associated",
@@ -253,7 +272,7 @@ def analyze_record(root, record):
         "threshold_specific_onset_review_count": len(
             result.get("threshold_sensitivity_unmatched_events", [])
         ),
-    })
+    }))
     write_csv(output / "accepted_onsets.csv", result["accepted_pulses"],
               ("id", "time_s", "voltage_v", "sample_index", "status"))
     write_csv(output / "periods_unverified.csv", result["periods"],
@@ -270,6 +289,9 @@ def analyze_record(root, record):
                "voltage_v", "status"))
     # Reuse S01/S02 plotting code and create a source-locked human review.
     # Existing edited review files are never overwritten silently.
+    # Normalize NumPy scalars also for the later report metrics JSON and
+    # reviewer context, not only the initial audit.json write.
+    result = json_safe(result)
     from oscilloscope.pulse_review_workflow import (
         make_scaffold, plot_report, report_markdown,
     )
