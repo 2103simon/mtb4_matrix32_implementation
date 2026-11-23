@@ -62,10 +62,11 @@ quiet, **150 us** phase deadtime and **0.75 ms** minimum separation
 (30% of the shortest 2.5 ms period at 400 Hz), matching the original
 parameter *policy* but adapted to a variable 2–400-Hz range.
 
-The legacy integrated report's **positive-edge 2 V detector** remains in
-place for comparison until actual CH1 waveforms are reviewed. The new
-negative-onset inventory is **separate** and does not silently alter old
-measurements or silently substitute one detector for another.
+The integrated report now uses only the reviewed S02 negative-onset
+inventory. The deprecated positive-edge 2-V detector, dynamic comparisons,
+plots and command-line tuning flags have been removed from the integrated
+analysis path. The original CH1 waveforms and source-locked review files
+remain intact.
 
 The current 1,000,000-sample/20-second acquisition has **20 us/sample**.
 This gives ~5 samples over a 100-us phase, unlike the finer sampling
@@ -380,10 +381,10 @@ Additional per-record outputs, automatically regenerated under
 The session adds `approved_session_overview.png`, a primary section at the
 top of `integrated_report.md`, and
 `approved_negative_onset_count`/`approved_within_record_interval_count`
-to `integrated_summary.json`. The older positive-edge detector and its
-dynamic comparisons are preserved **as legacy exploratory diagnostics only**.
-An invalid or changed existing source-locked approval causes the new primary
-analysis to fail rather than silently falling back to automatic positives.
+to `integrated_summary.json`. Deprecated positive-edge analysis is not
+run or included in the reports. Missing, invalid or changed source-locked
+approvals cause integrated analysis to fail closed rather than using any
+unreviewed fallback.
 
 **ACK limitations:** All host-clock overlays are provisionally mapped,
 including `provisional_local_fit` records: absolute offset is uncalibrated.
