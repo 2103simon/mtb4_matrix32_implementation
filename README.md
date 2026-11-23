@@ -167,7 +167,7 @@ The editable host configuration is [`config/config.json`](config/config.json). I
 | `serial.port` | `null` for USB role discovery; explicit path is an override |
 | `clock_compensation`, `clock_drift_monitor` | Separate MCU/PC diagnostic timestamp compensation and export settings |
 
-**Do not equate command values with electrically verified amplitude or dose.** Review the active configuration, load impedance, pulse width, and output constraints before armed testing. The live Matrix32 frequency range is 2–400 Hz; requests below 2 Hz result in a zero-current/muted state rather than an unsafe forced minimum.
+**Do not equate command values with electrically verified amplitude or dose.** Review the active configuration, load impedance, pulse width, and output constraints before armed testing. The live Matrix32 frequency range is 2–400 Hz; requests below 2 Hz cause a **current-zero command (SC1=0) followed by SF=400**, in that order and with checked ACKs, rather than an unsupported SF=0 command. The follow-up fast scheduler setting is intended to speed future cycle-boundary opportunities; SC1=0 can itself wait until the end of the preceding cycle and is **not** an emergency physical OFF guarantee.
 
 For MCU-driven Matrix32 operation without the oscilloscope, the separate controller is:
 
