@@ -273,6 +273,10 @@ Read the fully worked [clock-mapping and uncertainty guide](docs/clock_mapping_a
 | [`docs/`](docs/) | Experiment procedures, timing evidence, firmware, serial discovery, design notes |
 | [`analysis/`](analysis/) | Committed standalone MCU analysis plots; new integrated reports are under each run's `analysis/` |
 
+### Experimental pulse-detection audit
+
+For the new multi-record experiments, the [analysis review workflow](docs/analysis_review_workflow.md) documents the proven Gray-frame decoder, source-preserving Matrix32 **negative-onset detector**, per-record candidate/rejected/suppressed CSV inventories, MCU arrival cadence and BLE ACK statistics, and the unresolved rules for attributing physical periods to ACKed SF states. The offline [`review_pulse_detection.py`](oscilloscope/review_pulse_detection.py) creates **unverified** onset and interval evidence; it does **not** approve all pulses or prove every ACK frequency was output.
+
 ## Verification and limitations
 
 - Prefer **software dry run → board/USB check → scope-only check → non-stimulating integrated baseline → explicitly armed isolated dummy-load trial**.
