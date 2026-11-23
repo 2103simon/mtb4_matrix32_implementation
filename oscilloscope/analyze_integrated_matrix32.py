@@ -4,21 +4,18 @@ Offline only: no serial, BLE, scope, or stimulation commands.
 Usage:
   python oscilloscope/analyze_integrated_matrix32.py
   python oscilloscope/analyze_integrated_matrix32.py --run-dir data/recordings/<run>
-  python oscilloscope/analyze_integrated_matrix32.py --taxel 11 --zoom-start-s 5 --zoom-sec 0.5
+  python oscilloscope/analyze_integrated_matrix32.py --taxel 11
 
 Plot time: scope time (seconds after first saved scope sample).
 MCU/BLE arrival times map approximately through the *unverified*
 scope->Nano->PC affine clock estimates. Such overlays are explicitly
-provisional, NEVER physical latency ground truth. Physical pulses are
-detected directly from the CH1 voltage recording, independently of fit.
+provisional, NEVER physical latency ground truth. Physical pulse intervals are\ncalculated only from source-locked, operator-approved S02 negative onsets.
 """
 from __future__ import annotations
 
 import argparse
 import csv
 import json
-import math
-from collections import Counter
 from pathlib import Path
 import sys
 
@@ -26,11 +23,6 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from analyze_mcu_recording import choose_recording, load_recordings
-from oscilloscope.record_scope import atomic_json
-from oscilloscope.matrix32_dynamic_frequency import (
-    analyze_dynamic_cycles, plot_dynamic_tracking,
-)
 
 
 def choose_run(output_root, run_dir=None):
