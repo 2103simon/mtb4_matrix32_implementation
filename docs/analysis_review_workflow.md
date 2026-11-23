@@ -632,3 +632,88 @@ direct CH1 period measurements (valid on the oscilloscope's local clock),
 conditional MCU/ACK associations that survive the explored offsets, and
 independently calibrated Matrix32 physical command application/latency
 (the last remains unmeasured).
+
+
+## 12. Frequency-tracking robustness, 34 discrepancies and Gray spacing
+
+Run the **offline, approved-negative-onset-only** audit after the previous
+`evaluate_clock_models --block-s 2` step:
+
+```bash
+cd ~/code/mtb4_matrix32_implementation
+conda activate matrix32
+git switch feature/live-oscilloscope-recording
+git pull --ff-only
+python -m unittest discover -s tests -p 'test_audit_frequency_tracking.py' -v
+RUN=data/recordings/20261123T072229250984Z_integrated_matrix32_scope
+python -m oscilloscope.audit_frequency_tracking --run-dir "$RUN"
+code "$RUN/analysis/frequency_robustness_report.md"
+```
+
+The script independently loads the source-locked approved negative CH1
+onsets, the original Gray/Nano/PC logs and the *existing* 2-s/4-s
+cross-validation model choices, without altering clock fits or source
+approvals. It evaluates all approved within-record periods against the
+selected MCU taxel and Matrix32 ACK states. Each record's clock candidate
+retains its exploratory status; **record 4 is not auto-qualified**.
+
+**Nine sensitivity scenarios:** Gray held-out p95 margin multiplied by
+1×, 2×, 3×; minimum previous-cycle ACK guard 5 ms, 20 ms, 50 ms.
+The actual guard is never shorter than the preceding ACK period.
+Command association must remain unchanged throughout the continuous
+tested clock-offset *envelope*, not just at sampled endpoints.
+The Nano/PC offset interval is conditional on the fitted drift slope,
+and the Gray heldout p95 is *not a guaranteed time bound*.
+
+Outputs:
+
+- `analysis/frequency_robustness_report.md` — the main comprehensive
+  table contrasting the 1×/5-ms baseline with the 3×/50-ms conservative
+  sensitivity case, and per-record explanations and figures.
+- `analysis/frequency_robustness_summary.json` — machine-readable
+  summary with limitations.
+- `analysis/frequency_robustness_sweep.csv` — all 54 record/scenario
+  combinations and eligible ACK and MCU interval counts, frequency
+  error and period-error statistics.
+- `analysis/frequency_robustness_all_intervals.csv` — all approved
+  intervals including those with no defensible command association.
+- `analysis/frequency_discrepancies.csv` — individual outside-tolerance
+  intervals; baseline ACK state, period error and conservative status.
+- `analysis/record_0000N/frequency_outlier_windows/outlier_NNN.png` —
+  targeted local windows of physical frequency versus stable MCU-requested
+  and ACK-indicated frequency. Includes neighboring reviewed intervals.
+- `analysis/record_0000N/frequency_robustness_sweep.png` — how ACK
+  comparison *coverage* and the selected subset's median frequency
+  difference change as assumptions are made more conservative.
+- `analysis/record_0000N/frequency_period_error.png` — physical-minus-
+  commanded period error (µs) versus ACK-indicated SF.
+- `analysis/record_0000N/gray_frame_spacing.csv` and
+  `gray_frame_spacing.png` — difference between adjacent physical
+  CH2 Gray-frame separations and Nano-reported EDGE_US separations,
+  after removing median relative clock rate. This can distinguish
+  abrupt scheduling/timestamp jitter from slow clock-model variation.
+
+For a physically measured onset-to-onset period T and stable active ACK
+frequency f, the period error is:
+
+```text
+period_error_us = 1e6 * (T_seconds - 1 / f_ACK_Hz)
+```
+
+The flagged outlier windows are hypotheses for detailed raw-waveform
+review, not automatic detector corrections, missed-pulse repairs,
+transmission failures or electrical tracking failures.
+
+**Do not report the stable-subset percentage as all-command accuracy.**
+An excluded period is unobservable under tested clock-offset/guard
+assumptions, not necessarily a bad pulse. Changing the sensitivity
+conditions also changes the subset whose errors can be calculated.
+A passing offset-sensitivity sweep still does not calibrate physical
+Matrix32 SF application or remove the uncertainty associated with USB
+one-way asymmetry.
+
+The Gray spacing comparison remains between physical scope edges and
+**firmware-reported timestamps**, not an independent hardware timer
+capture of the GPIO transition. For a decisive hardware fix, collect
+a common electrical command/reference marker or independently verify
+Nano frame-edge timestamps against a hardware timer.
