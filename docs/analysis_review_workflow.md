@@ -342,3 +342,67 @@ but **cannot make the already-running preceding cycle finish faster**.
 The muted SF=400 ACK is transport evidence, not evidence that 400-Hz
 physical pulses were produced. As before, software STOP/SC ACKs are not
 proof of physical output OFF; electrical verification remains necessary.
+
+## 8. Approved physical frequency analysis (primary result)
+
+When a per-record `review_approval.json` exists and its SHA-256 source lock
+verifies, `oscilloscope/analyze_integrated_matrix32.py` now automatically
+uses the **operator-approved S02 negative-onset inventory** as the primary
+physical pulse evidence. It does not require a new flag.
+
+For every two consecutive approved onsets in one scope record it computes
+`period_s = t[i+1]-t[i]` and `physical_inverse_period_hz = 1/period_s`.
+No intervals span scope acquisition gaps. The within-record median frequency
+is the median of these inverse periods, **not** total onsets / 20 seconds:
+quiet periods and variable-frequency stimulation make these different
+quantities. Record 5's approved empty onset inventory yields zero observed
+pulses and **no measured inverse-period frequency** (null, not 0 Hz).
+
+Additional per-record outputs, automatically regenerated under
+`analysis/record_0000N/`:
+
+- `approved_frequency_tracking.csv` — every approved interval, its raw
+  period and inverse frequency, nearest eligible PC-arrival MCU requested
+  frequency/taxel, latest eligible ACK state, classification, and clock flags.
+- `approved_frequency_summary.json` — full frequency/period distributions,
+  MCU taxel/rate context, ACK counts, and diagnostic classification counts.
+- `approved_frequency_report.md` — readable S01/S02-like metrics, figures,
+  interpretation and limitations.
+- `approved_frequency_tracking.png` — three aligned panels: approved CH1
+  inverse periods, selected MCU requested rate, and ACK-indicated SF.
+- `approved_frequency_distribution.png` — approved-period and inverse-
+  frequency histograms.
+- `approved_pulse_activity.png` — approved pulse-onset counts per 1-second
+  acquired bin, revealing both active and silent windows.
+- `approved_ack_diagnostic.png` — explicit provisional ACK-frequency versus
+  physically measured inverse-period scatter; identity line and review flags.
+
+The session adds `approved_session_overview.png`, a primary section at the
+top of `integrated_report.md`, and
+`approved_negative_onset_count`/`approved_within_record_interval_count`
+to `integrated_summary.json`. The older positive-edge detector and its
+dynamic comparisons are preserved **as legacy exploratory diagnostics only**.
+An invalid or changed existing source-locked approval causes the new primary
+analysis to fail rather than silently falling back to automatic positives.
+
+**ACK limitations:** All host-clock overlays are provisionally mapped,
+including `provisional_local_fit` records: absolute offset is uncalibrated.
+ACKs are not physical apply times, and a new SF can wait for completion of
+the preceding output cycle. The diagnostic classifier leaves transitions,
+muted states and prior-cycle guard periods unclassified. Its threshold
+max(8 Hz, 15%) is inherited exploratory screening, NOT a compliance
+criterion. A compatibility percentage is conditional on diagnostically
+eligible intervals and never validated tracking accuracy or latency.
+
+For the November 23 six-record run:
+
+```bash
+cd ~/code/mtb4_matrix32_implementation
+git switch feature/live-oscilloscope-recording
+git pull --ff-only
+python -m unittest discover -s tests -p 'test_approved_frequency_analysis.py' -v
+RUN=data/recordings/20261123T072229250984Z_integrated_matrix32_scope
+python -u oscilloscope/analyze_integrated_matrix32.py --run-dir "$RUN"
+# Open "$RUN/analysis/integrated_report.md" in Markdown preview.
+```
+
