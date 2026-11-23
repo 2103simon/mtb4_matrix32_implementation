@@ -144,6 +144,35 @@ class IntegratedBenchTests(unittest.TestCase):
                     f"waveforms/record_{i+1:05d}_ch2.csv",
                 )
 
+    def test_capture_before_start_requires_explicit_armed_bench(self):
+        p = parser()
+        for argv in (["--capture-before-start"],
+                     ["--run", "--capture-before-start"],
+                     ["--run", "--arm", "--capture-before-start"]):
+            with self.subTest(argv=argv):
+                with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+                    plan(p.parse_args(argv), p)
+        data = plan(p.parse_args([
+            "--run", "--arm", "--dummy-load-confirmed",
+            "--capture-before-start", "--points", "5000000", "--count", "6"
+        ]), p)
+        self.assertTrue(data["capture_before_matrix32_start"])
+        self.assertEqual(data["scope_record_count"], 6)
+
+    def test_capture_before_start_ready_on_mcu_ack_only(self):
+        class RunningProcess:
+            def poll(self):
+                return None
+
+        child = StimulationChild(Path("unused"), arm=True, stale_ms=250,
+                                 capture_before_start=True)
+        child.process = RunningProcess()
+        child.mcu_ready_observed_ns = 123
+        child.mcu_ready.set()
+        result = child.wait_ready(0.01)
+        self.assertTrue(result["scope_capture_precedes_matrix32_start"])
+        self.assertIsNone(result["matrix32_start_observed_monotonic_ns"])
+
     def test_explicit_two_gate_arming(self):
         for argv in (["--arm"], ["--arm", "--run"],
                      ["--dummy-load-confirmed", "--run"]):
