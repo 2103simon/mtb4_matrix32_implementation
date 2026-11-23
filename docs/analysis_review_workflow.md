@@ -185,7 +185,12 @@ now produces `report.md`, `metrics.json`, and `figures/` containing
 the S02 min/max full-CH1 waveform with candidate crosses, an S01 original
 raw-sample pulse zoom, a two-panel **individual plot for every rejected and
 suppressed transition**, and individual raw plots of each relaxed-quiet
-accepted candidate. The plotting helpers
+accepted candidate, plus threshold-sensitive candidate zooms. The exact reference implementations consulted are the
+[S02-A frequency report generator](https://github.com/2103simon/matrix32_nerve_stimulation/blob/cleanup/analysis-consolidation/experiments/analyze_s02_a_frequency.py),
+[S02 rejected-event close-up plotting](https://github.com/2103simon/matrix32_nerve_stimulation/blob/cleanup/analysis-consolidation/experiments/s02_rejection_review.py),
+[S02 source-locked signoff verifier](https://github.com/2103simon/matrix32_nerve_stimulation/blob/cleanup/analysis-consolidation/experiments/s02_onset_review.py),
+and [S01 width-sweep report/plots](https://github.com/2103simon/matrix32_nerve_stimulation/blob/cleanup/analysis-consolidation/experiments/analyze_s01_a_width_sweep.py).
+The plotting helpers
 [`plotting/envelopes.py`](../plotting/envelopes.py),
 [`plotting/waveforms.py`](../plotting/waveforms.py),
 [`plotting/style.py`](../plotting/style.py) and
@@ -205,7 +210,10 @@ feature), with a brief evidence note. They may mark any P as EXCLUDE
 missing pulses absent from the detector's event inventory, enter an
 `M...` identifier, observed `time_s`, `INCLUDE` or `EXCLUDE`, and
 raw waveform evidence in `manual_additions.csv`. Every included M event
-requires an evidence note.
+requires an evidence note. The `threshold_sensitive_onsets.csv` file and
+linked figures identify alternative-threshold-only Q candidates; if such
+a pulse is genuine and absent from P/R/S, add an M entry with the Q figure
+in its note. Neither Q nor M is auto-accepted.
 
 For rapid review, leave correct P rows blank and **explicitly approve all
 unchanged P rows** at sign-off using `--confirm-accepted`. R and S rows
