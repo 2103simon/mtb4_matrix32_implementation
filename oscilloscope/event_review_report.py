@@ -89,12 +89,19 @@ def associate(info, time_s, start, finish):
     if sample is not None and not 0 <= ns-sample[0] <= 250000000:
         sample = None
     idx = bisect.bisect_right(info["event_times"], ns)-1
-    # Traverse only the recent subset backwards, since command logs may be large.
-    events = info["events"][:idx+1] if idx >= 0 else []
-    sf = next((e.get("frequency_hz") for e in reversed(events)
-               if e.get("event") == "sf_ack" and e.get("status") == "OK"), None)
-    sc = next((e.get("current_command") for e in reversed(events)
-               if e.get("event") == "sc_ack" and e.get("status") == "OK"), None)
+    # Latest acknowledged command is a host event, not a physical application.
+    # Search bounded events backwards without copying the entire prefix.
+    sf, sc = None, None
+    for i in range(idx, -1, -1):
+        event = info["events"][i]
+        if event.get("status") != "OK":
+            continue
+        if sf is None and event.get("event") == "sf_ack":
+            sf = event.get("frequency_hz")
+        if sc is None and event.get("event") == "sc_ack":
+            sc = event.get("current_command")
+        if sf is not None and sc is not None:
+            break
     status = "PROVISIONAL_" + str(mapping.get("status", "UNKNOWN"))
     if sample is None:
         status += "_NO_FRESH_MCU_SAMPLE"
