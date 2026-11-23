@@ -134,6 +134,10 @@ timeout --signal=INT --kill-after=20s 900s \
 
 **Electrical safety:** Matrix32 output may remain active during the **unobserved USBTMC waveform download gaps**. Software STOP is requested only after the final capture, or on a caught error/interruption. The external shell watchdog cannot guarantee an electrical STOP if blocking USBTMC calls or process termination bypass Python cleanup. Maintain an independent physical disconnect and monitor the output appropriately. A software STOP/ACK does not establish that electrical output is absent.
 
+### Experimental pulse review before frequency attribution
+
+The [analysis review workflow](../docs/analysis_review_workflow.md) describes source-locked negative-onset detection from the related Matrix32 project. Run [`review_pulse_detection.py`](review_pulse_detection.py) on saved CH1 recordings to export accepted, rejected and suppressed pulse candidates, inverse-period estimates and raw zooms for manual audit. The historical 2 V positive-phase analyzer remains separately available; no candidate is automatically approved as a verified physical pulse.
+
 ## Offline analysis and report layout
 
 ```bash
