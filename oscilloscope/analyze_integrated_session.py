@@ -357,6 +357,12 @@ def session_markdown(root, session):
             f"{duration} | {gap['status']} |"
         )
     lines.extend([
+        "", "## Why are some clocks unqualified?", "",
+        "See the [per-record clock qualification audit]"
+        "(clock_qualification_report.md) for **every failed criterion**, "
+        "actual Gray frame residuals, USB clock-fit diagnostics and "
+        "outlier sensitivity. Diagnostic alternative fits never replace "
+        "the original maps or silently qualify a record.",
         "", "## Evidence limitations", "",
         "- Each approved interval uses two consecutive negative CH1 onsets "
         "within the same acquired record.",
@@ -460,6 +466,26 @@ def analyze_session(root, meta, *, taxel=None, show=False):
             "sub-millisecond absolute timing across devices.",
         ],
     }
+    # Diagnose, but NEVER silently recalibrate, the original Gray/Nano/PC
+    # synchronization. Missing epoch metadata is a documented limitation.
+    from oscilloscope.clock_qualification_diagnostics import diagnose
+    if (root / "epoch_clock_analysis.json").exists():
+        clock_report, clock_records = diagnose(root)
+        session["clock_qualification_diagnostics"] = {
+            "report": str(clock_report),
+            "records": [{
+                "record_index": x["record_index"],
+                "status": x["original_status"],
+                "failed_checks": x["failed_checks"],
+                "robust_candidate": x["robust_candidate"],
+            } for x in clock_records],
+            "original_clock_maps_untouched": True,
+        }
+    else:
+        session["clock_qualification_diagnostics"] = {
+            "status": "NO_EPOCH_CLOCK_ANALYSIS",
+            "original_clock_maps_untouched": True,
+        }
     atomic_json(output / "integrated_summary.json", session)
     report = session_markdown(root, session)
     print(f"[SESSION] {len(reports)} independent scope record(s); "
