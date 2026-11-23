@@ -545,3 +545,90 @@ Nano GPIO-frame scheduling/timestamp semantics and CH2 sampling, not
 necessarily USB. Passing the existing USB midpoint/slope/causal-offset
 tests does not exclude USB one-way asymmetry, but provides no evidence
 of failed serial data transmission by itself.
+
+
+## 11. Record 4 clock localization and offset-sensitive approved-command matching
+
+The **offline** tool `oscilloscope/offset_robust_command_matching.py` builds
+on the existing blocked clock holdout summary. It does not rerun detection,
+modify the 6,447 approved CH1 events, or silently promote unqualified clocks.
+
+```bash
+cd ~/code/mtb4_matrix32_implementation
+conda activate matrix32
+git switch feature/live-oscilloscope-recording
+git pull --ff-only
+python -m unittest discover -s tests -p 'test_offset_robust_command_matching.py' -v
+RUN=data/recordings/20261123T072229250984Z_integrated_matrix32_scope
+# Prerequisite: a CV report created with --block-s 2.
+python -m oscilloscope.evaluate_clock_models --run-dir "$RUN" --block-s 2
+python -m oscilloscope.offset_robust_command_matching --run-dir "$RUN" --block-s 2
+code "$RUN/analysis/offset_robust_report.md"
+```
+
+The tool uses each record's full **source-locked approved negative-onset**
+inventory and **only within-record pulse intervals**. It uses the
+pre-existing cross-validated clock-model recommendation, or explicitly
+flags a lowest-holdout-error exploratory model when *no model passes*
+(record 4). Each CH1 timestamp is mapped to Nano time through a candidate
+scope/Nano model and to host-monotonic time using the original Nano/PC fit.
+The script does **not** write a replacement official clock map.
+
+To avoid assuming an exact USB offset, it uses the fitted clock's
+**causally feasible offset interval endpoints** (not simply a ±halfwidth
+around the midpoint). Each side is extended by the larger of the model's
+2-s and 4-s holdout p95 absolute Gray errors. That extension is a
+**heuristic sensitivity parameter**, not a guaranteed timing bound.
+The command association must remain constant over the entire continuous
+tested uncertainty envelope; the script does not merely evaluate the three
+offset sample points. It refuses clock attribution outside the physical
+Gray-frame reference interval.
+
+A physical interval is separately classified against (a) the selected MCU
+taxel's requested rate snapshots and (b) active Matrix32 SF/SC ACK states.
+An interval must be wholly contained within a single effective ACK state
+under the full uncertainty envelope, and clear a guard for the preceding
+commanded cycle. Zero-current ACKs are *not* physical SF observations.
+MCU and ACK stability are reported separately, along with the count meeting
+both criteria and descriptive measured-minus-ACK frequency differences for
+the stable subset.
+
+Files:
+
+- `analysis/offset_robust_report.md`: per-record coverage, candidate
+  status, measured-vs-ACK differences, classifications and plots.
+- `analysis/offset_robust_summary.json`: full summary with
+  candidate/offset uncertainty metadata and evidence limitations.
+- `analysis/offset_robust_all_intervals.csv`: all 6,442 approved
+  within-record periods, including those that cannot be associated.
+- `analysis/record_0000N/offset_robust_intervals.csv`: every period
+  and record-level assessment.
+- `analysis/record_0000N/offset_robust_tracking.png`: physically
+  measured intervals colored by ACK association and frequency differences.
+- `analysis/record_0000N/offset_robust_command_agreement.png`:
+  measured frequency against ACK-indicated SF over time and as a scatter.
+- `analysis/record_00004/record4_clock_block_errors.csv`: RMS, p95,
+  maximum and bias for every 2-s and 4-s withheld Gray block in record 4.
+- `analysis/record_00004/record4_clock_local_holdouts.png`: localized
+  timing prediction errors for the record with highest physical event count.
+
+**Important:** A state that is *stable across tested offsets* is not
+proof that Matrix32 physically applied the ACK at that time. The
+Nano/PC causal interval is conditional on fitted slope, the Gray-model
+CV p95 is not a guaranteed bound, and the Matrix32 device's own command
+application timestamp remains unknown. Nor does the script validate the
+physical association by optimizing time offset to maximize frequency
+agreement. It performs a declared offset-sensitivity analysis, not
+post-hoc synchronization to improve tracking scores.
+
+To probe how the result changes if the assumed Gray timing sensitivity
+is larger, rerun with `--extra-clock-error-scale 2`. This overwrites the
+same `offset_robust_*` report files, so archive them before changing
+the sensitivity setting. A result that changes under this probe should
+be reported as offset-sensitive rather than verified.
+
+The current experimental conclusion should distinguish three things:
+direct CH1 period measurements (valid on the oscilloscope's local clock),
+conditional MCU/ACK associations that survive the explored offsets, and
+independently calibrated Matrix32 physical command application/latency
+(the last remains unmeasured).
