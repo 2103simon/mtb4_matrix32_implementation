@@ -397,6 +397,23 @@ def report_markdown(summary):
         f"| Diagnostic compatible fraction | "
         f"{summary['diagnostic_compatibility_fraction']} |",
         f"| Clock mapping quality | {summary['clock_status']} |",
+        f"| Selected MCU taxel / encoding | "
+        f"{summary.get('mcu_context', {}).get('taxel', 'n/a')} / "
+        f"{summary.get('mcu_context', {}).get('encoding', 'n/a')} |",
+        f"| Provisional MCU rate snapshots | "
+        f"{summary.get('mcu_context', {}).get('rate_snapshot_count_provisional', 'n/a')} |",
+        f"| Requested MCU Hz min / max (provisional) | "
+        f"{summary.get('mcu_context', {}).get('requested_rate_hz', {}).get('min')} / "
+        f"{summary.get('mcu_context', {}).get('requested_rate_hz', {}).get('max')} |",
+        f"| Taxel value min / max (provisional) | "
+        f"{summary.get('mcu_context', {}).get('taxel_value', {}).get('min')} / "
+        f"{summary.get('mcu_context', {}).get('taxel_value', {}).get('max')} |",
+        f"| MCU zero-request snapshots (provisional) | "
+        f"{summary.get('mcu_context', {}).get('zero_requested_snapshots_provisional', 'n/a')} |",
+        f"| SF ACK events in mapped window (provisional) | "
+        f"{summary.get('mcu_context', {}).get('mapped_sf_ack_events_provisional', 'n/a')} |",
+        f"| SC=0 ACK events in mapped window (provisional) | "
+        f"{summary.get('mcu_context', {}).get('mapped_sc_zero_ack_events_provisional', 'n/a')} |",
         "", "![Approved physical/requested/ACK tracking]"
         "(approved_frequency_tracking.png)", "",
         "![Approved interval frequency and period distributions]"
@@ -457,6 +474,34 @@ def analyze_approved_record(root, record, mcu, ack_states, mapping, taxel,
     )
     summary["reviewer"] = approval["reviewer"]
     summary["review_source_ch1_sha256"] = approval["source_ch1_sha256"]
+    pc = np.asarray(mcu["taxel_pc_ns"], dtype=np.int64)
+    selected_hz = (mcu["sa_rate_hz"] if encoding == "sa_ii"
+                   else mcu["ra_rate_hz"])[:, taxel]
+    selected_taxel = mcu["taxel_data"][:, taxel]
+    if mapping is not None and len(pc):
+        h0 = mapping["first_sample_pc_monotonic_ns_est"]
+        h1 = mapping["last_sample_pc_monotonic_ns_est"]
+        mask = (pc >= h0) & (pc <= h1)
+    else:
+        mask = np.zeros(len(pc), dtype=bool)
+    summary["mcu_context"] = {
+        "taxel": taxel, "encoding": encoding,
+        "rate_snapshot_count_provisional": int(np.count_nonzero(mask)),
+        "taxel_value": _quantiles(selected_taxel[mask]),
+        "requested_rate_hz": _quantiles(selected_hz[mask]),
+        "zero_requested_snapshots_provisional": int(
+            np.count_nonzero(selected_hz[mask] == 0)),
+        "mapped_ack_state_events_provisional": int(sum(
+            scope_start <= x["scope_time_s_est"] <= scope_end
+            for x in states)),
+        "mapped_sf_ack_events_provisional": int(sum(
+            scope_start <= x["scope_time_s_est"] <= scope_end
+            and x.get("source") == "sf_ack" for x in states)),
+        "mapped_sc_zero_ack_events_provisional": int(sum(
+            scope_start <= x["scope_time_s_est"] <= scope_end
+            and x.get("source") == "sc_ack_muted" for x in states)),
+        "clock_alignment_verified": False,
+    }
     summary["approved_intervals_csv"] = str(
         approval_dir / "approved_intervals.csv")
     summary["source_locked_approval"] = True
@@ -518,8 +563,9 @@ def session_report(summaries, total_record_count):
         "![Approved onsets and median active-cycle frequency]"
         "(approved_session_overview.png)", "",
         "| Record | Approved onsets | Approved intervals | "
-        "Median period (ms) | Median inverse period (Hz) | Clock status | Full analysis |",
-        "| ---: | ---: | ---: | ---: | ---: | --- | --- |",
+        "Median period (ms) | Median inverse period (Hz) | "
+        "Requested MCU range (Hz)* | Clock status | Full analysis |",
+        "| ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
     ]
     for r in summaries:
         i = r["record_index"]
@@ -527,11 +573,16 @@ def session_report(summaries, total_record_count):
             f"| {i} | {r['onset_count']} | {r['interval_count']} | "
             f"{r['period_ms']['median'] if r['interval_count'] else 'n/a'} | "
             f"{r['inverse_period_hz']['median'] if r['interval_count'] else 'n/a'} | "
+            f"{r.get('mcu_context', {}).get('requested_rate_hz', {}).get('min')}–"
+            f"{r.get('mcu_context', {}).get('requested_rate_hz', {}).get('max')} | "
             f"{r['clock_status']} | "
             f"[Record {i} approved analysis]"
             f"(record_{i:05d}/approved_frequency_report.md) |"
         )
     lines += [
+        "", "*Requested MCU ranges are restricted to provisionally mapped "
+        "host samples. Ranges are unavailable without a clock map and are "
+        "not independent physical measurements.",
         "", "### Why this does not yet prove command-by-command tracking", "",
         "All raw pulse-frequency calculations above are physical CH1 "
         "measurements from approved negative onsets. The overlaid MCU "
