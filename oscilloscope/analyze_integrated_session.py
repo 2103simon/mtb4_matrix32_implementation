@@ -375,11 +375,7 @@ def session_markdown(root, session):
     return str(out)
 
 
-def analyze_session(root, meta, *, threshold_v=2, deadtime_ms=1,
-                    taxel=None, zoom_start=None, zoom_sec=0.5, show=False,
-                    frequency_window_s=1.0, frequency_step_s=0.25,
-                    frequency_tolerance_hz=3.0,
-                    frequency_tolerance_fraction=0.05):
+def analyze_session(root, meta, *, taxel=None, show=False):
     root = Path(root)
     records = record_boundaries(meta.get("records", []))
     mcu_dir = root / "mcu_matrix32"
@@ -414,7 +410,7 @@ def analyze_session(root, meta, *, threshold_v=2, deadtime_ms=1,
                          approved_summaries)
     gaps = describe_gaps(reports)
     session = {
-        "schema_version": 2,
+        "schema_version": 3,
         "run_id": meta["run_id"],
         "session_status": meta.get("status"),
         "scope_record_count": len(reports),
