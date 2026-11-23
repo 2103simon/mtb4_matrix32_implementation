@@ -11,7 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from oscilloscope.pulse_review_workflow import (
-    SOURCE_TABLES, make_scaffold, write_csv, review_candidates,\n    plot_report, report_markdown
+    SOURCE_TABLES, make_scaffold, write_csv, review_candidates,
+    plot_report, report_markdown
 )
 from oscilloscope.apply_pulse_review import (
     apply, verified_approval, load_approved_onsets
