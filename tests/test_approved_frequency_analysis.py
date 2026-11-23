@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 
 from oscilloscope.approved_frequency_analysis import (
-    compute_approved_intervals, _quantiles,
+    compute_approved_intervals, comparison_summary, _quantiles,
 )
 
 
@@ -46,6 +46,25 @@ class ApprovedFrequencyTests(unittest.TestCase):
         self.assertEqual(rows[0]["start_onset_id"], "P1")
         self.assertEqual(rows[1]["end_onset_id"], "P3")
         self.assertFalse(summary["cross_clock_alignment_verified"])
+
+    def test_command_comparison_reports_coverage_not_false_accuracy(self):
+        rows = [
+            {"physical_inverse_period_hz": 105.0,
+             "mcu_requested_hz_nearest_provisional": 100.0,
+             "ack_expected_hz_provisional": 100.0,
+             "ack_state_assessment": "COMPATIBLE_DIAGNOSTIC_ONLY"},
+            {"physical_inverse_period_hz": 250.0,
+             "mcu_requested_hz_nearest_provisional": None,
+             "ack_expected_hz_provisional": None,
+             "ack_state_assessment": "NOT_OBSERVABLE_SPANS_ACK_CHANGE"},
+        ]
+        s = comparison_summary(rows)
+        self.assertEqual(s["approved_intervals"], 2)
+        self.assertEqual(s["mcu_context_intervals_provisional"], 1)
+        self.assertEqual(s["ack_comparable_intervals_provisional"], 1)
+        self.assertEqual(s["ack_not_comparable_intervals"], 1)
+        self.assertEqual(s["median_abs_measured_minus_ack_hz_provisional"], 5.)
+        self.assertFalse(s["cross_clock_error_calibrated"])
 
     def test_empty_record_is_null_not_zero_hz(self):
         rows, summary, _ = self._calculate([])
