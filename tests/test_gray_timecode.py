@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "oscilloscope"))
 from decode_gray_timecode import (
     binary_to_gray, gray_to_binary, decode_pulses, decode_csv,
+    audit_physical_pulses,
 )
 import test_gray_timecode as experiment
 
@@ -75,6 +76,25 @@ class TimecodeTests(unittest.TestCase):
             result = decode_csv(path)
         self.assertEqual([x["counter_mod_65536"] for x in result["frames"]],
                          [42, 43])
+
+    def test_physical_gray_edge_audit_accounts_for_start_bits_and_end(self):
+        pulses = synthetic_frames([42, 43])
+        decoded = decode_pulses(pulses)
+        audit = audit_physical_pulses(pulses, decoded)
+        self.assertEqual(audit["decoded_frame_count"], 2)
+        self.assertEqual(audit["assigned_pulse_count"], len(pulses))
+        self.assertEqual(audit["unassigned_pulse_count"], 0)
+        self.assertTrue(audit["all_complete_high_pulses_accounted_for"])
+        roles = [p["role"] for p in audit["frames"][0]["pulses"]]
+        self.assertEqual(roles[0], "START")
+        self.assertEqual(roles[-1], "END")
+        self.assertEqual(len(roles), 2 + binary_to_gray(42).bit_count())
+
+        # A stray physical pulse must survive the audit as evidence for review.
+        stray = sorted(pulses + [(0.017, 0.001)])
+        flagged = audit_physical_pulses(stray, decode_pulses(stray))
+        self.assertEqual(flagged["unassigned_pulse_count"], 1)
+        self.assertFalse(flagged["all_complete_high_pulses_accounted_for"])
 
     def test_ch2_only_capture_plan(self):
         p = experiment.parser()
