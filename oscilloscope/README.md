@@ -161,6 +161,36 @@ timeout --signal=INT --kill-after=20s 900s \
 
 **Electrical safety:** Matrix32 output may remain active during the **unobserved USBTMC waveform download gaps**. Software STOP is requested only after the final capture, or on a caught error/interruption. The external shell watchdog cannot guarantee an electrical STOP if blocking USBTMC calls or process termination bypass Python cleanup. Maintain an independent physical disconnect and monitor the output appropriately. A software STOP/ACK does not establish that electrical output is absent.
 
+### Capturing when the selected sensor initially requests 0 Hz
+
+An armed controller normally waits for a fresh positive (at least 2 Hz)
+selected tactile rate before configuring and starting Matrix32. With a
+zero-rate SA-II taxel this can cause a 45-second *startup readiness timeout*,
+even while MCU telemetry and encoding ACKs are healthy. `read_mcu.py` printing
+telemetry does not mean the selected SA-II rate is positive.
+
+An **explicit bench-only** option, `--capture-before-start`, changes only
+the integrated recorder's readiness condition: it may arm the scope after
+the MCU encoding handshake, **without** pretending the Matrix32 is started.
+The stimulation worker still refuses to START on zero input; it starts only
+if fresh positive input arrives later. This does **not** send an unverified
+SC=0/SF=400 START sequence. As a result, a record may contain **no Matrix32
+output**. The session metadata marks
+`controller_ready.scope_capture_precedes_matrix32_start`, and physical
+CH1 pulse observations must be checked rather than inferred from the
+capture status.
+
+```bash
+# First inspect the plan; no hardware touched.
+python oscilloscope/record_integrated_matrix32.py --points 5000000 --time-div-us 2000000 --count 6 --capture-before-start --run --arm --dummy-load-confirmed
+```
+
+The command shown above includes live arming flags and must only be executed
+on the operator-approved resistor dummy-load rig with an independent physical
+disconnect. A genuinely dry-run plan omits `--run --arm --dummy-load-confirmed`
+and therefore also omits `--capture-before-start`. The option is not a
+substitute for hardware verification of SC=0/SF=400 at startup.
+
 ### Experimental pulse review before frequency attribution
 
 The [analysis review workflow](../docs/analysis_review_workflow.md) describes source-locked negative-onset detection from the related Matrix32 project. Run [`review_pulse_detection.py`](review_pulse_detection.py) on saved CH1 recordings to export accepted, rejected and suppressed pulse candidates, inverse-period estimates and raw zooms for manual audit. The historical 2 V positive-phase analyzer remains separately available; no candidate is automatically approved as a verified physical pulse.
