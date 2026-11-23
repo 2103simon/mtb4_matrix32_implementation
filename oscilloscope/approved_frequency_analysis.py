@@ -298,6 +298,84 @@ def plot_record(path, rows, summary, mapped_states, mcu, taxel, encoding,
     return str(path)
 
 
+def plot_commanded_vs_measured(path, rows, summary, states, mcu,
+                               taxel, encoding, mapping, scope_start, scope_end):
+    """Overlay measured physical periods and provisional command contexts."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(16, 6), layout="constrained")
+    if rows:
+        ax.scatter([r["mid_scope_s"] for r in rows],
+                   [r["physical_inverse_period_hz"] for r in rows],
+                   s=9, alpha=.65, label="Approved CH1 measured 1/period")
+    else:
+        ax.text(.5, .5, "No approved CH1 intervals (silent capture)",
+                ha="center", va="center", transform=ax.transAxes)
+    if mapping is not None:
+        h0 = int(mapping["first_sample_pc_monotonic_ns_est"])
+        h1 = int(mapping["last_sample_pc_monotonic_ns_est"])
+        if h1 > h0:
+            pc = np.asarray(mcu["taxel_pc_ns"], dtype=np.int64)
+            t = scope_start + (pc-h0)/(h1-h0)*(scope_end-scope_start)
+            inside = (t >= scope_start) & (t <= scope_end)
+            hz = (mcu["sa_rate_hz"] if encoding == "sa_ii"
+                  else mcu["ra_rate_hz"])[:, taxel]
+            if np.any(inside):
+                order = np.argsort(t[inside], kind="stable")
+                ax.plot(t[inside][order], hz[inside][order], lw=1.3,
+                        ls="--", label="MCU request (provisional timing)")
+        visible = [v for v in states
+                   if scope_start <= v["scope_time_s_est"] <= scope_end]
+        if visible:
+            ax.step([v["scope_time_s_est"] for v in visible],
+                    [float(v["expected_hz"]) if
+                     v.get("output_active_assumed", True)
+                     and v.get("expected_hz") is not None else np.nan
+                     for v in visible], where="post", alpha=.8, lw=1,
+                    label="ACK-indicated SF (provisional timing)")
+    ax.set(xlim=(scope_start, scope_end), xlabel="Scope-local time (s)",
+           ylabel="Frequency (Hz)",
+           title=f"Record {summary['record_index']}: command vs approved "
+                 f"physical frequency — clock {summary['clock_status']}")
+    ax.text(.01, .99, "CH1 frequency measured; host offset / actual SF "
+            "application time NOT verified", transform=ax.transAxes,
+            ha="left", va="top", fontsize=9,
+            bbox={"facecolor": "white", "alpha": .85, "edgecolor": "none"})
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(loc="upper right", fontsize=9)
+    ax.grid(alpha=.2)
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return str(path)
+
+
+def comparison_summary(rows):
+    """Disclose alignment coverage and numerical differences transparently."""
+    eligible = [r for r in rows if r["ack_state_assessment"] in (
+        "COMPATIBLE_DIAGNOSTIC_ONLY", "POTENTIALLY_INCONSISTENT_REVIEW")]
+    requested = [r for r in rows
+                 if r["mcu_requested_hz_nearest_provisional"] is not None]
+    ack_errors = [abs(r["physical_inverse_period_hz"] -
+                      r["ack_expected_hz_provisional"]) for r in eligible]
+    requested_errors = [abs(r["physical_inverse_period_hz"] -
+                            r["mcu_requested_hz_nearest_provisional"])
+                        for r in requested]
+    return {
+        "approved_intervals": len(rows),
+        "mcu_context_intervals_provisional": len(requested),
+        "ack_comparable_intervals_provisional": len(eligible),
+        "ack_not_comparable_intervals": len(rows)-len(eligible),
+        "median_abs_measured_minus_mcu_hz_provisional": (
+            float(np.median(requested_errors)) if requested_errors else None),
+        "median_abs_measured_minus_ack_hz_provisional": (
+            float(np.median(ack_errors)) if ack_errors else None),
+        "cross_clock_error_calibrated": False,
+        "physical_application_latency_verified": False,
+    }
+
+
 def plot_distribution(path, rows, summary):
     import matplotlib
     matplotlib.use("Agg")
@@ -442,6 +520,29 @@ def report_markdown(summary):
         f"{summary.get('mcu_context', {}).get('mapped_sf_ack_events_provisional', 'n/a')} |",
         f"| SC=0 ACK events in mapped window (provisional) | "
         f"{summary.get('mcu_context', {}).get('mapped_sc_zero_ack_events_provisional', 'n/a')} |",
+        "", "## Commanded versus measured (same trial)", "",
+        "![Approved physical frequency over MCU-requested and BLE ACK]"
+        "(approved_commanded_vs_measured.png)", "",
+        "CH1 points are physically measured. MCU/ACK placements are "
+        "provisional; an *unqualified* clock makes numerical matches "
+        "especially uncertain.", "",
+        "### Quantitative command comparison: diagnostic only", "",
+        "| Quantity | Value |", "| --- | ---: |",
+        f"| Approved physical intervals | "
+        f"{summary['command_comparison']['approved_intervals']} |",
+        f"| With provisional MCU context | "
+        f"{summary['command_comparison']['mcu_context_intervals_provisional']} |",
+        f"| Eligible for provisional ACK comparison | "
+        f"{summary['command_comparison']['ack_comparable_intervals_provisional']} |",
+        f"| ACK comparison not possible | "
+        f"{summary['command_comparison']['ack_not_comparable_intervals']} |",
+        f"| Median abs(measured - MCU requested) (Hz; provisional) | "
+        f"{summary['command_comparison']['median_abs_measured_minus_mcu_hz_provisional']} |",
+        f"| Median abs(measured - ACK SF) (Hz; provisional) | "
+        f"{summary['command_comparison']['median_abs_measured_minus_ack_hz_provisional']} |",
+        "",
+        "Differences are provisional descriptive values, NOT calibrated "
+        "tracking accuracy or measured physical application latency.",
         "", "![Approved physical/requested/ACK tracking]"
         "(approved_frequency_tracking.png)", "",
         "![Approved interval frequency and period distributions]"
@@ -504,6 +605,7 @@ def analyze_approved_record(root, record, mcu, ack_states, mapping, taxel,
         scope_end=scope_end, mapping=mapping, mcu=mcu, taxel=taxel,
         encoding=encoding, ack_states=ack_states,
     )
+    summary["command_comparison"] = comparison_summary(rows)
     summary["reviewer"] = approval["reviewer"]
     summary["review_source_ch1_sha256"] = approval["source_ch1_sha256"]
     pc = np.asarray(mcu["taxel_pc_ns"], dtype=np.int64)
@@ -540,6 +642,9 @@ def analyze_approved_record(root, record, mcu, ack_states, mapping, taxel,
     _saved_csv(output / "approved_frequency_tracking.csv", rows, FIELDS)
     plot_record(output / "approved_frequency_tracking.png", rows, summary,
                 states, mcu, taxel, encoding, mapping, scope_start, scope_end)
+    plot_commanded_vs_measured(output / "approved_commanded_vs_measured.png",
+                               rows, summary, states, mcu, taxel, encoding,
+                               mapping, scope_start, scope_end)
     plot_distribution(output / "approved_frequency_distribution.png",
                       rows, summary)
     plot_pulse_activity(output / "approved_pulse_activity.png",
