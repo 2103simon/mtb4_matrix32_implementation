@@ -95,12 +95,18 @@ def compute_approved_intervals(*, index, approved_onsets, scope_start,
     times = np.asarray([float(r["time_s"]) for r in approved_onsets], dtype=float)
     if len(times) > 1 and np.any(np.diff(times) <= 0):
         raise ValueError("Approved onsets are not strictly ordered")
+    if len(times) and (times[0] < scope_start or times[-1] > scope_end):
+        raise ValueError("Approved onsets outside saved scope capture window")
     mapped_states = map_ack_states(ack_states, mapping, scope_start, scope_end)
     # Include ACK history before scope start; important for first interval.
     state_times = [float(s["scope_time_s_est"]) for s in mapped_states]
     source = mcu["sa_rate_hz"] if encoding == "sa_ii" else mcu["ra_rate_hz"]
     pc = np.asarray(mcu["taxel_pc_ns"], dtype=np.int64)
     pressure = np.asarray(mcu["taxel_data"])
+    # The actual session has a non-positive MCU arrival step. Use stable host
+    # ordering for nearest-prior joins; never assume monotonicity of raw logs.
+    order = np.argsort(pc, kind="stable")
+    pc, pressure, source = pc[order], pressure[order], source[order]
     rows = []
     counts = Counter()
     for left, right, a, b in zip(times[:-1], times[1:],
