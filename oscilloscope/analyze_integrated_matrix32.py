@@ -9,7 +9,8 @@ Usage:
 Plot time: scope time (seconds after first saved scope sample).
 MCU/BLE arrival times map approximately through the *unverified*
 scope->Nano->PC affine clock estimates. Such overlays are explicitly
-provisional, NEVER physical latency ground truth. Physical pulse intervals are\ncalculated only from source-locked, operator-approved S02 negative onsets.
+provisional, NEVER physical latency ground truth. Physical pulse intervals are
+calculated only from source-locked, operator-approved S02 negative onsets.
 """
 from __future__ import annotations
 
@@ -59,7 +60,7 @@ def choose_run(output_root, run_dir=None):
 
 
 def load_wave(path):
-    """One-million-row CSV; retain arrays for event detection and zoom plots."""
+    """Read saved CH1 trace for scope-time bounds and provenance checks."""
     times, voltage = [], []
     with Path(path).open(newline="", encoding="utf-8") as file:
         for row in csv.DictReader(file):
