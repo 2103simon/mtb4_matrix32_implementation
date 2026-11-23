@@ -172,9 +172,14 @@ def generate(root, record, result, output, manifest):
         json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     selected_rates = [r[2] for r in info["rows"]]
     selected_pressures = [r[1] for r in info["rows"]]
-    sf_acks = [e for e in info["events"]
+    h0 = ((info["mapping"] or {}).get("first_sample_pc_monotonic_ns_est"))
+    h1 = ((info["mapping"] or {}).get("last_sample_pc_monotonic_ns_est"))
+    record_events = [e for e in info["events"]
+                     if h0 is not None and h1 is not None
+                     and h0 <= int(e["pc_monotonic_ns"]) <= h1]
+    sf_acks = [e for e in record_events
                if e.get("event") == "sf_ack" and e.get("status") == "OK"]
-    zero_sc_acks = [e for e in info["events"]
+    zero_sc_acks = [e for e in record_events
                     if e.get("event") == "sc_ack"
                     and e.get("status") == "OK"
                     and e.get("current_command") == 0]
