@@ -381,18 +381,28 @@ def plot_tracking(path, rows, *, index):
     import matplotlib.pyplot as plt
     fig, axes = plt.subplots(2, 1, figsize=(15, 8),
                              sharex=True, layout="constrained")
-    labels = [
-        ("STABLE_ACROSS_TESTED_OFFSETS", "Stable across tested offsets"),
-        ("ACK_DIFFERS_ACROSS_TESTED_OFFSETS", "ACK ambiguous"),
-        ("TRANSITION_DURING_INTERVAL", "Transition / guard ambiguous"),
+    groups = [
+        ("STABLE_ACROSS_TESTED_OFFSETS", "ACK stable across tested offsets"),
+        ("TRANSITION_WITHIN_OFFSET_ENVELOPE", "ACK transition in uncertainty envelope"),
+        ("ACK_PRIOR_CYCLE_OR_UNKNOWN_GUARD", "Previous cycle / ACK guard"),
+        ("ACK_MUTED_OR_UNKNOWN", "Output muted or unknown"),
     ]
-    for status, label in labels:
+    handled = set()
+    for status, label in groups:
         subset = [r for r in rows if r.get("ack_assessment") == status]
+        handled.add(status)
         if subset:
             axes[0].scatter(
                 [(r["start_scope_s"]+r["end_scope_s"])/2 for r in subset],
                 [r["measured_inverse_period_hz"] for r in subset],
-                s=9, alpha=.65, label=label)
+                s=9, alpha=.65, label=f"{label} (n={len(subset)})")
+    # Never silently omit the other physically approved intervals:
+    other = [r for r in rows if r.get("ack_assessment") not in handled]
+    if other:
+        axes[0].scatter(
+            [(r["start_scope_s"]+r["end_scope_s"])/2 for r in other],
+            [r["measured_inverse_period_hz"] for r in other],
+            s=9, alpha=.5, label=f"Other unclassified (n={len(other)})")
     axes[0].set(ylabel="Physical inverse period (Hz)",
                 title=f"Record {index}: approved physical intervals by "
                       "ACK offset-sensitivity class")
