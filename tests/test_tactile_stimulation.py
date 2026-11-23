@@ -254,6 +254,28 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await task
 
+    async def test_zero_current_failure_never_sends_fast_sf(self):
+        class FailingCurrent(FakeMatrix32):
+            async def apply_live_current(self, channel, current_command):
+                self.records.append(("current_failed", current_command))
+                raise RuntimeError("SC1=0 was not acknowledged")
+
+        serial = FakeSerial(sample(50))
+        device = FailingCurrent()
+        ready = asyncio.Event()
+        ready.configured_ns = 0
+        ready.set()
+        task = asyncio.create_task(frequency_worker(
+            serial, device, ready, 4, "ra_i", arm=True
+        ))
+        await asyncio.sleep(0.055)
+        self.assertIn(("start", 50), device.records)
+        serial.snapshot = sample(0)
+        with self.assertRaisesRegex(RuntimeError, "not acknowledged"):
+            await asyncio.wait_for(task, timeout=0.3)
+        self.assertIn(("current_failed", 0), device.records)
+        self.assertNotIn(("live", 400), device.records)
+
     async def test_pre_ack_sample_not_used(self):
         serial = FakeSerial(sample(55))
         device = FakeMatrix32()
