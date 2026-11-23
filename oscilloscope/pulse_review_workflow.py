@@ -14,7 +14,6 @@ from pathlib import Path
 
 import numpy as np
 
-from analysis_primitives.s02_rejection_review import save_rejection_figures
 from plotting.envelopes import minmax_envelope
 from plotting.waveforms import plot_traces
 from oscilloscope.record_scope import atomic_json
@@ -175,6 +174,7 @@ def plot_report(output, t, volts, result):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from analysis_primitives.s02_rejection_review import save_rejection_figures
     output = Path(output)
     figures = output / "figures"
     figures.mkdir(parents=True, exist_ok=True)
