@@ -5,12 +5,13 @@ import json
 import sys
 import tempfile
 import unittest
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from oscilloscope.pulse_review_workflow import (
-    SOURCE_TABLES, make_scaffold, write_csv, review_candidates
+    SOURCE_TABLES, make_scaffold, write_csv, review_candidates,\n    plot_report, report_markdown
 )
 from oscilloscope.apply_pulse_review import (
     apply, verified_approval, load_approved_onsets
@@ -50,6 +51,61 @@ class HumanPulseReviewTests(unittest.TestCase):
             "capture_start_s": 0.0, "capture_end_s": 1.0
         }))
         return src, output, manifest
+
+    def test_s02_report_structure_and_per_flagged_raw_figures(self):
+        import matplotlib
+        matplotlib.use("Agg")
+        with tempfile.TemporaryDirectory() as td:
+            source, output, manifest = self._fixture(td)
+            t = np.arange(0, .04, 20e-6)
+            v = np.zeros(len(t))
+            for left in (.010, .020, .030):
+                v[(t >= left) & (t < left+.00012)] = -18.
+                v[(t >= left+.00012) & (t < left+.00024)] = 18.
+            result = {
+                "record_index": 1, "detector": manifest["detector"],
+                "source_ch1": "waveforms/record_00001_ch1.csv",
+                "sampling_points": len(t), "sampling_interval_us": 20.,
+                "capture_start_s": float(t[0]),
+                "capture_end_s": float(t[-1]),
+                "threshold": {"baseline_v": 0., "threshold_v": -4.,
+                              "threshold_drop_v": 4., "noise_sigma_v": .1},
+                "flags": [], "threshold_sensitivity_event_counts": {
+                    "0.8": 2, "1": 2, "1.2": 2
+                },
+                "near_storage_rail_count": 0,
+                "accepted_pulses": [
+                    {"id": "P00001", "sample_index": 500,
+                     "time_s": float(t[500]), "voltage_v": -18.,
+                     "status": "CANDIDATE_REVIEW"},
+                    {"id": "P00002", "sample_index": 1000,
+                     "time_s": float(t[1000]), "voltage_v": -18.,
+                     "status": "RELAXED_QUIET_REVIEW"},
+                ],
+                "rejected": [
+                    {"sample_index": 750, "time_s": float(t[750]),
+                     "voltage_v": -6., "status": "REJECTED_INSUFFICIENT_BASELINE"}
+                ],
+                "suppressed": [
+                    {"sample_index": 758, "time_s": float(t[758]),
+                     "voltage_v": -2., "status": "SUPPRESSED_CLOSE_CROSSING"}
+                ],
+                "periods": [],
+            }
+            figures = plot_report(output, t, v, result)
+            report_markdown(result, output, manifest, figures)
+            self.assertTrue((output / "report.md").exists())
+            self.assertTrue((output / "metrics.json").exists())
+            self.assertTrue((output / "figures/waveform_full.png").exists())
+            self.assertTrue((output / "figures/waveform_event_detail.png").exists())
+            self.assertTrue((
+                output / "figures/flagged_accepted/P00002_raw.png").exists()
+            )
+            flagged = sorted((output / "figures/rejected").glob("*.png"))
+            self.assertEqual(len(flagged), 2)
+            text = (output / "report.md").read_text()
+            self.assertIn("Operator review", text)
+            self.assertIn("rejection_reviews.csv", text)
 
     def test_unresolved_flagged_candidates_block_global_signoff(self):
         with tempfile.TemporaryDirectory() as td:
