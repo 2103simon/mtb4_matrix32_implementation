@@ -177,3 +177,110 @@ or per interval.
 
 No physical pulse detection or clock accuracy has been validated by
 software-only tests in this repository.
+
+## 6. Source-locked S01/S02-style operator review reports
+
+For each `analysis/record_0000N/pulse_review/`, the offline review script
+now produces `report.md`, `metrics.json`, and `figures/` containing
+the S02 min/max full-CH1 waveform with candidate crosses, an S01 original
+raw-sample pulse zoom, a two-panel **individual plot for every rejected and
+suppressed transition**, and individual raw plots of each relaxed-quiet
+accepted candidate. The plotting helpers
+[`plotting/envelopes.py`](../plotting/envelopes.py),
+[`plotting/waveforms.py`](../plotting/waveforms.py),
+[`plotting/style.py`](../plotting/style.py) and
+[`analysis_primitives/s02_rejection_review.py`](../analysis_primitives/s02_rejection_review.py)
+were copied unchanged from `matrix32_nerve_stimulation` branch
+`cleanup/analysis-consolidation`. Dynamic recordings use the S02 plotting
+helper, but **not** the original fixed-frequency missing-slot repair
+classifier, because the commanded rate changes during our recording.
+
+The report also generates an *editable* `review_decisions.csv` with
+original IDs `P00001...` (accepted), `R00001...` (rejected),
+`S00001...` (suppressed), time/sample, original detector status,
+`decision`, and `note`. The operator should label each R/S as
+**INCLUDE** (genuine physical pulse) or **EXCLUDE** (secondary/rejected
+feature), with a brief evidence note. They may mark any P as EXCLUDE
+(false positive) with a note. Blanks remain unresolved. For genuinely
+missing pulses absent from the detector's event inventory, enter an
+`M...` identifier, observed `time_s`, `INCLUDE` or `EXCLUDE`, and
+raw waveform evidence in `manual_additions.csv`. Every included M event
+requires an evidence note.
+
+For rapid review, leave correct P rows blank and **explicitly approve all
+unchanged P rows** at sign-off using `--confirm-accepted`. R and S rows
+always require individual decisions. If any detection is still uncertain,
+do not sign off that record.
+
+```bash
+# 1. Generate figures, inventory and editable review tables. Hardware OFF.
+python -u oscilloscope/review_pulse_detection.py \
+  --run-dir data/recordings/<RUN>
+
+# 2. Inspect analysis/record_00001/pulse_review/report.md and all raw
+#    close-up plots. Edit review_decisions.csv (and optional additions).
+
+# 3. Approve ONLY after checking all candidates and the entire recording.
+python -u oscilloscope/apply_pulse_review.py \
+  --run-dir data/recordings/<RUN> --record 1 \
+  --reviewer "operator" --confirm-accepted --confirm-complete
+
+# 4. The existing integrated analyzer now exposes a separate
+#    reviewed_negative_onsets status only for source-locked approved records.
+python -u oscilloscope/analyze_integrated_matrix32.py \
+  --run-dir data/recordings/<RUN>
+```
+
+The approval is **hash-locked** to the raw CH1 waveform, generated event
+tables, and the editable operator decisions. Any stale/changed file
+invalidates the approval and the downstream loader fails closed. It
+produces `approved_onsets.csv`, `approved_intervals.csv` and a
+signed `review_approval.json`; original detection files are not edited.
+A human-approved record with zero observed onsets documents an
+observation at this instrument's sensitivity, **not** a guarantee of
+zero electrical output. The session report separately counts only
+approved records; other records remain **unknown**, not zero.
+
+## 7. Frequency observability and cycle-boundary constraints
+
+As demonstrated in the reference Matrix32 study, live SF updates apply
+at cycle boundaries, not instantaneously on ACK. A current cycle may
+finish after a new command is ACKed. When recording starts we do not
+know the phase within the currently running Matrix32 cycle.
+
+Our initial criterion for **physically observed frequency** is **two
+consecutive, complete, operator-approved pulse intervals** compatible
+with the same rate, within one scope acquisition. This is three
+successive verified pulse onsets and two full onset-to-onset periods,
+not two isolated pulses. The interval time support and any clock
+uncertainty must be considered; no interval spanning an ACK transition,
+an unobserved scope gap, or an uncertain transition is enough to claim
+application.
+
+Classification should remain:
+
+1. **Physically observed (provisional attribution)** when two complete
+   reviewed intervals match an ACK-compatible state under a specified
+   lag/settling rule and a suitable per-record clock map.
+2. **Not observable under available evidence** when dwell is too short,
+   during acquisition gaps, near a transition/record boundary, or no
+   qualified clock synchronization exists.
+3. **Potentially inconsistent** if adequate reviewed intervals exist but
+   contradict the expected state after accounting for transition and
+   clock uncertainty.
+
+The exact maximum ACK-to-physical-application lag has NOT been
+measured. **A scheduler can wait until the end of its previous cycle**,
+so a fixed 5-ms settling guard is not a universal guarantee,
+especially when the previous rate was 2 Hz (nominal 500-ms cycle).
+We should not treat an ACK as an electrical application timestamp or
+label a state "skipped" without a model of prior-cycle timing and
+sufficient post-transition observations.
+
+For requested tactile rate zero, the active controller now ACKs **SC1=0**
+*before* changing SF to **400 Hz**. This may shorten **subsequent**
+scheduler periods while current is zero and improve later responsiveness,
+but **cannot make the already-running preceding cycle finish faster**.
+The muted SF=400 ACK is transport evidence, not evidence that 400-Hz
+physical pulses were produced. As before, software STOP/SC ACKs are not
+proof of physical output OFF; electrical verification remains necessary.
