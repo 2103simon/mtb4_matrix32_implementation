@@ -127,8 +127,8 @@ For a longer sequence, use `--count 6` (six × 20 s, **120 s observed scope time
 ```bash
 # One MCU/Matrix32 session and nine independent CH1+CH2 scope records.
 # 900 seconds is an external wall-clock guard, not the requested scope duration.
-timeout --signal=INT --kill-after=20s 900s \\
-  python -u oscilloscope/record_integrated_matrix32.py \\
+timeout --signal=INT --kill-after=20s 900s \
+  python -u oscilloscope/record_integrated_matrix32.py \
   --run --arm --dummy-load-confirmed --count 9
 ```
 
