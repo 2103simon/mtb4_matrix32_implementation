@@ -24,7 +24,7 @@ Use an **external OS watchdog** on instrument runs, since a blocking USBTMC tran
 | [`record_scope_live.py`](record_scope_live.py) | Scope only | Repeated **separate** finite scope acquisitions, gaps retained |
 | [`test_gray_timecode.py`](test_gray_timecode.py) | Nano + scope | Decode CH2 Gray timecode; optionally multiple captures |
 | [`test_gray_epoch_pause.py`](test_gray_epoch_pause.py) | Nano + scope | Three 20-second captures, normally with 60-second pauses and independent pre/post SYNC epochs |
-| [`record_integrated_matrix32.py`](record_integrated_matrix32.py) | Feather + Matrix32 BLE + Nano + scope | One 20-second simultaneous CH1 physical output and CH2 Nano reference recording |
+| [`record_integrated_matrix32.py`](record_integrated_matrix32.py) | Feather + Matrix32 BLE + Nano + scope | One or more separate 20-second CH1 physical output + CH2 Nano reference records under one continuous controller session |
 | [`decode_gray_timecode.py`](decode_gray_timecode.py) | Offline files | Extract Gray frames and scope-local times from CH2 CSV |
 | [`align_gray_records.py`](align_gray_records.py) | Offline files | Match CH2 counter/edge times to Nano USB full counter + `EDGE_US` |
 | [`analyze_gray_epoch_experiment.py`](analyze_gray_epoch_experiment.py) | Offline files | Per-record Nano↔PC SYNC fit, quality and drift report |
@@ -35,7 +35,7 @@ Use an **external OS watchdog** on instrument runs, since a blocking USBTMC tran
 | [`compare_nano_sync_transports.py`](compare_nano_sync_transports.py) | Offline files | Legacy text versus CRC32 binary SYNC transport comparison |
 | [`test_nano_clock_sync.py`](test_nano_clock_sync.py) | Nano (when explicitly run) | Nano clock/serial transport diagnostic |
 
-The name `record_scope_live.py` means **repeated finite acquisitions**, not gap-free continuous raw ADC streaming. The integrated runner currently produces **one** scope acquisition per invocation even though the offline analyzer supports multiple record entries.
+The name `record_scope_live.py` means **repeated finite acquisitions**, not gap-free continuous raw ADC streaming. The integrated runner accepts **`--count N` (1–12)** and produces N independent scope acquisitions while retaining the same MCU/Matrix32 controller and Nano generator. It downloads each frozen record before rearming, so there are unavoidable **unobserved acquisition gaps**; the offline analyzer already supports independent record entries.
 
 ## Scope-only finite capture
 
@@ -104,7 +104,7 @@ timeout --signal=INT --kill-after=20s 180s \
   python -u oscilloscope/record_integrated_matrix32.py --run
 ```
 
-**Live isolated dummy-load measurement** after approved wiring, probing and physical disconnect checks:
+**Live CH1 dummy-load measurement** after approved wiring, probing and physical disconnect checks (one 20-second record):
 
 ```bash
 timeout --signal=INT --kill-after=20s 180s \
@@ -122,7 +122,17 @@ The integrated sequence is:
 6. Take 30 post-recording SYNC exchanges, request Matrix32 STOP, download CH1+CH2 after output shutdown attempt, and preserve raw data.
 7. Compute diagnostic per-record Gray/SYNC alignment, which may be **unqualified** under the legacy 100 µs scope RMS threshold without invalidating raw scope-local pulse measurements.
 
-A software STOP/ACK does not establish that electrical output is absent: verify CH1 and use physical disconnection when required.
+For a longer sequence, use `--count 6` (six × 20 s, **120 s observed scope time**) or `--count 9` (nine × 20 s, **180 s observed scope time**). The overall session is longer than that because of Nano pre/post SYNC and **two-channel waveform transfers** between acquisitions. For example, once a two-record dry-run/bench trial has been validated:
+
+```bash
+# One MCU/Matrix32 session and nine independent CH1+CH2 scope records.
+# 900 seconds is an external wall-clock guard, not the requested scope duration.
+timeout --signal=INT --kill-after=20s 900s \\
+  python -u oscilloscope/record_integrated_matrix32.py \\
+  --run --arm --dummy-load-confirmed --count 9
+```
+
+**Electrical safety:** Matrix32 output may remain active during the **unobserved USBTMC waveform download gaps**. Software STOP is requested only after the final capture, or on a caught error/interruption. The external shell watchdog cannot guarantee an electrical STOP if blocking USBTMC calls or process termination bypass Python cleanup. Maintain an independent physical disconnect and monitor the output appropriately. A software STOP/ACK does not establish that electrical output is absent.
 
 ## Offline analysis and report layout
 
