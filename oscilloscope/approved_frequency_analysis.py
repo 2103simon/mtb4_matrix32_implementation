@@ -194,6 +194,11 @@ def compute_approved_intervals(*, index, approved_onsets, scope_start,
         "status": "OPERATOR_SOURCE_LOCKED_APPROVED",
         "onset_count": len(times), "interval_count": len(rows),
         "record_time_start_s": scope_start, "record_time_end_s": scope_end,
+        "observed_scope_duration_s": float(scope_end-scope_start),
+        "observed_onsets_per_acquired_second": (
+            float(len(times)/(scope_end-scope_start))
+            if scope_end > scope_start else None),
+        "onset_count_rate_is_not_active_cycle_frequency": True,
         "period_ms": _quantiles([r["period_ms"] for r in rows]),
         "inverse_period_hz": _quantiles(
             [r["physical_inverse_period_hz"] for r in rows]),
@@ -395,6 +400,10 @@ def report_markdown(summary):
         f"| Period p10 / p90 | {period['p10']} / {period['p90']} ms |",
         f"| Minimum / maximum period | {period['min']} / {period['max']} ms |",
         f"| Median inverse-period frequency | {inv['median']} Hz |",
+        f"| Minimum / maximum inverse-period frequency | "
+        f"{inv['min']} / {inv['max']} Hz |",
+        f"| Approved onsets per acquired second (including silent windows) | "
+        f"{summary['observed_onsets_per_acquired_second']} onsets/s |",
         f"| Inverse-period frequency p10 / p90 | {inv['p10']} / {inv['p90']} Hz |",
         f"| Diagnostic comparable ACK intervals | "
         f"{summary['diagnostic_comparable_intervals']} |",
