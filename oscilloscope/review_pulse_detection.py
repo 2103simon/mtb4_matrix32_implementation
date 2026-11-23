@@ -119,8 +119,8 @@ def detect_review(t, volts):
     counts_identical = len(set(threshold_counts.values())) == 1
     sampling_us = float(np.median(np.diff(t)) * 1e6)
     flags = []
-    if sampling_us > 2:
-        flags.append("SAMPLE_SPACING_EXCEEDS_2US_FINE_LANDMARK_CRITERION")
+    if sampling_us > 10:
+        flags.append("COARSE_SAMPLE_SPACING_REVIEW_SHORT_PULSE_MORPHOLOGY")
     if not counts_identical:
         flags.append("ONSET_THRESHOLD_COUNT_SENSITIVITY")
     if len(rejected) > len(boundary):
