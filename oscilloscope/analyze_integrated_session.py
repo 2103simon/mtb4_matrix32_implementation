@@ -99,6 +99,15 @@ def summarize_full_stream(mcu, events):
     sf_deltas = np.diff(sf_times)
     positive_sf_deltas = sf_deltas[sf_deltas > 0]
     sf_requested = [e for e in events if e.get("event") == "sf_requested"]
+    sf_muted = [e for e in ok_sf if e.get("zero_current_workaround")]
+    sf_restore_while_muted = [
+        e for e in ok_sf if e.get("restoring_current")
+    ]
+    sf_active = [
+        e for e in ok_sf
+        if not e.get("zero_current_workaround")
+        and not e.get("restoring_current")
+    ]
     sf_failed = [e for e in events if e.get("event") == "sf_failed"]
     acked_frequencies = sorted({
         int(e["frequency_hz"]) for e in ok_sf if e.get("frequency_hz") is not None
@@ -154,6 +163,14 @@ def summarize_full_stream(mcu, events):
             if len(positive_sf_deltas) else None
         ),
         "sf_ack_ok_distinct_frequencies_hz": acked_frequencies,
+        "sf_ack_ok_muted_fast_scheduler_count": len(sf_muted),
+        "sf_ack_ok_restore_while_zero_current_count": len(sf_restore_while_muted),
+        "sf_ack_ok_active_frequency_count": len(sf_active),
+        "sf_ack_ok_active_frequencies_hz": sorted({
+            int(e["frequency_hz"]) for e in sf_active
+            if e.get("frequency_hz") is not None
+        }),
+        "sf400_during_sc_zero_is_not_physical_400hz_evidence": True,
         "sf_ack_matching_warning": (
             "Event counts are not per-command identity matches. "
             "ACKs indicate protocol success; actual electrical output "
@@ -466,8 +483,12 @@ def session_markdown(root, session):
         f"{session['mcu_full_stream'].get('sf_ack_ok_rate_per_mcu_recording_second')}.",
         f"- Median inter-ACK interval: "
         f"{session['mcu_full_stream'].get('sf_ack_ok_median_interack_ms')} ms.",
-        f"- Distinct successful SF ACK frequencies: "
+        f"- Distinct successful SF ACK frequencies (includes muted transport): "
         f"{session['mcu_full_stream'].get('sf_ack_ok_distinct_frequencies_hz')}.",
+        f"- Active-request SF ACK frequencies (exclude SC0 mute/restore): "
+        f"{session['mcu_full_stream'].get('sf_ack_ok_active_frequencies_hz')}.",
+        f"- Muted fast-scheduler SF ACKs (SC=0, SF=400): "
+        f"{session['mcu_full_stream'].get('sf_ack_ok_muted_fast_scheduler_count')}.",
         "These counts are host-native telemetry, not a confirmation that "
         "each acknowledged state appeared on CH1. Scope-window overlap "
         "rates require the provisional time mapping.",
