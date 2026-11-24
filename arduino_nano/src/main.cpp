@@ -165,14 +165,22 @@ static void storeFrame(uint32_t actualEdgeUs) {
 
 #ifdef GRAY_HW_TCA_V1
 // Nano Every PA1 = D7 = TCA0-WO1 when PORTMUX routes TCA0 to PORTA.
-// Use core's DIV64 TCA prescaler unchanged: CLK_PER/64 = 312500 Hz
-// at F_CPU 20MHz. Alternating 312 and 313 ticks produces exactly
-// 2ms/2 cells; each 1ms cell differs from nominal by at most 1.6us.
-// PWM (NOT digitalWrite/ISR) drives the rising and falling D7 edges.
-// TCA0 is the owner of D7 and its other WO channels while active;
-// no analogWrite using TCA0 is allowed.
-#if F_CPU != 20000000UL
-#error Hardware Gray TCA profile is calibrated only for 20MHz Nano Every
+// Preserve the Arduino core TCA DIV64 prescaler (used to clock TCBs).
+// PlatformIO nano_every defaults to 16 MHz: 250 timer ticks = 1ms.
+// For an explicitly configured 20 MHz build, alternate 312 and 313
+// ticks to yield a 2ms exact pair with <=1.6us per-cell phase error.
+// D7 is controlled by double-buffered TCA PWM hardware; the overflow
+// ISR computes ONLY the next cell's duty, not the physical edge time.
+#if F_CPU == 16000000UL
+static constexpr uint16_t HW_TICKS_A = 250;
+static constexpr uint16_t HW_TICKS_B = 250;
+static constexpr uint16_t HW_FULL_HIGH = 250;  // > PER=249.
+#elif F_CPU == 20000000UL
+static constexpr uint16_t HW_TICKS_A = 312;
+static constexpr uint16_t HW_TICKS_B = 313;
+static constexpr uint16_t HW_FULL_HIGH = 313;  // > PER=311 or 312.
+#else
+#error Hardware Gray TCA profile supports only 16MHz or 20MHz Nano Every
 #endif
 #include <avr/interrupt.h>
 static volatile uint8_t hwPhase = 50;  // 50ms low before first START.
@@ -189,7 +197,7 @@ static inline bool hwHighAtPhase(uint8_t phase) {
   return phase >= 90 && phase < 97;
 }
 
-// PWM width CMP1=313 > PER(311 or 312) means the whole cell is
+// CMP1=HW_FULL_HIGH > PER means the whole cell is
 // HIGH. CMP1=0 means the whole cell is LOW. Hardware applies this
 // double-buffered duty at each BOTTOM without waiting for the ISR.
 ISR(TCA0_OVF_vect) {
@@ -208,18 +216,19 @@ ISR(TCA0_OVF_vect) {
   }
 
   // Capture a missed 1ms preparation deadline as an explicit warning.
-  // TCA ticks are 3.2us; threshold ~600us. A late ISR would cause
+  // Threshold ~60% of a cell. A late ISR would cause
   // one cell to repeat the previously buffered duty.
-  if (TCA0.SINGLE.CNT > 188) {
+  if (TCA0.SINGLE.CNT > HW_TICKS_A*3/5) {
     ++hwInterruptsLate;
     ++timingOverruns;
   }
   uint8_t nextPhase = phase+1;
   if (nextPhase == 100) nextPhase = 0;
-  TCA0.SINGLE.CMP1BUF = hwHighAtPhase(nextPhase) ? 313 : 0;
+  TCA0.SINGLE.CMP1BUF = hwHighAtPhase(nextPhase) ? HW_FULL_HIGH : 0;
   // Current cell length was buffered at the previous overflow.
-  // The following cell alternates 312/313 TCA clock ticks.
-  TCA0.SINGLE.PERBUF = (phase & 1) ? 311 : 312;
+  // 16MHz: 250 ticks in each cell. 20MHz: alternate 312/313.
+  TCA0.SINGLE.PERBUF = (phase & 1) ?
+      HW_TICKS_A-1 : HW_TICKS_B-1;
 }
 
 static void hardwareStop() {
@@ -241,8 +250,8 @@ static void hardwareStart() {
   hwFramesStarted = 0;
   hwInterruptsLate = 0;
   TCA0.SINGLE.CNT = 0;
-  TCA0.SINGLE.PER = 311;     // first cell = 312 TCA ticks
-  TCA0.SINGLE.PERBUF = 312;  // second cell = 313 TCA ticks
+  TCA0.SINGLE.PER = HW_TICKS_A-1;
+  TCA0.SINGLE.PERBUF = HW_TICKS_B-1;
   TCA0.SINGLE.CMP1 = 0;
   TCA0.SINGLE.CMP1BUF = 0;
   PORTMUX.TCAROUTEA = PORTMUX_TCA0_PORTA_gc;
