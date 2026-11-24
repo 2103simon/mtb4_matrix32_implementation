@@ -183,9 +183,9 @@ static void startGenerator() {
 
 static void handleCommand(const char* line, uint32_t receivedUs) {
   // Sequence numbers are returned verbatim so the host can match ACKs.
-  char op[12] = {0};
+  char op[20] = {0};
   unsigned long seq = 0;
-  if (sscanf(line, "%11s %lu", op, &seq) != 2) {
+  if (sscanf(line, "%19s %lu", op, &seq) != 2) {
     Serial.println(F("ERR 0 BAD_COMMAND"));
     return;
   }
