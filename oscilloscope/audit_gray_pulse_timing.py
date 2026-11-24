@@ -80,6 +80,35 @@ def geometry(record, frame_log, pulses, *, frame_s=FRAME_S):
             "nano_start_us": int(nano["nano_unwrapped_us"]),
             "overruns": int(nano["overruns"]),
         })
+    # Diagnostic only: see whether START/END-anchored phase rescaling
+    # predicts the held-out DATA rise positions. This does not modify any
+    # waveform time axis or assume that the scope's clock needs repair.
+    by_frame = defaultdict(list)
+    for row in widths:
+        by_frame[row["frame"]].append(row)
+    phase_rows = []
+    for frame, group in by_frame.items():
+        starts_in_frame = [r for r in group if r["role"] == "START"]
+        ends_in_frame = [r for r in group if r["role"] == "END"]
+        if len(starts_in_frame) != 1 or len(ends_in_frame) != 1:
+            continue
+        start = starts_in_frame[0]["rise_s"]
+        end = ends_in_frame[0]["rise_s"]
+        if end <= start:
+            continue
+        scale = (end-start)/.090
+        for row in group:
+            if row["group"] != "DATA":
+                continue
+            bit_index = int(row["role"].split("_")[1])
+            ideal_phase = .007 + bit_index*.005
+            raw_error_us = (row["rise_s"]-start-ideal_phase)*1e6
+            warped_error_us = (
+                row["rise_s"]-start-ideal_phase*scale)*1e6
+            row["raw_bit_schedule_error_us"] = raw_error_us
+            row["phase_rescaled_bit_error_us"] = warped_error_us
+            row["frame_start_to_end_scale"] = scale
+            phase_rows.append((raw_error_us, warped_error_us))
     starts.sort(key=lambda x: x["frame"])
     # Distances between successive *actually present* HIGH pulses are
     # content-dependent: Gray zero bits create no physical pulse.
@@ -145,6 +174,15 @@ def geometry(record, frame_log, pulses, *, frame_s=FRAME_S):
         "slot_rise_start_residual_us": summarize(slot_errors["START"]),
         "slot_rise_data_residual_us": summarize(slot_errors["DATA"]),
         "slot_rise_end_residual_us": summarize(slot_errors["END"]),
+        "phase_warp_test": {
+            "heldout_data_rises": len(phase_rows),
+            "raw_data_rise_error_us": summarize([x[0] for x in phase_rows]),
+            "start_end_rescaled_data_error_us": summarize(
+                [x[1] for x in phase_rows]),
+            "model": "START_END_ANCHORS_PREDICT_HELDOUT_BITS",
+            "independent_clock_validation": False,
+            "raw_waveform_modified": False,
+        },
         "physical_inter_pulse_rise_gap_us": summarize([
             r["inter_pulse_rise_gap_us"] for r in widths
             if r["inter_pulse_rise_gap_us"] is not None]),
@@ -239,7 +277,8 @@ def run(run_dir, *, threshold=2.):
             "frame", "role", "group", "scope_frame_s", "rise_s",
             "rise_offset_us", "physical_width_us", "nominal_width_us",
             "width_error_us", "inter_pulse_rise_gap_us",
-            "inter_pulse_low_gap_us",
+            "inter_pulse_low_gap_us", "raw_bit_schedule_error_us",
+            "phase_rescaled_bit_error_us", "frame_start_to_end_scale",
         ])
         save_csv(folder/"gray_frame_spacing_physical_vs_nano.csv", spacing, [
             "frame_from", "frame_to", "frame_steps", "scope_time_s",
@@ -326,12 +365,31 @@ def run(run_dir, *, threshold=2.):
             f"Unmatched expected roles: {r['unmatched_roles']}; "
             f"unassigned pulses: "
             f"{r['unassigned_complete_high_pulses']}.", "",
+            f"Held-out DATA bit rises for phase-rescale test: "
+            f"{r['phase_warp_test']['heldout_data_rises']}; "
+            f"raw RMS-like error scale (std) "
+            f"{r['phase_warp_test']['raw_data_rise_error_us']['std']} us, "
+            f"rescaled error scale (std) "
+            f"{r['phase_warp_test']['start_end_rescaled_data_error_us']['std']} us.", "",
             f"![Pulse width, frame timing and relative timestamp error]"
             f"(record_{idx:05d}/gray_pulse_geometry.png)", "",
             f"![Measured pulse-width error histograms]"
             f"(record_{idx:05d}/gray_width_histograms.png)", "",
         ]
     lines += [
+        "## Diagnostic START/END anchored local time rescaling", "",
+        "Each frame offers two physical reference points: its START and "
+        "END rising edges (nominally 90 ms apart). As an explicitly "
+        "exploratory test, rescale the intermediate Gray phase to this "
+        "observed separation and predict the DATA rising edges, which "
+        "are NOT used to calculate the scaling. A reduction in residuals "
+        "suggests that intra-frame phase stretch may explain part of "
+        "the scheduling pattern, not that the oscilloscope timebase "
+        "needs alteration. No raw waveform is edited.", "",
+        "The per-bit raw and phase-rescaled prediction errors are saved "
+        "in gray_pulse_widths.csv. Each frame's two anchors are "
+        "training observations; the DATA bit edges are held out. "
+        "This does NOT calibrate Nano EDGE_US or PC timing.", "",
         "## Hardware limitation", "",
         "This cannot verify a truly simultaneous GPIO edge timestamp. "
         "The Nano Every uses an ATmega4809 clock for its CPU/timer and "
