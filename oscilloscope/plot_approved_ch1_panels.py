@@ -126,23 +126,26 @@ def run(run_dir, *, record=None):
             following = original.find("\n## ", first+len(heading))
             original = (original[:first].rstrip()+"\n"
                         + (original[following:] if following >= 0 else ""))
-        # The same image previously appeared a second time under
-        # "CH1 onset-marked traces". Remove all duplicate references,
-        # retaining only the FIRST occurrence in the diagnostic section.
+        # Keep exactly the first embedded waveform_full.png occurrence,
+        # whatever its historical caption; remove later duplicate embeds.
         import re
-        copies = 0
-        def keep_first_image(match):
-            nonlocal copies
-            copies += 1
-            return match.group(0) if copies == 1 else ""
-        original = re.sub(
-            r"(?m)^!\\[[^\\]\\n]*\\]\\(figures/waveform_full\\.png\\)\\s*\\n?",
-            keep_first_image, original)
-        # The first plot now has four panels; make the caption accurate.
-        original = original.replace(
-            "![waveform_full.png](figures/waveform_full.png)",
-            "![Original CH1 waveform with approved negative onsets, "
-            "four consecutive 5-second panels](figures/waveform_full.png)")
+        image_pattern = re.compile(
+            r"(?m)^!\[[^\]\n]*\]\(figures/waveform_full\.png\)[ \t]*\n?")
+        first = True
+        def deduplicate_image(match):
+            nonlocal first
+            if not first:
+                return ""
+            first = False
+            return (
+                "![Original CH1 waveform and source-locked detected onsets "
+                "(X markers), four consecutive 5-second panels]"
+                "(figures/waveform_full.png)\n"
+            )
+        original = image_pattern.sub(deduplicate_image, original)
+        if first:
+            raise ValueError(
+                f"Report has no first waveform_full.png figure: {report}")
         report.write_text(original, encoding="utf-8")
         print(f"[PLOT] {path}: {len(onsets)} approved onsets; linked in {report}")
         paths.append(str(path))
