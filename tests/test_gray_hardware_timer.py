@@ -48,10 +48,12 @@ class HardwareGrayTests(unittest.TestCase):
             [int(f["counter_mod_65536"]) for f in frames], list(range(8)))
 
     def test_timer_fractional_tick_budget(self):
-        # 20MHz / 64 = 312500 timer ticks/s; every pair of
-        # 1ms PWM cells consumes exactly 625 ticks.
-        self.assertEqual((312+313)*1000, 2*312500)
-        self.assertEqual((312+313)*50, 31250)  # exactly 100ms
+        # PlatformIO Nano Every defaults to 16MHz: TCA DIV64 is 250kHz.
+        # An exact 100ms frame is 100 cells of exactly 250 ticks.
+        self.assertEqual(250*100, 16000000//64//10)
+        # If explicitly configured for 20MHz, an adjacent 312/313
+        # tick pair is exactly 2ms and 50 pairs make 100ms.
+        self.assertEqual((312+313)*50, 20000000//64//10)
 
 
 if __name__ == "__main__":
