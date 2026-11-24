@@ -67,7 +67,7 @@ The operator verified these **discrete record-length selections** on the Tektron
 | Candidate single acquisition | Timebase (10 divisions) | Points per channel | Nominal sample spacing | Samples per 100 µs phase | Raw two-channel 16-bit transfer |
 | --- | --- | ---: | ---: | ---: | ---: |
 | Existing baseline: 20 s | 2 s/div | 1M | 20 µs | 5 | 4 MB |
-| **Recommended next trial: 20 s** | **2 s/div** | **5M** | **4 µs** | **25** | **20 MB** |
+| **Next integrated baseline: 20 s** | **2 s/div** | **10M** | **2 µs** | **50** | **40 MB** |
 | Longer: 50 s | 5 s/div | 5M | 10 µs | 10 | 20 MB |
 | Longer/finer: 50 s | 5 s/div | 10M | 5 µs | 20 | 40 MB |
 | Maximum-depth option: 50 s | 5 s/div | 20M | 2.5 µs | 40 | 80 MB |
@@ -87,7 +87,7 @@ The live runner retains its separate `--run --arm --dummy-load-confirmed` gates.
 
 ## Gray timecode, Nano serial and clock experiments
 
-The Nano Every independently emits **one framed 16-bit Gray counter every 100 ms** on D7 and sends the corresponding **full frame counter, Gray word and Nano `micros()` at frame start** over USB serial. The scope sees the actual edge and Gray bits on CH2. Matching those two observations yields one affine **scope→Nano** mapping per captured record.
+The canonical Nano Every firmware generates **one framed 16-bit Gray counter every 100 ms** on D7 using **TCA0 hardware PWM**. Its overflow ISR reads Nano `micros()` near each START edge and writes the full counter, timestamp and overrun diagnostics into a fixed **256-entry RAM buffer**. The physical edge is hardware-timed but its timestamp is an ISR reading, **not a hardware-capture latch**. The host requests `BUFFER_BEGIN` before each finite scope acquisition and `BUFFER_END` plus `BUFFER_DUMP` afterward. No routine `FRAME` USB telemetry is emitted during the recording. The scope sees actual Gray edges on CH2. Matching those two observations yields one affine **scope→Nano** mapping per captured record.
 
 An independent binary CRC32 four-timestamp SYNC exchange then estimates **Nano→PC monotonic** clock mapping. The integrated runner performs 30 exchanges before and after acquisition; the Gray-only repeated-epoch script uses the same count by default. The PC serial receive time of a `FRAME` is **not** treated as the timestamp of the physical edge.
 
@@ -118,48 +118,68 @@ Read [`docs/gray_timecode_scope_experiment.md`](../docs/gray_timecode_scope_expe
 
 ## Integrated Matrix32 + Feather + Nano + scope
 
-**Dry-run plan (no hardware):**
+**Firmware and flashing:** The sole PlatformIO environment in
+`arduino_nano/platformio.ini` is
+`nano_every_10hz_hardware_timer`. Open the `arduino_nano/` folder as
+a PlatformIO project, Build, then Upload using its project task.
+The recorder verifies `FRAME_MODE 10HZ_HW_TCA_BUFFERED` before START.
+
+**Next baseline:** one simultaneous 20-second capture with **10M
+points on CH1 and 10M on CH2**, 2 s/div and CH2 +1 V rising trigger.
+The operator's prior 20M/20s Gray-only CH2 transfer succeeded; the
+two-channel 10M case is pending physical verification.
 
 ```bash
-python oscilloscope/record_integrated_matrix32.py
-```
+# No devices touched:
+python oscilloscope/record_integrated_matrix32.py \
+  --count 1 --points 10000000 --label integrated_hw_10M_20s_baseline
 
-**Non-stimulating baseline** (`--run` only):
-
-```bash
-timeout --signal=INT --kill-after=20s 180s \
-  python -u oscilloscope/record_integrated_matrix32.py --run
-```
-
-**Live CH1 dummy-load measurement** after approved wiring, probing and physical disconnect checks (one 20-second record):
-
-```bash
-timeout --signal=INT --kill-after=20s 180s \
+# Bench-only: only after all documented electrical safety gates:
+timeout --signal=INT --kill-after=20s 1200s \
   python -u oscilloscope/record_integrated_matrix32.py \
-  --run --arm --dummy-load-confirmed
+  --run --arm --dummy-load-confirmed \
+  --count 1 --points 10000000 --label integrated_hw_10M_20s_baseline
 ```
 
-The integrated sequence is:
+Without `--arm`, `--run` is a non-stimulating hardware check.
+The external watchdog does not guarantee Matrix32 electrical shutdown.
 
-1. Start Nano D7 Gray reference.
-2. Configure scope CH1, CH2, CH2 +1 V rising trigger, 0% pretrigger, horizontal delay OFF, finite SEQUENCE acquisition (**scope remains stopped**).
-3. Connect MCU/Matrix32 controller; wait for MCU encoding ACKs and, if armed, Matrix32 START completion. A fresh positive tactile rate is required for actual output.
-4. Take **30 binary CRC32 SYNC** exchanges with the Nano.
-5. Arm scope; acquire one nominal **20-second** record (1,000,000 samples and 2 s/div).
-6. Take 30 post-recording SYNC exchanges, request Matrix32 STOP, download CH1+CH2 after output shutdown attempt, and preserve raw data.
-7. Compute diagnostic per-record Gray/SYNC alignment, which may be **unqualified** under the legacy 100 µs scope RMS threshold without invalidating raw scope-local pulse measurements.
+The implemented integrated sequence is:
 
-For a longer sequence, use `--count 6` (six × 20 s, **120 s observed scope time**) or `--count 9` (nine × 20 s, **180 s observed scope time**). The overall session is longer than that because of Nano pre/post SYNC and **two-channel waveform transfers** between acquisitions. For example, once a two-record dry-run/bench trial has been validated:
+1. Verify Nano INFO includes `FW GRAY_TC_V1`, `PIN 7`,
+   `FRAME_US 100000` and `FRAME_MODE 10HZ_HW_TCA_BUFFERED`;
+   then issue `START`.
+2. Configure and verify scope CH1+CH2, CH2 +1 V rising trigger,
+   0% trigger position, horizontal delay OFF and finite SEQUENCE mode.
+3. Start Feather/Matrix32 controller, wait for MCU config ACKs and,
+   when armed, the Matrix32 START protocol response. Tactile output
+   must be fresh; the response is not proof of electrical onset.
+4. Gather **30 CRC32 binary SYNC** exchanges, then `BUFFER_BEGIN`.
+5. Acquire one nominal **20-second** record at **10M per channel**
+   for the new baseline, with Nano START observations buffered in RAM.
+6. Immediately after acquisition, `BUFFER_END`, `BUFFER_DUMP`;
+   validate received counts and `LOST=0`, then obtain 30 post-SYNC
+   exchanges and download the frozen CH1+CH2 waveforms.
+7. Keep the controller active across any subsequent *separate*
+   captures and USB transfer gaps. Request controller shutdown after
+   the final record; verify the Matrix32 electrically OFF.
+8. Compute per-record Gray/SYNC alignment diagnostics. A fit failing
+   the **100 µs clock threshold** does not invalidate source-locked
+   approved negative CH1 electrical onsets or CH1 interval measurements.
+   Absolute cross-device latency remains provisional.
 
-```bash
-# One MCU/Matrix32 session and nine independent CH1+CH2 scope records.
-# 900 seconds is an external wall-clock guard, not the requested scope duration.
-timeout --signal=INT --kill-after=20s 900s \
-  python -u oscilloscope/record_integrated_matrix32.py \
-  --run --arm --dummy-load-confirmed --count 9
-```
+For a longer sequence, `--count 6` records six independent 20-second
+windows (120 seconds actually observed), and `--count 9` records
+nine such windows (180 observed seconds). These are **not**
+continuous scope observations. Protect original data, explicit
+record boundaries, and the full MCU/BLE logs.
 
-**Electrical safety:** Matrix32 output may remain active during the **unobserved USBTMC waveform download gaps**. Software STOP is requested only after the final capture, or on a caught error/interruption. The external shell watchdog cannot guarantee an electrical STOP if blocking USBTMC calls or process termination bypass Python cleanup. Maintain an independent physical disconnect and monitor the output appropriately. A software STOP/ACK does not establish that electrical output is absent.
+**Electrical safety:** Matrix32 output may remain active during
+unobserved waveform-download gaps. The Python shutdown and an
+OS watchdog are not independent electrical interlocks. An earth-
+referenced passive probe and the shared-anode dummy-load arrangement
+require an operator-approved ground/reference review and a physical
+disconnect; no electrodes or person connected.
 
 ### Capturing when the selected sensor initially requests 0 Hz
 
