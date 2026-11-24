@@ -14,13 +14,44 @@ This is the **current standard** for CH1-only, dummy-load integrated measurement
 | Tektronix CH1 | TPP1000 10× probe tip on CH1 cathode, reference on shared anode in the source rig; check earth-bonding compatibility and use an approved safe probing arrangement |
 | Tektronix CH2 | Arduino Nano Every **D7** Gray timecode, nominal 0–5 V, 2 V/div, +1 V rising trigger |
 | MCU/Feather | Adafruit Feather M4 CAN Express via independent USB serial (115200 baud), connected to MTB4 tactile CAN sensor |
-| Nano | Separate USB serial, **single canonical `nano_every` TCA0 hardware-timed buffered** 10 Hz Gray firmware, `FRAME_MODE 10HZ_HW_TCA_BUFFERED` |
+| Nano | Separate USB serial, **single canonical `nano_every_10hz_hardware_timer` TCA0 hardware-timed buffered** 10 Hz Gray firmware, `FRAME_MODE 10HZ_HW_TCA_BUFFERED` |
 | Scope | MDO4104B-6 over Linux USBTMC, SAMPLE/SEQUENCE, **10,000,000 points per channel in the next baseline** (CLI override), 2 s/div, trigger position 0%, horizontal delay OFF |
 | Host | Python 3.11+ with required packages, Linux BLE/BlueZ, permissions for USB serial and USBTMC |
 
 The physical breadboard retains **all three resistor branches** from the documented reference rig: **R1 = 100.0 kΩ** from Matrix32 CH1 cathode, **R2 = 99.4 kΩ** from Matrix32 CH2 cathode, and **R3 = 99.5 kΩ** from Matrix32 CH3 cathode, each connected to the **same shared anode**. The **992 kΩ spare is disconnected**, and other Matrix32 channels are unconnected as in the source setup. **This project's software commands only Matrix32 CH1 and records its output on oscilloscope CH1**; scope CH2 is connected to Nano D7, not Matrix32 CH2. The TPP1000 passive-probe ground is protective-earth referenced on a conventional Tektronix bench scope: **the reference setup is not inherently an isolated differential measurement**. All scope ground and Nano return connections require an electrical safety review before enabling the stimulator.
 
 The live stimulation settings (SC, SW, SV, ST) are read from [`config/config.json`](../config/config.json). The requested `SF` comes from one selected taxel's `ra_i` or `sa_ii` rate. Commands are limited to channel 1. MCU rate update cadence (~44.5 Hz in recent runs), ACKed SF, and physical CH1 pulse frequency are **three different observables**.
+
+## Canonical Nano firmware and flashing
+
+The Nano firmware remains a complete **PlatformIO Arduino project** under
+`arduino_nano/` with `platformio.ini`, `src/main.cpp` and the
+appropriate ignore/build files. It has exactly **one** environment:
+`nano_every_10hz_hardware_timer`, which is also the default for the
+VS Code PlatformIO Upload button when `arduino_nano/` is opened as a
+PlatformIO project.
+
+```bash
+cd arduino_nano
+pio run -e nano_every_10hz_hardware_timer
+pio run -e nano_every_10hz_hardware_timer -t upload
+cd ..
+```
+
+TCA0 single-slope PWM drives Nano D7 Gray cells in hardware; the
+overflow ISR stores an observed `micros()` timestamp with the frame
+counter and overrun count in a fixed **256-entry RAM buffer**. The
+`EDGE_US` timestamp is **not hardware-latched**. The Nano prints
+`FRAME` lines only upon post-capture `BUFFER_DUMP`, not continuously
+while the scope acquires. With 10Hz framing, the 256-entry buffer
+represents 25.6s: if pre-arm and acquisition overhead cause overflow,
+the result is rejected for clock alignment rather than overwritten.
+
+The 100µs scope↔Nano threshold remains a **clock-model diagnostic**,
+not a requirement for direct source-locked, operator-approved
+**negative CH1 electrical-onset** measurements on the common scope axis.
+USB/BLE offset and command-to-electrical-output latency remain
+uncalibrated.
 
 ## Commands
 
@@ -37,7 +68,7 @@ python -m unittest discover -s tests -p 'test_analyze_integrated*.py' -v
 python oscilloscope/record_integrated_matrix32.py --points 10000000
 
 # Non-stimulating baseline: accesses scope/Nano/Feather/BLE, but NO Matrix32 START.
-timeout --signal=INT --kill-after=20s 180s \
+timeout --signal=INT --kill-after=20s 1200s \
   python -u oscilloscope/record_integrated_matrix32.py --run \
   --count 1 --points 10000000 --label integrated_hw_10M_20s_baseline
 ```
@@ -45,7 +76,7 @@ timeout --signal=INT --kill-after=20s 180s \
 After the [electrical safety gate](electrical_bench_setup.md) has been completed and the bench load/probe arrangement confirmed, an authorized operator may run:
 
 ```bash
-timeout --signal=INT --kill-after=20s 180s \
+timeout --signal=INT --kill-after=20s 1200s \
   python -u oscilloscope/record_integrated_matrix32.py \
   --run --arm --dummy-load-confirmed \
   --count 1 --points 10000000 --label integrated_hw_10M_20s_baseline
@@ -53,7 +84,7 @@ timeout --signal=INT --kill-after=20s 180s \
 
 For approximately **2 minutes of observed scope data**, add `--count 6`; for approximately **3 minutes**, add `--count 9`. These capture 6/9 **separate 20-second segments**, not a gap-free 2–3-minute waveform. The wall-clock experiment is longer due to USB transfers and clock synchronization. For nine records, increase the **external watchdog** accordingly (e.g. `900s` instead of `180s`) but never rely on it as an electrical shutdown interlock.
 
-The `--arm` option requires **both** `--run` and `--dummy-load-confirmed`. The external `timeout` is a process watchdog for potentially blocking USBTMC calls, **not** an electrical shutdown guarantee. Verify CH1 physically off and use a physical disconnect if required.
+The `--arm` option requires **both** `--run` and `--dummy-load-confirmed`. The 1200-second external `timeout` is a generous **wall-clock watchdog** for potentially slow two-channel USBTMC transfer, **not the stimulation duration** and not an electrical shutdown guarantee. If transfer stalls, output may remain active; the authorized operator must maintain an accessible physical disconnect and monitor the bench. Verify CH1 physically off and use a physical disconnect if required.
 
 ## Actual acquisition order
 
