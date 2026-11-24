@@ -15,12 +15,12 @@ This is the **current standard** for CH1-only, dummy-load integrated measurement
 | Tektronix CH2 | Arduino Nano Every **D7** Gray timecode, nominal 0–5 V, 2 V/div, +1 V rising trigger |
 | MCU/Feather | Adafruit Feather M4 CAN Express via independent USB serial (115200 baud), connected to MTB4 tactile CAN sensor |
 | Nano | Separate USB serial, **single canonical `nano_every_10hz_hardware_timer` TCA0 hardware-timed buffered** 10 Hz Gray firmware, `FRAME_MODE 10HZ_HW_TCA_BUFFERED` |
-| Scope | MDO4104B-6 over Linux USBTMC, SAMPLE/SEQUENCE, **10,000,000 points per channel in the next baseline** (CLI override), 2 s/div, trigger position 0%, horizontal delay OFF |
+| Scope | MDO4104B-6 over Linux USBTMC, SAMPLE/SEQUENCE, **10,000,000 points per channel in the baseline** (CLI override), 2 s/div, trigger position 0%, horizontal delay OFF |
 | Host | Python 3.11+ with required packages, Linux BLE/BlueZ, permissions for USB serial and USBTMC |
 
 The physical breadboard retains **all three resistor branches** from the documented reference rig: **R1 = 100.0 kΩ** from Matrix32 CH1 cathode, **R2 = 99.4 kΩ** from Matrix32 CH2 cathode, and **R3 = 99.5 kΩ** from Matrix32 CH3 cathode, each connected to the **same shared anode**. The **992 kΩ spare is disconnected**, and other Matrix32 channels are unconnected as in the source setup. **This project's software commands only Matrix32 CH1 and records its output on oscilloscope CH1**; scope CH2 is connected to Nano D7, not Matrix32 CH2. The TPP1000 passive-probe ground is protective-earth referenced on a conventional Tektronix bench scope: **the reference setup is not inherently an isolated differential measurement**. All scope ground and Nano return connections require an electrical safety review before enabling the stimulator.
 
-The live stimulation settings (SC, SW, SV, ST) are read from [`config/config.json`](../config/config.json). The requested `SF` comes from one selected taxel's `ra_i` or `sa_ii` rate. Commands are limited to channel 1. MCU rate update cadence (~44.5 Hz in recent runs), ACKed SF, and physical CH1 pulse frequency are **three different observables**.
+The live stimulation settings (SC, SW, SV, ST) are read from [`config/config.json`](../config/config.json). The requested `SF` comes from one selected taxel's `ra_i` or `sa_ii` rate. Commands are limited to channel 1. MCU rate update cadence (about 69 snapshots/s in the supplied 2026-11-24 baseline), ACKed SF, and physical CH1 pulse frequency are **three different observables**. The `sa150Hz` recording label describes the SA encoding limit, not a guaranteed telemetry cadence.
 
 ## Canonical Nano firmware and flashing
 
@@ -302,7 +302,7 @@ independent verification against the original waveform samples.
 For electrical details and source provenance, see [CH1 dummy-load wiring](electrical_bench_setup.md). For the complete Nano frame/timestamp method, see [clock mapping](clock_mapping_and_time_domains.md).
 
 
-## New canonical 10M × 20s integrated baseline (after branch cleanup)
+## Canonical 10M × 20s integrated baseline
 
 The target is **one** 20-second CH1+CH2 acquisition, with **10M
 samples on each channel** (20M samples combined), an active Feather M4
@@ -327,10 +327,14 @@ timeout --signal=INT --kill-after=20s 1200s \
 
 Check the displayed acquisition plan is CH1+CH2, 10M points per
 channel, 2 s/div, 20 s duration, single record and the required
-`nano_mode_required = 10HZ_HW_TCA_BUFFERED`. The Nano has already
-recorded 20M points on CH2 alone in a bench test, **but we have not
-yet verified this simultaneous two-channel 10M configuration**. The
-scope settings readback must match before the controller is armed.
+`nano_mode_required = 10HZ_HW_TCA_BUFFERED`. The operator-supplied
+`20261124T080841086567Z_integrated_hw_10M_20s_baseline` archive contains
+10M original samples on each channel, 200 complete scope Gray frames,
+203 buffered Nano frames with zero reported loss, and 1,011 approved
+CH1 negative onsets. This establishes a completed simultaneous capture;
+its saved clock status remains unqualified at the unchanged 100 µs gate
+(scope/Nano RMS 124.1 µs). Each new acquisition still requires matching
+scope settings readback before the controller is armed.
 A long wall-clock timeout accommodates a slow two-channel USB
 download; it does not imply the actual stimulation lasts 1200s.
 
