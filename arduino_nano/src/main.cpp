@@ -7,7 +7,7 @@
  * guard low 3 ms, END high 7 ms, idle low 3 ms.
  *
  * START at phase 0; data start at 7 ms; END at 90 ms.
- * 10 frames/s; full frame index logged over USB serial.
+ * 10 frames/s; EDGE_US sampled in TCA0 ISR and buffered until after acquisition.
  * uint32_t micros() wraps ~71.6 min; host log includes frame index
  * to disambiguate 16-bit waveform counter wraps.
  *
@@ -19,48 +19,20 @@
 
 static constexpr uint8_t MARKER_PIN = 7;
 static constexpr uint32_t BAUD = 115200;
-#if defined(GRAY_BUFFERED_V1) || defined(GRAY_HW_TCA_V1)
 static constexpr uint32_t FRAME_US = 100000UL;
-static constexpr bool BUFFERED = true;
-static constexpr bool SLOW_DEFERRED = false;
-#elif defined(GRAY_SLOW_DEFERRED)
-static constexpr uint32_t FRAME_US = 200000UL;
-static constexpr bool BUFFERED = false;
-static constexpr bool SLOW_DEFERRED = true;
-#else
-static constexpr uint32_t FRAME_US = 100000UL;
-static constexpr bool SLOW_DEFERRED = false;
-static constexpr bool BUFFERED = false;
-#endif
-static constexpr uint32_t START_US = 4000UL;
-static constexpr uint32_t DATA_BEGIN_US = 7000UL;
-static constexpr uint32_t BIT_SLOT_US = 5000UL;
-static constexpr uint32_t BIT_HIGH_US = 1000UL;
-static constexpr uint32_t END_BEGIN_US = 90000UL;
-static constexpr uint32_t END_US = 7000UL;
 static constexpr uint16_t BITS = 16;
-static constexpr uint32_t MAX_SCHEDULER_LATENESS_US = 1500UL;
-
 static bool running = false;
-static bool pinHigh = false;
-static uint32_t frameOriginUs = 0;
 static volatile uint32_t frameIndex = 0;
 static volatile uint16_t frameGray = 0;
 static volatile uint32_t timingOverruns = 0;
-static bool frameLogPending = false;
-static uint32_t pendingFrameEdgeUs = 0;
-// Separate, opt-in 10Hz buffered profile. At most 256 frames / 25.6 s.
-// Each 12-byte entry is a *measured* post-GPIO timestamp, not a predicted
-// frame time. Fixed storage avoids heap fragmentation on a 6KB SRAM MCU.
+// Fixed buffer: 256 x 12 bytes; post-capture serial transfer only.
 struct BufferedFrame {
   uint32_t counter;
   uint32_t edgeUs;
   uint32_t overruns;
 };
 static constexpr uint16_t BUFFER_CAPACITY = 256;
-#if defined(GRAY_BUFFERED_V1) || defined(GRAY_HW_TCA_V1)
 static BufferedFrame frameBuffer[BUFFER_CAPACITY];
-#endif
 static volatile uint16_t bufferedCount = 0;
 static volatile uint32_t bufferedLost = 0;
 static volatile bool buffering = false;
@@ -96,8 +68,7 @@ static void writeLe32(uint8_t* p, uint32_t value) {
   for (uint8_t i = 0; i < 4; ++i) p[i] = (uint8_t)(value >> (8 * i));
 }
 
-// Binary response is emitted entirely by one loop iteration; text FRAME
-// output is only emitted by tickGenerator outside that iteration.
+// Binary ACK responds to host SYNC; FRAME logs are post-capture only.
 static void handleBinarySync(uint32_t receivedUs) {
   if (binaryRx[2] != 1 || binaryRx[3] != 1 ||
       readLe32(binaryRx + 8) != crc32IEEE(binaryRx + 2, 6)) {
@@ -119,13 +90,6 @@ static void handleBinarySync(uint32_t receivedUs) {
 }
 
 
-static void setMarker(bool high) {
-  if (high != pinHigh) {
-    digitalWrite(MARKER_PIN, high ? HIGH : LOW);
-    pinHigh = high;
-  }
-}
-
 static uint16_t gray16(uint32_t index) {
   uint16_t binary = (uint16_t)index;
   return binary ^ (binary >> 1);
@@ -143,12 +107,7 @@ static void emitFrameValues(uint32_t index, uint32_t edgeUs,
   Serial.println(overruns);
 }
 
-static void emitFrameLog(uint32_t actualEdgeUs) {
-  emitFrameValues(frameIndex, actualEdgeUs, timingOverruns);
-}
-
 static void storeFrame(uint32_t actualEdgeUs) {
-#if defined(GRAY_BUFFERED_V1) || defined(GRAY_HW_TCA_V1)
   if (!buffering) return;
   if (bufferedCount < BUFFER_CAPACITY) {
     BufferedFrame &entry = frameBuffer[bufferedCount++];
@@ -158,12 +117,8 @@ static void storeFrame(uint32_t actualEdgeUs) {
   } else {
     ++bufferedLost;  // Never overwrite earlier frame evidence.
   }
-#else
-  (void)actualEdgeUs;
-#endif
 }
 
-#ifdef GRAY_HW_TCA_V1
 // Nano Every PA1 = D7 = TCA0-WO1 when PORTMUX routes TCA0 to PORTA.
 // Preserve the Arduino core TCA DIV64 prescaler (used to clock TCBs).
 // PlatformIO nano_every defaults to 16 MHz: 250 timer ticks = 1ms.
@@ -262,31 +217,19 @@ static void hardwareStart() {
   TCA0.SINGLE.CTRLA = TCA_SINGLE_CLKSEL_DIV64_gc |
                       TCA_SINGLE_ENABLE_bm;
 }
-#endif  // GRAY_HW_TCA_V1
 
 static void stopGenerator() {
   running = false;
-  frameLogPending = false;
   buffering = false;
-#ifdef GRAY_HW_TCA_V1
   hardwareStop();
-#else
-  setMarker(false);
-#endif
 }
 
 static void startGenerator() {
   stopGenerator();
   frameIndex = 0;
   timingOverruns = 0;
-  frameLogPending = false;
-  frameGray = gray16(frameIndex);
-  // Defer the first frame for 50 ms to allow command ACK to transmit.
-#ifdef GRAY_HW_TCA_V1
+  frameGray = gray16(0);
   hardwareStart();
-#else
-  frameOriginUs = micros() + 50000UL;
-#endif
   running = true;
 }
 
@@ -315,16 +258,10 @@ static void handleCommand(const char* line, uint32_t receivedUs) {
     Serial.print(F(" BITS ")); Serial.print(BITS);
     Serial.print(F(" RUN ")); Serial.print(running ? 1 : 0);
     Serial.print(F(" FRAME_MODE "));
-    Serial.print(BUFFERED ?
-#ifdef GRAY_HW_TCA_V1
-                 F("10HZ_HW_TCA_BUFFERED") :
-#else
-                 F("10HZ_BUFFERED") :
-#endif
-                 (SLOW_DEFERRED ? F("5HZ_DEFERRED") : F("10HZ_ORIGINAL")));
+    Serial.print(F("10HZ_HW_TCA_BUFFERED"));
     Serial.print(F(" NEXT ")); Serial.print(frameIndex);
     Serial.print(F(" OVERRUNS ")); Serial.println(timingOverruns);
-  } else if (strcmp(op, "BUFFER_BEGIN") == 0 && BUFFERED) {
+  } else if (strcmp(op, "BUFFER_BEGIN") == 0) {
     if (!running || buffering) {
       Serial.print(F("ERR ")); Serial.println(seq);
     } else {
@@ -336,7 +273,7 @@ static void handleCommand(const char* line, uint32_t receivedUs) {
       Serial.print(F("ACK BUFFER_BEGIN ")); Serial.print(seq);
       Serial.print(F(" CAP ")); Serial.println(BUFFER_CAPACITY);
     }
-  } else if (strcmp(op, "BUFFER_END") == 0 && BUFFERED) {
+  } else if (strcmp(op, "BUFFER_END") == 0) {
     if (!buffering) {
       Serial.print(F("ERR ")); Serial.println(seq);
     } else {
@@ -346,16 +283,14 @@ static void handleCommand(const char* line, uint32_t receivedUs) {
       Serial.print(F(" LOST ")); Serial.print(bufferedLost);
       Serial.print(F(" CAP ")); Serial.println(BUFFER_CAPACITY);
     }
-  } else if (strcmp(op, "BUFFER_DUMP") == 0 && BUFFERED) {
+  } else if (strcmp(op, "BUFFER_DUMP") == 0) {
     if (buffering) {
       Serial.print(F("ERR ")); Serial.println(seq);
     } else {
-#if defined(GRAY_BUFFERED_V1) || defined(GRAY_HW_TCA_V1)
       for (uint16_t i = 0; i < bufferedCount; ++i) {
         const BufferedFrame &row = frameBuffer[i];
         emitFrameValues(row.counter, row.edgeUs, row.overruns);
       }
-#endif
       Serial.print(F("ACK BUFFER_DUMP ")); Serial.print(seq);
       Serial.print(F(" COUNT ")); Serial.print(bufferedCount);
       Serial.print(F(" LOST ")); Serial.println(bufferedLost);
@@ -409,69 +344,6 @@ static void pollSerial() {
   }
 }
 
-static void tickGenerator() {
-  if (!running) return;
-  uint32_t now = micros();
-  // Signed unsigned-difference comparison also handles the initial
-  // scheduled future origin and ordinary micros() wraparound.
-  int32_t offset = (int32_t)(now - frameOriginUs);
-  if (offset < 0) return;
-  uint32_t position = (uint32_t)offset;
-  if (position >= FRAME_US) {
-    uint32_t skipped = position / FRAME_US;
-    if (SLOW_DEFERRED && frameLogPending) {
-      // A frame ended before its log could be safely flushed.
-      ++timingOverruns;
-      frameLogPending = false;
-    }
-    frameOriginUs += skipped * FRAME_US;
-    frameIndex += skipped;
-    frameGray = gray16(frameIndex);
-    timingOverruns += skipped > 1 ? skipped - 1 : 0;
-    position = (uint32_t)(now - frameOriginUs);
-    setMarker(false);
-  }
-  bool high = false;
-  if (position < START_US) {
-    high = true;
-  } else if (position >= DATA_BEGIN_US &&
-             position < DATA_BEGIN_US + BITS * BIT_SLOT_US) {
-    uint32_t bitPosition = position - DATA_BEGIN_US;
-    uint8_t bitNumber = (uint8_t)(bitPosition / BIT_SLOT_US);
-    uint32_t slotPhase = bitPosition % BIT_SLOT_US;
-    high = slotPhase < BIT_HIGH_US &&
-           ((frameGray >> (15 - bitNumber)) & 1);
-  } else if (position >= END_BEGIN_US && position < END_BEGIN_US + END_US) {
-    high = true;
-  }
-  if (high && !pinHigh && position < START_US) {
-    uint32_t expected = frameOriginUs;
-    if ((uint32_t)(now - expected) > MAX_SCHEDULER_LATENESS_US) {
-      ++timingOverruns;
-    }
-    setMarker(true);
-    const uint32_t edgeTimestamp = micros();
-    if (BUFFERED) {
-      storeFrame(edgeTimestamp);
-    } else if (SLOW_DEFERRED) {
-      pendingFrameEdgeUs = edgeTimestamp;
-      frameLogPending = true;
-    } else {
-      emitFrameLog(edgeTimestamp);
-    }
-  } else {
-    setMarker(high);
-  }
-  if (SLOW_DEFERRED && frameLogPending &&
-      position >= END_BEGIN_US + END_US) {
-    // D7 is already LOW; we have 103 ms idle before next START.
-    // EDGE_US remains the original post-digitalWrite timestamp, NOT
-    // the later serial message transmission time.
-    emitFrameLog(pendingFrameEdgeUs);
-    frameLogPending = false;
-  }
-}
-
 void setup() {
   pinMode(MARKER_PIN, OUTPUT);
   digitalWrite(MARKER_PIN, LOW);
@@ -480,17 +352,5 @@ void setup() {
 }
 
 void loop() {
-#ifndef GRAY_HW_TCA_V1
-  tickGenerator();
-#endif
-  if (!SLOW_DEFERRED || !running ||
-      (int32_t)(micros() - frameOriginUs) >=
-          (int32_t)(END_BEGIN_US + END_US) ) {
-    // During the 97-ms encoded waveform, avoid executing serial
-    // commands/SYNC; UART hardware reception remains buffered.
-    pollSerial();
-  }
-#ifndef GRAY_HW_TCA_V1
-  tickGenerator();
-#endif
+  pollSerial();
 }
