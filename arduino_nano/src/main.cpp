@@ -19,7 +19,7 @@
 
 static constexpr uint8_t MARKER_PIN = 7;
 static constexpr uint32_t BAUD = 115200;
-#ifdef GRAY_BUFFERED_V1
+#if defined(GRAY_BUFFERED_V1) || defined(GRAY_HW_TCA_V1)
 static constexpr uint32_t FRAME_US = 100000UL;
 static constexpr bool BUFFERED = true;
 static constexpr bool SLOW_DEFERRED = false;
@@ -44,9 +44,9 @@ static constexpr uint32_t MAX_SCHEDULER_LATENESS_US = 1500UL;
 static bool running = false;
 static bool pinHigh = false;
 static uint32_t frameOriginUs = 0;
-static uint32_t frameIndex = 0;
+static volatile uint32_t frameIndex = 0;
 static uint16_t frameGray = 0;
-static uint32_t timingOverruns = 0;
+static volatile uint32_t timingOverruns = 0;
 static bool frameLogPending = false;
 static uint32_t pendingFrameEdgeUs = 0;
 // Separate, opt-in 10Hz buffered profile. At most 256 frames / 25.6 s.
@@ -58,12 +58,12 @@ struct BufferedFrame {
   uint32_t overruns;
 };
 static constexpr uint16_t BUFFER_CAPACITY = 256;
-#ifdef GRAY_BUFFERED_V1
+#if defined(GRAY_BUFFERED_V1) || defined(GRAY_HW_TCA_V1)
 static BufferedFrame frameBuffer[BUFFER_CAPACITY];
 #endif
-static uint16_t bufferedCount = 0;
-static uint32_t bufferedLost = 0;
-static bool buffering = false;
+static volatile uint16_t bufferedCount = 0;
+static volatile uint32_t bufferedLost = 0;
+static volatile bool buffering = false;
 static char input[64];
 static uint8_t inputSize = 0;
 
@@ -148,7 +148,7 @@ static void emitFrameLog(uint32_t actualEdgeUs) {
 }
 
 static void storeFrame(uint32_t actualEdgeUs) {
-#ifdef GRAY_BUFFERED_V1
+#if defined(GRAY_BUFFERED_V1) || defined(GRAY_HW_TCA_V1)
   if (!buffering) return;
   if (bufferedCount < BUFFER_CAPACITY) {
     BufferedFrame &entry = frameBuffer[bufferedCount++];
@@ -163,11 +163,107 @@ static void storeFrame(uint32_t actualEdgeUs) {
 #endif
 }
 
+#ifdef GRAY_HW_TCA_V1
+// Nano Every PA1 = D7 = TCA0-WO1 when PORTMUX routes TCA0 to PORTA.
+// Use core's DIV64 TCA prescaler unchanged: CLK_PER/64 = 312500 Hz
+// at F_CPU 20MHz. Alternating 312 and 313 ticks produces exactly
+// 2ms/2 cells; each 1ms cell differs from nominal by at most 1.6us.
+// PWM (NOT digitalWrite/ISR) drives the rising and falling D7 edges.
+// TCA0 is the owner of D7 and its other WO channels while active;
+// no analogWrite using TCA0 is allowed.
+#if F_CPU != 20000000UL
+#error Hardware Gray TCA profile is calibrated only for 20MHz Nano Every
+#endif
+#include <avr/interrupt.h>
+static volatile uint8_t hwPhase = 50;  // 50ms low before first START.
+static volatile uint32_t hwFramesStarted = 0;
+static volatile uint32_t hwInterruptsLate = 0;
+
+static inline bool hwHighAtPhase(uint8_t phase) {
+  if (phase < 4) return true;
+  if (phase >= 7 && phase < 87) {
+    uint8_t bit = (uint8_t)((phase - 7)/5);
+    return ((phase - 7)%5 == 0) &&
+        ((frameGray >> (15-bit)) & 1);
+  }
+  return phase >= 90 && phase < 97;
+}
+
+// PWM width CMP1=313 > PER(311 or 312) means the whole cell is
+// HIGH. CMP1=0 means the whole cell is LOW. Hardware applies this
+// double-buffered duty at each BOTTOM without waiting for the ISR.
+ISR(TCA0_OVF_vect) {
+  TCA0.SINGLE.INTFLAGS = TCA_SINGLE_OVF_bm;
+  uint8_t phase = hwPhase + 1;
+  if (phase == 100) phase = 0;
+  hwPhase = phase;
+  if (phase == 0) {
+    frameIndex = hwFramesStarted++;
+    frameGray = gray16(frameIndex);
+    // This is sampled after the hardware-driven rising edge, in its
+    // interrupt. It is NOT an input-capture timestamp or an exact
+    // electrical edge measurement. The physical edge itself is HW PWM.
+    const uint32_t edgeUs = micros();
+    storeFrame(edgeUs);
+  }
+
+  // Capture a missed 1ms preparation deadline as an explicit warning.
+  // TCA ticks are 3.2us; threshold ~600us. A late ISR would cause
+  // one cell to repeat the previously buffered duty.
+  if (TCA0.SINGLE.CNT > 188) {
+    ++hwInterruptsLate;
+    ++timingOverruns;
+  }
+  uint8_t nextPhase = phase+1;
+  if (nextPhase == 100) nextPhase = 0;
+  TCA0.SINGLE.CMP1BUF = hwHighAtPhase(nextPhase) ? 313 : 0;
+  // Current cell length was buffered at the previous overflow.
+  // The following cell alternates 312/313 TCA clock ticks.
+  TCA0.SINGLE.PERBUF = (phase & 1) ? 311 : 312;
+}
+
+static void hardwareStop() {
+  TCA0.SINGLE.INTCTRL = 0;
+  TCA0.SINGLE.CTRLA = 0;
+  TCA0.SINGLE.CTRLB = 0;
+  TCA0.SINGLE.CMP1 = 0;
+  PORTA.OUTCLR = PIN1_bm;
+  PORTMUX.TCAROUTEA = PORTMUX_TCA0_PORTB_gc;
+}
+static void hardwareStart() {
+  // Configure before enabling: pin is LOW, first 50 timer cells LOW.
+  PORTA.DIRSET = PIN1_bm;
+  PORTA.OUTCLR = PIN1_bm;
+  TCA0.SINGLE.CTRLA = 0;
+  TCA0.SINGLE.CTRLB = 0;
+  TCA0.SINGLE.INTCTRL = 0;
+  hwPhase = 50;
+  hwFramesStarted = 0;
+  hwInterruptsLate = 0;
+  TCA0.SINGLE.CNT = 0;
+  TCA0.SINGLE.PER = 311;     // first cell = 312 TCA ticks
+  TCA0.SINGLE.PERBUF = 312;  // second cell = 313 TCA ticks
+  TCA0.SINGLE.CMP1 = 0;
+  TCA0.SINGLE.CMP1BUF = 0;
+  PORTMUX.TCAROUTEA = PORTMUX_TCA0_PORTA_gc;
+  TCA0.SINGLE.CTRLB = TCA_SINGLE_WGMODE_SINGLESLOPE_gc |
+                      TCA_SINGLE_CMP1EN_bm;
+  TCA0.SINGLE.INTFLAGS = TCA_SINGLE_OVF_bm;
+  TCA0.SINGLE.INTCTRL = TCA_SINGLE_OVF_bm;
+  TCA0.SINGLE.CTRLA = TCA_SINGLE_CLKSEL_DIV64_gc |
+                      TCA_SINGLE_ENABLE_bm;
+}
+#endif  // GRAY_HW_TCA_V1
+
 static void stopGenerator() {
   running = false;
   frameLogPending = false;
   buffering = false;
+#ifdef GRAY_HW_TCA_V1
+  hardwareStop();
+#else
   setMarker(false);
+#endif
 }
 
 static void startGenerator() {
@@ -177,7 +273,11 @@ static void startGenerator() {
   frameLogPending = false;
   frameGray = gray16(frameIndex);
   // Defer the first frame for 50 ms to allow command ACK to transmit.
+#ifdef GRAY_HW_TCA_V1
+  hardwareStart();
+#else
   frameOriginUs = micros() + 50000UL;
+#endif
   running = true;
 }
 
@@ -206,7 +306,12 @@ static void handleCommand(const char* line, uint32_t receivedUs) {
     Serial.print(F(" BITS ")); Serial.print(BITS);
     Serial.print(F(" RUN ")); Serial.print(running ? 1 : 0);
     Serial.print(F(" FRAME_MODE "));
-    Serial.print(BUFFERED ? F("10HZ_BUFFERED") :
+    Serial.print(BUFFERED ?
+#ifdef GRAY_HW_TCA_V1
+                 F("10HZ_HW_TCA_BUFFERED") :
+#else
+                 F("10HZ_BUFFERED") :
+#endif
                  (SLOW_DEFERRED ? F("5HZ_DEFERRED") : F("10HZ_ORIGINAL")));
     Serial.print(F(" NEXT ")); Serial.print(frameIndex);
     Serial.print(F(" OVERRUNS ")); Serial.println(timingOverruns);
@@ -234,7 +339,7 @@ static void handleCommand(const char* line, uint32_t receivedUs) {
     if (buffering) {
       Serial.print(F("ERR ")); Serial.println(seq);
     } else {
-#ifdef GRAY_BUFFERED_V1
+#if defined(GRAY_BUFFERED_V1) || defined(GRAY_HW_TCA_V1)
       for (uint16_t i = 0; i < bufferedCount; ++i) {
         const BufferedFrame &row = frameBuffer[i];
         emitFrameValues(row.counter, row.edgeUs, row.overruns);
@@ -364,7 +469,9 @@ void setup() {
 }
 
 void loop() {
+#ifndef GRAY_HW_TCA_V1
   tickGenerator();
+#endif
   if (!SLOW_DEFERRED || !running ||
       (int32_t)(micros() - frameOriginUs) >=
           (int32_t)(END_BEGIN_US + END_US) ) {
@@ -372,5 +479,7 @@ void loop() {
     // commands/SYNC; UART hardware reception remains buffered.
     pollSerial();
   }
+#ifndef GRAY_HW_TCA_V1
   tickGenerator();
+#endif
 }
