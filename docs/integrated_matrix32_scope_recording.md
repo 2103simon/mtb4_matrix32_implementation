@@ -98,6 +98,79 @@ For approximately **2 minutes of observed scope data**, add `--count 6`; for app
 
 The `--arm` option requires **both** `--run` and `--dummy-load-confirmed`. The 1200-second external `timeout` is a generous **wall-clock watchdog** for potentially slow two-channel USBTMC transfer, **not the stimulation duration** and not an electrical shutdown guarantee. If transfer stalls, output may remain active; the authorized operator must maintain an accessible physical disconnect and monitor the bench. Verify CH1 physically off and use a physical disconnect if required.
 
+### Optional timed operator prompts
+
+Add `--operator-prompts config/operator_prompts_resume_20s.json` to have the
+terminal guide the release/repress experiment. Omit this option to run without
+timed cues. The same recorder and hardware configuration are used in both cases.
+
+```bash
+timeout --signal=INT --kill-after=20s 1200s \
+  python -u oscilloscope/record_integrated_matrix32.py \
+  --run --arm --dummy-load-confirmed \
+  --count 1 --points 10000000 \
+  --label integrated_hw_10M_20s_resume_check \
+  --operator-prompts config/operator_prompts_resume_20s.json
+```
+
+Press and hold the selected taxel when the startup message asks, so the existing
+controller can become ready. The timed schedule waits for the host to first
+observe the scope in `TRIGGER` (post-trigger acquisition); setup, pre-SYNC and
+waiting for a trigger do not consume the cue timeline. Watch for these cues:
+
+| Seconds from the observed acquisition start | Instruction |
+| ---: | --- |
+| 0 | Hold steady |
+| 3 | Release completely |
+| 6 | Press gently, then hold |
+| 10 | Release completely |
+| 13 | Press more firmly, then hold until the acquisition ends |
+
+The terminal announces the end after acquisition and Nano buffer collection,
+before waveform download. The controller still runs during download as described
+above; these messages guide the operator and do not command stimulation.
+
+The schedule is an editable **JSON dictionary of seconds to text**:
+
+```json
+{
+  "0": "HOLD the selected taxel steady.",
+  "3": "RELEASE the selected taxel completely.",
+  "6": "PRESS GENTLY, then hold steady.",
+  "10": "RELEASE the selected taxel completely.",
+  "13": "PRESS MORE FIRMLY, then hold until the scope acquisition ends."
+}
+```
+
+Save a different dictionary as another JSON file and pass its path to the same
+option. Decimal seconds are supported. Times must be unique, finite and within
+`0 <= time < nominal_window_s`; text must be nonempty and on one line. The
+schedule is checked before devices are opened. Prompts require a 0% trigger
+position so the instructions refer to the post-trigger record, and restart
+independently for each record when `--count` is greater than one.
+
+Cue timing uses the existing approximately 0.1-second acquisition polling loop.
+The epoch is the host completion time of the first observed `TRIGGER` query,
+not an exact electrical trigger timestamp. USB queries or terminal output can
+delay a cue. If several instructions become overdue, only the latest applicable
+one is printed; obsolete cues are marked skipped. Cues stop on observed scope
+completion, the nominal time limit, acquisition failure or cancellation and do
+not continue through transfers.
+
+`metadata.json` saves the requested dictionary as a normalized schedule under
+`plan.operator_prompts`, and each record's anchor, printed/skipped cues, host
+emission times and lateness under `records[].operator_prompts`. These are prompt
+delivery records, not proof of when or how the operator actually pressed the
+taxel; the MCU trace remains the evidence for the actual input.
+
+For a plan-only preview of the configuration:
+
+```bash
+python oscilloscope/record_integrated_matrix32.py \
+  --points 10000000 \
+  --operator-prompts config/operator_prompts_resume_20s.json
+```
+
 ## Actual acquisition order
 
 1. Open Nano Every USB session, **verify** `FRAME_MODE 10HZ_HW_TCA_BUFFERED` and `FRAME_US 100000`, then issue `START` for hardware-timed 10 Hz Gray D7 output.

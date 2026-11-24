@@ -15,6 +15,7 @@ from record_integrated_matrix32 import (
     verify_nano_info, verify_gray_frame_evidence, NANO_BUFFER_POLL_BUDGET_S,
 )
 from record_scope import configure
+from oscilloscope.operator_prompts import OperatorPrompts, normalize_operator_prompts
 
 
 class IntegratedBenchTests(unittest.TestCase):
@@ -30,8 +31,42 @@ class IntegratedBenchTests(unittest.TestCase):
         self.assertEqual(result["epoch_sync_count"], 30)
         self.assertEqual(result["nano_mode_required"], "10HZ_HW_TCA_BUFFERED")
         self.assertTrue(result["nano_buffered_frames_required"])
+        self.assertFalse(result["operator_prompts"]["enabled"])
+        self.assertEqual(result["operator_prompts"]["schedule"], [])
         self.assertEqual(result["acquisition_order"],
                          "controller_ready_then_pre_sync_then_arm_scope")
+
+    def test_optional_prompt_dictionary_is_planned_without_device_access(self):
+        schedule = (Path(__file__).resolve().parents[1]
+                    / "config/operator_prompts_resume_20s.json")
+        with patch("record_integrated_matrix32.run",
+                   side_effect=AssertionError("Devices opened")):
+            with redirect_stdout(io.StringIO()):
+                result = main(["--points", "10000000",
+                               "--operator-prompts", str(schedule)])
+        prompts = result["operator_prompts"]
+        self.assertTrue(prompts["enabled"])
+        self.assertEqual([row["at_s"] for row in prompts["schedule"]],
+                         [0, 3, 6, 10, 13])
+        self.assertTrue(prompts["repeat_each_record"])
+        self.assertFalse(prompts["scope_clock_synchronized"])
+
+    def test_invalid_prompt_configuration_fails_before_devices_open(self):
+        with tempfile.TemporaryDirectory() as folder:
+            valid = Path(folder) / "valid.json"
+            valid.write_text('{"0": "HOLD"}')
+            too_late = Path(folder) / "late.json"
+            too_late.write_text('{"20": "RELEASE"}')
+            for argv in (
+                    ["--operator-prompts", str(too_late)],
+                    ["--operator-prompts", str(Path(folder) / "missing.json")],
+                    ["--operator-prompts", str(valid), "--trigger-position-pct", "10"]):
+                with self.subTest(argv=argv), redirect_stdout(io.StringIO()), \
+                        redirect_stderr(io.StringIO()), \
+                        patch("record_integrated_matrix32.run") as run_mock:
+                    with self.assertRaises(SystemExit):
+                        main(["--run", *argv])
+                    run_mock.assert_not_called()
 
     def test_multiple_record_plan_and_bounds(self):
         p = parser()
@@ -388,7 +423,9 @@ class BufferedFailureTests(unittest.TestCase):
         self.assertIn("cover the waveform", " ".join(result["issues"]))
 
     def test_success_has_one_acquisition_and_no_cleanup_command(self):
-        with patch("record_integrated_matrix32.acquire", return_value={"seen_running": True}) as acquire_mock:
+        with patch("record_integrated_matrix32.acquire", return_value={"seen_running": True}) as acquire_mock, \
+                patch("record_integrated_matrix32.OperatorPrompts",
+                      side_effect=AssertionError("Optional prompts unexpectedly enabled")):
             acquire_buffered_record(self.nano, None, self.args, self.record, self.child)
         timeout = acquire_mock.call_args.args[1]
         self.assertGreater(timeout, 20)
@@ -396,6 +433,77 @@ class BufferedFailureTests(unittest.TestCase):
         self.assertEqual(self.record["nano_frame_buffer"]["status"], "verified")
         self.nano.buffered_capture_end_and_dump.assert_called_once()
         self.nano.command.assert_not_called()
+
+    def test_prompt_progress_is_logged_and_finished_before_nano_end_dump(self):
+        self.args.operator_prompt_schedule = normalize_operator_prompts(
+            {0: "HOLD", 3: "RELEASE", 6: "PRESS"}, 20)
+        now = [100.0]
+        lines = []
+        def make_prompts(schedule, **kwargs):
+            return OperatorPrompts(schedule, **kwargs, clock=lambda: now[0],
+                                   emit=lines.append)
+        trigger = {"value": "TRIGGER", "query_end_monotonic_s": 100.0}
+        def acquiring(scope, timeout, on_progress):
+            on_progress({"first_trigger_observation": None})
+            self.assertEqual(lines, [])
+            on_progress({"first_trigger_observation": trigger})
+            now[0] = 103.1
+            on_progress({"first_trigger_observation": trigger})
+            now[0] = 106.1
+            stopped = {"first_trigger_observation": trigger,
+                       "first_stopped_observation": {"value": "0"}}
+            on_progress(stopped)
+            return stopped
+        def end_dump(buffer):
+            self.assertEqual(self.record["operator_prompts"]["status"], "finished")
+            self.assertEqual(len(lines), 2)
+            return {"end_ack": "ACK BUFFER_END", "frames_lost": 0}
+        self.nano.buffered_capture_end_and_dump.side_effect = end_dump
+        with patch("record_integrated_matrix32.OperatorPrompts", side_effect=make_prompts), \
+                patch("record_integrated_matrix32.acquire", side_effect=acquiring):
+            acquire_buffered_record(self.nano, None, self.args, self.record, self.child)
+        evidence = self.record["operator_prompts"]
+        self.assertEqual([e["status"] for e in evidence["events"]],
+                         ["printed", "printed", "skipped"])
+        self.assertEqual(evidence["finish_reason"], "scope_stopped")
+        self.assertEqual(evidence["anchor_monotonic_s"], 100.0)
+        self.nano.command.assert_not_called()
+
+    def test_enabled_prompts_cancel_on_fault_timeout_and_interrupt_before_cleanup(self):
+        self.args.operator_prompt_schedule = normalize_operator_prompts(
+            {0: "HOLD", 3: "RELEASE"}, 20)
+        for failure in (RuntimeError("Controller reported fault"),
+                        TimeoutError("scope timeout"), KeyboardInterrupt()):
+            with self.subTest(failure=type(failure).__name__):
+                self.nano.reset_mock()
+                self.child.start_failure.is_set.return_value = False
+                self.record = {"index": 1, "status": "started"}
+                lines = []
+                def make_prompts(schedule, **kwargs):
+                    return OperatorPrompts(schedule, **kwargs, clock=lambda: 100.0,
+                                           emit=lines.append)
+                def acquiring(scope, timeout, on_progress):
+                    if isinstance(failure, RuntimeError):
+                        self.child.start_failure.is_set.return_value = True
+                    on_progress({"first_trigger_observation": {
+                        "value": "TRIGGER", "query_end_monotonic_s": 100.0}})
+                    raise failure
+                def cleanup(*args, **kwargs):
+                    self.assertEqual(self.record["operator_prompts"]["status"], "finished")
+                    return "ACK BUFFER_END"
+                self.nano.command.side_effect = cleanup
+                with patch("record_integrated_matrix32.OperatorPrompts", side_effect=make_prompts), \
+                        patch("record_integrated_matrix32.acquire", side_effect=acquiring):
+                    with self.assertRaises(type(failure)):
+                        acquire_buffered_record(self.nano, None, self.args, self.record, self.child)
+                self.assertEqual(self.record["operator_prompts"]["finish_reason"],
+                                 "acquisition_failed")
+                self.assertEqual(self.record["operator_prompts"]["events"][-1]["status"],
+                                 "skipped")
+                if isinstance(failure, RuntimeError):
+                    self.assertEqual(lines, [])
+                self.nano.command.assert_called_once_with("BUFFER_END", timeout=2.0)
+                self.nano.buffered_capture_end_and_dump.assert_not_called()
 
     def test_acquisition_errors_and_keyboard_interrupt_end_buffering(self):
         for error in (TimeoutError("scope timeout"), KeyboardInterrupt()):

@@ -118,6 +118,15 @@ the first nonzero request after a release while retaining the same Nano,
 scope settings, current and phase width. Do not infer device firmware apply
 semantics from one sequence or modify a clock fit to remove the separation.
 
+For guided manual input, add
+`--operator-prompts config/operator_prompts_resume_20s.json` to the integrated
+recording command. The optional terminal cues provide the hold/release/gentle/
+firmer sequence and record their delivery times. See the
+[timed operator prompt instructions](integrated_matrix32_scope_recording.md#optional-timed-operator-prompts)
+for the editable seconds-to-text dictionary and timing limits. Classify resume
+conditions using the first positive MCU request actually recorded, since a
+firmer manual press can still pass through a low initial request.
+
 An accepted event with incomplete phase morphology stays in the approved
 onset inventory. Keep a separate original-sample zoom and morphology note;
 acceptance for onset timing does not establish phase-amplitude or charge

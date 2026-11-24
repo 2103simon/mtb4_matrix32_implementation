@@ -31,6 +31,9 @@ from record_scope import (
 from scope_device import resolve_scope_device, verify_scope_identity
 from tek_mdo_usb import capture, query
 from oscilloscope.test_gray_timecode import NanoLog, utc
+from oscilloscope.operator_prompts import (
+    OperatorPrompts, TIME_REFERENCE as PROMPT_TIME_REFERENCE, load_operator_prompts,
+)
 from decode_gray_timecode import decode_csv
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,6 +80,10 @@ def parser():
                         "ACK-verified Matrix32 START before scope is armed")
     p.add_argument("--output-root", type=Path, default=Path("data/recordings"))
     p.add_argument("--label", default="integrated_matrix32_scope")
+    p.add_argument("--operator-prompts", type=Path, default=None, metavar="JSON",
+                   help="Optional JSON seconds-to-text dictionary of terminal cues; "
+                        "restarts at the first observed scope TRIGGER for every record "
+                        "and requires 0%% trigger position")
     return p
 
 
@@ -120,6 +127,15 @@ def plan(args, p):
     if (not math.isfinite(args.controller_ready_timeout)
             or not 5 <= args.controller_ready_timeout <= 120):
         p.error("--controller-ready-timeout must be 5..120 seconds")
+    try:
+        args.operator_prompt_schedule = (
+            load_operator_prompts(args.operator_prompts, nominal_window_s)
+            if args.operator_prompts is not None else []
+        )
+    except (OSError, ValueError, UnicodeError) as exc:
+        p.error(f"Invalid --operator-prompts: {exc}")
+    if args.operator_prompt_schedule and args.trigger_position_pct != 0:
+        p.error("--operator-prompts requires --trigger-position-pct 0")
     # Explicitly reuse the shape that record_scope.configure/verify expects.
     args.channels = [1, 2]
     args.scales = {1: args.ch1_v_div, 2: 2.0}
@@ -162,6 +178,15 @@ def plan(args, p):
         "nano_buffer_poll_budget_s": NANO_BUFFER_POLL_BUDGET_S,
         "effective_acquire_timeout_upper_bound_s": min(
             args.acquire_timeout, NANO_BUFFER_POLL_BUDGET_S),
+        "operator_prompts": {
+            "enabled": bool(args.operator_prompt_schedule),
+            "source": (str(args.operator_prompts.resolve())
+                       if args.operator_prompts is not None else None),
+            "time_reference": PROMPT_TIME_REFERENCE,
+            "scope_clock_synchronized": False,
+            "repeat_each_record": True,
+            "schedule": args.operator_prompt_schedule,
+        },
     }
 
 
@@ -194,6 +219,13 @@ def acquire_buffered_record(nano, scope, args, record, child):
     BUFFER_BEGIN are not retried; an ACK timeout may follow a successful write.
     No normal FRAME telemetry or clock SYNC is requested during acquisition.
     """
+    prompts = None
+    if getattr(args, "operator_prompt_schedule", None):
+        prompts = OperatorPrompts(
+            args.operator_prompt_schedule, duration_s=10 * args.time_div_us * 1e-6,
+            record_index=record["index"], record_count=args.count,
+        )
+        record["operator_prompts"] = prompts.metadata
     begun_ns = time.monotonic_ns()
     buffer = {"status": "begin_attempted",
               "begin_attempted_monotonic_ns": begun_ns}
@@ -207,6 +239,8 @@ def acquire_buffered_record(nano, scope, args, record, child):
             raise RuntimeError("Controller reported fault during scope acquisition")
         if time.monotonic_ns() >= deadline_ns:
             raise TimeoutError("Nano frame-buffer polling budget exhausted")
+        if prompts is not None:
+            prompts.observe(observation)
 
     try:
         buffer.update(nano.buffered_capture_begin())
@@ -225,10 +259,14 @@ def acquire_buffered_record(nano, scope, args, record, child):
             scope, record["effective_acquire_timeout_s"], on_progress=progress,
         )
         record["acquisition_completed_monotonic_ns"] = time.monotonic_ns()
+        if prompts is not None:
+            prompts.finish("acquisition_completed")
         # End immediately, before metadata writes, settings queries or transfers.
         buffer.update(nano.buffered_capture_end_and_dump(buffer))
         buffer["status"] = "verified"
     except BaseException as exc:
+        if prompts is not None:
+            prompts.finish("acquisition_failed")
         buffer["status"] = "failed"
         buffer["error"] = f"{type(exc).__name__}: {exc}"
         record["status"] = "failed"
@@ -505,6 +543,14 @@ def run(args, requested):
                     # Keep one Feather/Matrix32 controller alive for ALL records.
                     # Scope transfers occur between records; physical samples
                     # during those gaps do not exist and must never be stitched.
+                    if args.operator_prompt_schedule:
+                        print("[PROMPTS] Timed instructions are enabled. "
+                              "Wait for the [PROMPT record ...] cues after scope triggering.",
+                              flush=True)
+                        if args.arm and not args.capture_before_start:
+                            print("[PROMPTS] PRESS AND HOLD the selected taxel now "
+                                  "so the controller can start; follow the timed cues afterward.",
+                                  flush=True)
                     meta["controller_started_host_monotonic_ns"] = time.monotonic_ns()
                     meta["controller_pid"] = child.start()
                     print(f"[MATRIX32] Controller starting before scope arming; "
@@ -562,6 +608,10 @@ def run(args, requested):
                         # this finite scope acquisition. Do not print FRAME
                         # telemetry while acquiring; dump after scope completes.
                         acquire_buffered_record(nano, scope, args, record, child)
+                        if args.operator_prompt_schedule:
+                            print(f"[PROMPTS record {index}/{args.count}] Scope acquisition "
+                                  "finished; timed cues ended. Waveform download follows.",
+                                  flush=True)
                         atomic_json(root / "metadata.json", meta)
                         record["scope_settings_after_acquisition"] = scope_settings(
                             scope, args.channels, args.trigger_channel,
