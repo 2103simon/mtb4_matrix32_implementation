@@ -1,4 +1,4 @@
-"""Replot existing source-locked approved CH1 pulses as four 5-second panels.
+"""Replace pulse-review first waveform image with four approved 5-second panels.
 
 Offline visualization only. Does not rerun detectors, modify approval,
 smooth signal for analysis, or alter timestamps. Display uses raw per-bin
@@ -103,36 +103,29 @@ def run(run_dir, *, record=None):
         review = directory/"pulse_review"
         _, onsets = load_approved_onsets(review, ch1)
         t, v = load_waveform(ch1)
+        # Replace the first plot at its established path. The original
+        # single-panel figure is not retained as a second report graphic.
         path = render_four_panels(
             t, v, onsets,
-            review/"figures"/"waveform_approved_four_5s_panels.png",
+            review/"figures"/"waveform_full.png",
             record=index)
-        # Add a figure link to the *existing* pulse-review report without
-        # regenerating detectors, review decisions, or signed approval.
         report = review/"report.md"
         if not report.is_file():
-            raise FileNotFoundError(f"Expected existing pulse-review report: {report}")
-        section = (
-            "## Approved pulse markers: four 5-second views\n\n"
-            "The source-locked operator-approved negative CH1 onsets are "
-            "overlaid on the unmodified CH1 waveform. Every panel covers "
-            "a separate 5-second interval of this scope record; the "
-            "display envelope retains source minimum and maximum values. "
-            "No pulse detection, approval, or timing data is changed.\n\n"
-            "![Approved CH1 negative-onset markers in four 5-second panels]"
-            "(figures/waveform_approved_four_5s_panels.png)\n"
-        )
+            raise FileNotFoundError(f"Expected pulse-review report: {report}")
         original = report.read_text(encoding="utf-8")
-        heading = "## Approved pulse markers: four 5-second views"
+        # Remove the obsolete appended section from earlier versions.
+        heading = "\n## Approved pulse markers: four 5-second views"
         if heading in original:
-            old_start = original.index(heading)
-            next_heading = original.find("\n## ", old_start+len(heading))
-            updated = (original[:old_start] + section
-                       + (original[next_heading:] if next_heading >= 0 else ""))
-        else:
-            updated = original.rstrip()+"\n\n"+section
-        if updated != original:
-            report.write_text(updated, encoding="utf-8")
+            first = original.index(heading)
+            following = original.find("\n## ", first+len(heading))
+            original = (original[:first].rstrip()+"\n"
+                        + (original[following:] if following >= 0 else ""))
+        # The first plot now has four panels; make the caption accurate.
+        original = original.replace(
+            "![waveform_full.png](figures/waveform_full.png)",
+            "![Original CH1 waveform with approved negative onsets, "
+            "four consecutive 5-second panels](figures/waveform_full.png)")
+        report.write_text(original, encoding="utf-8")
         print(f"[PLOT] {path}: {len(onsets)} approved onsets; linked in {report}")
         paths.append(str(path))
     if not paths:
