@@ -186,8 +186,8 @@ def generate(root, record, result, output, manifest):
     lines = [
         "## Complete S01/S02-style event review table", "",
         "### CH1 onset-marked traces and synchronized context", "",
-        "![Complete CH1 min/max waveform with every accepted/rejected/suppressed onset]"
-        "(figures/waveform_full.png)",
+        "The four 5-second CH1 overview with onset markers appears "
+        "once at the start of this report.",
         "",
         "![First accepted onset, original undecimated CH1 samples]"
         "(figures/waveform_event_detail.png)" if result["accepted_pulses"] else
