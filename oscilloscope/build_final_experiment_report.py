@@ -5,6 +5,7 @@ source hashes. Existing pulse approval and per-ACK evidence must match too.
 """
 from __future__ import annotations
 import argparse
+from collections import Counter
 from pathlib import Path
 
 from oscilloscope.extended_analysis_common import read_context, load_json, write_json
@@ -14,6 +15,135 @@ REQUIRED = (
     ('stimulation_shutdown','Shutdown and restart'),
     ('command_timing','Command timing'),
 )
+
+
+def build_command_delivery_scorecard(events, timing, prior, robust):
+    """Separate observed host ACKs from conditional electrical evidence.
+
+    This function intentionally offers NO per-SF 'executed/not executed'
+    success rate: the original cross-clock mapping and Matrix32 internal
+    command-application time have not been qualified.
+    """
+    host = {}
+    for prefix in ('sf', 'sc'):
+        requests = [e for e in events if e.get('event') == prefix + '_requested']
+        acks = [e for e in events if e.get('event') == prefix + '_ack']
+        paired = timing[f'{prefix}_request_ack_pairs']
+        if len(requests) != paired or len(acks) != paired:
+            raise ValueError(f'{prefix.upper()} command counts conflict with paired host-timing audit')
+        ok = sum(e.get('status') == 'OK' for e in acks)
+        # Reports use successful ACK messages, not BLE transmission attempts.
+        host[prefix] = {
+            'requested': len(requests),
+            'acks_received': len(acks),
+            'acks_ok': ok,
+            'acks_non_ok': len(acks) - ok,
+            'requests_without_ack': len(requests) - len(acks),
+        }
+    changes = [e.get('evidence', {}).get('same_value')
+               for e in events if e.get('event') == 'sf_ack']
+    host['sf']['confirmed_value_changes'] = (sum(value is False for value in changes)
+        if all(value is not None for value in changes) else None)
+    host['sf']['muted_scheduler_sf400'] = timing['sf400_muted_scheduler_count']
+    host['sf']['source_rate_matched'] = timing['mcu_source_matched_count']
+
+    physical = None
+    if prior is not None:
+        categories = prior['ack_classifications_in_scope']
+        inside = int(prior['sf_ack_success_in_provisional_scope_window'])
+        outside = int(prior['sf_ack_success_outside_scope_window'])
+        if sum(categories.values()) != inside:
+            raise ValueError('Per-ACK classifications do not sum to in-scope SF ACKs')
+        if inside + outside != host['sf']['acks_ok']:
+            raise ValueError('Per-ACK scope classification does not reconcile with successful SF ACKs')
+        if int(prior['sf_ack_success_all_session']) != host['sf']['acks_ok']:
+            raise ValueError('Per-ACK audit and command trace disagree on total SF ACKs')
+        matched = int(categories.get('STABLE_MATCHING_PERIOD_OBSERVED', 0))
+        physical = {
+            'in_scope_provisional': inside,
+            'outside_scope_provisional': outside,
+            'matching_settled_period_evidence': matched,
+            'in_scope_no_individually_attributable_evidence': inside - matched,
+            'potential_supersession_before_pulse': int(categories.get('NEXT_SF_ACK_BEFORE_NEXT_PULSE', 0)),
+            'muted_at_ack': int(categories.get('ACK_WHILE_CURRENT_MUTED', 0)),
+            'muted_before_next_pulse': int(categories.get('MUTE_ACK_BEFORE_NEXT_PULSE', 0)),
+            'prior_cycle_not_settled': int(categories.get('INSUFFICIENT_PRIOR_CYCLE_SETTLING', 0)),
+            'other_insufficient_isolated_evidence': int(categories.get('INSUFFICIENT_ISOLATED_PERIOD_EVIDENCE', 0)),
+            'additional_categories': {k:v for k,v in categories.items() if k not in (
+                'STABLE_MATCHING_PERIOD_OBSERVED', 'NEXT_SF_ACK_BEFORE_NEXT_PULSE',
+                'ACK_WHILE_CURRENT_MUTED','MUTE_ACK_BEFORE_NEXT_PULSE',
+                'INSUFFICIENT_PRIOR_CYCLE_SETTLING',
+                'INSUFFICIENT_ISOLATED_PERIOD_EVIDENCE')},
+            'proved_executed_commands': None,
+            'proved_unexecuted_commands': None,
+            'execution_rate_measurable': False,
+            'clock_qualified': False,
+        }
+    settled = None
+    if robust is not None:
+        # Physical intervals and SF ACKs have different denominators.
+        records = robust.get('record_summaries', [])
+        eligible = sum(int(x['baseline_ack_stable']) for x in records)
+        disagree = sum(int(x['baseline_ack_outside_tolerance']) for x in records)
+        settled = {
+            'eligible_intervals': eligible,
+            'diagnostically_compatible_intervals': eligible - disagree,
+            'diagnostic_outliers': disagree,
+            'per_command_execution_evidence': False,
+        }
+    return {'schema': 'matrix32_command_delivery_scorecard_v1',
+            'host_commands': host, 'physical_ack_observability': physical,
+            'settled_electrical_intervals': settled,
+            'physical_application_time_qualified': False,
+            'interpretation': 'An OK ACK establishes protocol acknowledgment. Matching settled '
+               'electrical periods are compatible with the acknowledged SF, not unique proof '
+               'of execution. Unobserved intermediate SFs are not necessarily failures.'}
+
+
+def plot_command_delivery_scorecard(path, card):
+    """One figure, with separate denominators for protocol and scope evidence."""
+    from oscilloscope.extended_analysis_common import safe_figure_setup
+    plt = safe_figure_setup()
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6.2), layout='constrained')
+    sf = card['host_commands']['sf']
+    sc = card['host_commands']['sc']
+    labels = ['SF requests', 'SF OK ACKs', 'SC requests', 'SC OK ACKs']
+    values = [sf['requested'], sf['acks_ok'], sc['requested'], sc['acks_ok']]
+    axes[0].barh(labels[::-1], values[::-1])
+    for i, value in enumerate(values[::-1]):
+        axes[0].text(value + 2, i, str(value), va='center')
+    axes[0].set(xlim=(0, max(values + [1]) * 1.18), xlabel='Host-side count',
+                title='Commands and successful acknowledgments')
+    axes[0].grid(axis='x', alpha=.2)
+    axes[0].set_axisbelow(True)
+    detail = card['physical_ack_observability']
+    if detail:
+        cats = [
+            ('Matching settled period', detail['matching_settled_period_evidence']),
+            ('Possible supersession', detail['potential_supersession_before_pulse']),
+            ('Current muted at ACK', detail['muted_at_ack']),
+            ('Muted before next pulse', detail['muted_before_next_pulse']),
+            ('Previous cycle not settled', detail['prior_cycle_not_settled']),
+            ('Other insufficient evidence', detail['other_insufficient_isolated_evidence']),
+        ]
+        cats += [(k, v) for k, v in detail['additional_categories'].items()]
+        cats += [('Outside scope', detail['outside_scope_provisional'])]
+        axes[1].barh([name for name, _ in cats[::-1]], [n for _, n in cats[::-1]])
+        for i, (_, count) in enumerate(cats[::-1]):
+            axes[1].text(count + 1, i, str(count), va='center')
+        axes[1].set(xlim=(0, max([n for _, n in cats] + [1]) * 1.27),
+                    xlabel='Successful SF ACKs',
+                    title='Electrical observability, NOT execution verdict')
+        axes[1].grid(axis='x', alpha=.2)
+        axes[1].set_axisbelow(True)
+    else:
+        axes[1].text(.5,.5,'Per-ACK scope audit unavailable',ha='center',va='center',
+                     transform=axes[1].transAxes)
+        axes[1].set_axis_off()
+    fig.suptitle('One recording: reliable protocol delivery; physical attribution is limited',
+                 fontsize=13)
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
 
 
 def build(run_dir):
@@ -66,10 +196,52 @@ def build(run_dir):
     existing_ack=prior.get('ack_classifications_in_scope',{}) if prior else {}
     stable_matches=existing_ack.get('STABLE_MATCHING_PERIOD_OBSERVED')
     matched=transitions['mismatches_with_compatible_in_interval_sf_ack']
+    delivery=build_command_delivery_scorecard(ctx['events'], timing, prior, robust)
+    write_json(analysis/'command_delivery_scorecard.json', {
+        **delivery, 'provenance': ctx['provenance']})
+    plot_command_delivery_scorecard(analysis/'command_delivery_scorecard.png', delivery)
+    sf=delivery['host_commands']['sf']
+    sc=delivery['host_commands']['sc']
+    physical=delivery['physical_ack_observability']
+    settled=delivery['settled_electrical_intervals']
     lines=['# Matrix32 — consolidated experimental analysis','',
       '**Source:** completed integrated recording with source-locked, operator-signed '
       'biphasic CH1 onset inventory. This document compiles independent offline '
       'reports; no new pulse detection or clock calibration was performed.','',
+      '## Requested → ACKed → physically observed (executive scorecard)', '',
+      '| Question | Result |','| --- | ---: |',
+      f"| SF frequency commands requested | {sf['requested']} |",
+      f"| Of those, actual SF value changes verified in ACK trace | {sf['confirmed_value_changes'] if sf['confirmed_value_changes'] is not None else 'not available'} |",
+      f"| SF changes acknowledged OK | **{sf['acks_ok']} / {sf['requested']}** |",
+      f"| SF requests without ACK / non-OK ACK | {sf['requests_without_ack']} / {sf['acks_non_ok']} |",
+      f"| SC current changes acknowledged OK | **{sc['acks_ok']} / {sc['requested']}** |",
+      f"| Ordinary source-matched tactile-frequency SF changes | {sf['source_rate_matched']} |",
+      f"| Muted-scheduler SF400 changes (not stimulation evidence) | {sf['muted_scheduler_sf400']} |",
+      *( [f"| SF ACKs inside estimated scope window | {physical['in_scope_provisional']} |",
+          f"| SF ACKs with matching settled electrical interval | **{physical['matching_settled_period_evidence']}** |",
+          f"| In-scope ACKs with no individually attributable settled interval | {physical['in_scope_no_individually_attributable_evidence']} |",
+          f"| Of those: potentially superseded before next pulse | {physical['potential_supersession_before_pulse']} |",
+          f"| Of those: current muted at ACK | {physical['muted_at_ack']} |",
+          f"| Of those: muted before next pulse | {physical['muted_before_next_pulse']} |",
+          f"| Of those: previous cycle not settled | {physical['prior_cycle_not_settled']} |",
+          f"| Of those: other insufficient isolated evidence | {physical['other_insufficient_isolated_evidence']} |",
+          f"| SF ACKs outside estimated scope window | {physical['outside_scope_provisional']} |"]
+         if physical else ['| Individual SF ACKs with physical evidence | not available: run per-ACK audit |']),
+      *( [f"| Eligible settled electrical intervals matching ACK frequency | **{settled['diagnostically_compatible_intervals']} / {settled['eligible_intervals']}** |"]
+         if settled else ['| Steady-state electrical interval agreement | not available |']),
+      '| Number of frequency changes proven physically executed | **Not determinable** |',
+      '| Number of frequency changes proven not executed | **Not determinable** |',
+      '',
+      '**Reading this table:** 100% SF ACK success is demonstrated *at the protocol level*. '
+      'The matching electrical-period count is evidence of compatibility for '
+      'individual ACKs under declared timing assumptions, **not** an executed-command '
+      'percentage. The remaining ACKs must **not** be labeled failed, skipped, or '
+      'successfully executed without additional physical evidence. '
+      'The scope–host clock offset is unqualified.', '',
+      '![Host acknowledgments and physical observability](command_delivery_scorecard.png)', '',
+      '[Machine-readable scorecard](command_delivery_scorecard.json) · '
+      '[Per-SF ACK classification](ack_physical_observability/sf_ack_observability.csv) · '
+      '[Per-command host timing](command_timing/sf_command_latency.csv).', '',
       '## Main measurements','',
       '| Measurement | Result |','| --- | ---: |',
       f"| Operator-approved biphasic CH1 onsets | {len(ctx['onsets'])} |",
@@ -152,6 +324,8 @@ def build(run_dir):
          module_summaries={name:f'{name}/summary.json' for name,_ in REQUIRED},
          preexisting_ack_report_included=prior is not None,
          preexisting_frequency_robustness_included=robust is not None,
+         delivery_scorecard='command_delivery_scorecard.json',
+         delivery_scorecard_figure='command_delivery_scorecard.png',
          consolidated_report='final_experiment_report.md')
     write_json(analysis/'extended_analysis_manifest.json',manifest)
     print(f'[EXTENDED REPORT] {report}')
