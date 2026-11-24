@@ -240,13 +240,18 @@ def main(argv=None):
                    help="One or more CH2 CSV waveforms from separate acquisitions")
     p.add_argument("--threshold", type=float, default=2.0)
     p.add_argument("--tolerance-us", type=float, default=450)
+    p.add_argument("--frame-ms", type=float, default=100.,
+                   help="Expected frame repetition in ms (100 original; 200 experimental)")
     p.add_argument("--output", type=Path, help="Write JSON report")
     args = p.parse_args(argv)
-    if not math.isfinite(args.threshold) or not 0 < args.tolerance_us < 500:
-        p.error("Invalid threshold or tolerance")
+    if (not math.isfinite(args.threshold) or
+            not 0 < args.tolerance_us < 500 or
+            not math.isfinite(args.frame_ms) or args.frame_ms < 97):
+        p.error("Invalid threshold, tolerance or Gray frame duration")
     report = {
         "schema_version": 1, "decoder": "GRAY_TC_V1",
-        "records": [decode_csv(file, args.threshold, args.tolerance_us * 1e-6)
+        "records": [decode_csv(file, args.threshold, args.tolerance_us * 1e-6,
+                               frame_s=args.frame_ms*1e-3)
                     for file in args.csv],
     }
     payload = json.dumps(report, indent=2) + "\n"
