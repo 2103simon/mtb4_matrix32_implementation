@@ -103,6 +103,22 @@ def make_figures(ctx, out, rows, scenarios, *, detail_limit=12):
     sf = timed_acks(ctx, 'sf_ack')
     s0, s1 = ctx['axis'][:2]
     sf = [x for x in sf if s0 <= x['scope_s'] <= s1]
+    # SF400 while SC0 is the controller's mute-scheduler sentinel, not
+    # physical 400-Hz stimulation. Keep it in CSV evidence but omit its
+    # very high y-value so the ordinary ~2–110 Hz changes remain readable.
+    sc_for_mute = timed_acks(ctx, 'sc_ack')
+    visible, hidden_muted_400 = [], 0
+    for ack in sf:
+        preceding = next((x for x in reversed(sc_for_mute)
+                          if x['host_ns'] <= ack['host_ns']), None)
+        if (int(ack['event']['frequency_hz']) == 400 and preceding is not None
+                and int(preceding['event']['current_command']) == 0):
+            hidden_muted_400 += 1
+        else:
+            visible.append(ack)
+    sf = visible
+    axes[1].text(.01,.96,f'{hidden_muted_400} muted-scheduler SF400 ACKs omitted from y-axis',
+                 transform=axes[1].transAxes,va='top',fontsize=9)
     axes[1].scatter([x['scope_s'] for x in sf],
                     [float(x['event']['frequency_hz']) for x in sf],
                     marker='|', s=120, label='SF ACK (provisional position)')
