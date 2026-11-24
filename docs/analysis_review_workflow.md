@@ -717,3 +717,81 @@ The Gray spacing comparison remains between physical scope edges and
 capture of the GPIO transition. For a decisive hardware fix, collect
 a common electrical command/reference marker or independently verify
 Nano frame-edge timestamps against a hardware timer.
+
+
+## 13. Physical Nano CH2 pulse widths versus digital EDGE_US
+
+The original Nano Every firmware in arduino_nano/src/main.cpp uses a
+shared micros() timebase for **both** the software D7 Gray pulse schedule
+and the FRAME EDGE_US telemetry. Specifically, tickGenerator() polls
+micros() and calls digitalWrite(D7, HIGH); it then calls micros() again
+to log EDGE_US. This is not a hardware input-capture timestamp of the
+physical edge. The GPIO transition can be delayed by loop work, timer
+interrupt handling, and serial communication even with a shared oscillator.
+
+The ATmega4809 (not the separate ATSAMD11 USB bridge) executes the Gray
+generator. The standard Arduino megaAVR core derives micros() from a
+TCB hardware timer driven from the ATmega's main CPU/peripheral clock;
+the board uses the ATmega4809 internal oscillator. Firmware switching
+does not use an independently clocked pulse generator or a dedicated
+hardware output-compare waveform.
+
+Run the new **offline, physical CH2** pulse-geometry audit:
+
+```bash
+cd ~/code/mtb4_matrix32_implementation
+conda activate matrix32
+git switch feature/live-oscilloscope-recording
+git pull --ff-only
+python -m unittest discover -s tests -p 'test_audit_gray_pulse_timing.py' -v
+RUN=data/recordings/20261123T072229250984Z_integrated_matrix32_scope
+python -m oscilloscope.audit_gray_pulse_timing --run-dir "$RUN"
+code "$RUN/analysis/gray_pulse_geometry_report.md"
+```
+
+It rescans CH2 only, at the same 2.0-V threshold used by the Gray
+decoder (overridable via --threshold). It does not edit CH1 approved
+negative-onset evidence or the official clock alignment.
+
+Outputs:
+
+- analysis/gray_pulse_geometry_report.md: per-record physical pulse widths
+  and timing variability, with interpretation.
+- analysis/gray_pulse_geometry_summary.json: all summary statistics.
+- analysis/record_0000N/gray_pulse_widths.csv: each physically matched
+  START (nominal 4 ms), DATA one-bit (1 ms) and END (7 ms) HIGH pulse,
+  its measured width, nominal width and rise phase relative to its Gray
+  frame.
+- analysis/record_0000N/gray_frame_spacing_physical_vs_nano.csv:
+  physical CH2 START-to-START timing, digital EDGE_US spacing, and
+  Nano minus physical timing difference after fitting the constant
+  relative clock-rate mismatch.
+- analysis/record_0000N/gray_pulse_geometry.png: width error by role,
+  independent physical and digital frame-spacing errors, and their
+  rate-adjusted difference over time.
+- analysis/record_0000N/gray_width_histograms.png: measured
+  pulse-width distributions.
+
+Not every adjacent data-pulse rise is separated by 5 ms: a zero Gray
+bit produces no high pulse. The analysis therefore uses nominal
+bit-slot positions (and high-pulse widths) rather than assuming every
+successive high pulse is uniformly spaced.
+
+Interpretation is deliberately constrained:
+- Stable CH2 physical spacing but erratic EDGE_US spacing suggests
+  post-edge timestamp placement or serial/interrupt timing effects.
+- Both CH2 and EDGE_US spacing varying together is compatible with
+  scheduling jitter, not automatically evidence of oscillator drift.
+- Width jitter and rise-slot errors on CH2 provide additional evidence
+  about the accuracy of software pulse generation.
+- A slowly varying scope/Nano relative rate cannot alone explain a
+  rapidly changing high-pulse width, and should be distinguished from
+  nonuniform scheduling.
+- This comparison cannot determine exact physical edge-to-EDGE_US
+  latency because the absolute Nano/scope time offset is not independently
+  known. The output does not automatically repair or qualify any clock.
+
+The official Nano Every docs and Arduino megaAVR core implementation
+are helpful for verifying board and timer architecture:
+- https://docs.arduino.cc/hardware/nano-every/
+- https://github.com/arduino/ArduinoCore-megaavr/blob/master/cores/arduino/wiring.c
