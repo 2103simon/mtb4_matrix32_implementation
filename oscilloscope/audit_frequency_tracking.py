@@ -426,9 +426,20 @@ def run(run_dir, *, taxel=None):
     root = Path(run_dir).expanduser().resolve()
     meta = json.loads((root/"metadata.json").read_text())
     original = json.loads((root/"epoch_clock_analysis.json").read_text())
-    cv = json.loads((root/"analysis"/"clock_model_cv_summary.json").read_text())
+    cv_path = root / "analysis" / "clock_model_cv_summary.json"
+    if not cv_path.exists():
+        raise FileNotFoundError(
+            "Clock-model cross-validation is required before the frequency "
+            "audit. Run: python -m oscilloscope.evaluate_clock_models "
+            f"--run-dir '{root}' --block-s 2"
+        )
+    cv = json.loads(cv_path.read_text())
     if float(cv["block_s"]) != 2.:
-        raise ValueError("First run evaluate_clock_models --block-s 2")
+        raise ValueError(
+            "Frequency audit requires a 2-second clock-model block size. "
+            "Run: python -m oscilloscope.evaluate_clock_models "
+            f"--run-dir '{root}' --block-s 2"
+        )
     epoch = {int(x["record_index"]): x for x in original["records"]}
     models = {int(x["record_index"]): x for x in cv["records"]}
     nano = read_nano_frames(root/"nano_serial.jsonl")
