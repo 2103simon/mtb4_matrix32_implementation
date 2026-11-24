@@ -14,8 +14,8 @@ This is the **current standard** for CH1-only, dummy-load integrated measurement
 | Tektronix CH1 | TPP1000 10× probe tip on CH1 cathode, reference on shared anode in the source rig; check earth-bonding compatibility and use an approved safe probing arrangement |
 | Tektronix CH2 | Arduino Nano Every **D7** Gray timecode, nominal 0–5 V, 2 V/div, +1 V rising trigger |
 | MCU/Feather | Adafruit Feather M4 CAN Express via independent USB serial (115200 baud), connected to MTB4 tactile CAN sensor |
-| Nano | Separate USB serial, `GRAY_TC_V1` firmware, 10 Hz 16-bit framed Gray counter |
-| Scope | MDO4104B-6 over Linux USBTMC, SAMPLE/SEQUENCE, 1,000,000 points, 2 s/div, trigger position 0%, horizontal delay OFF |
+| Nano | Separate USB serial, **single canonical `nano_every` TCA0 hardware-timed buffered** 10 Hz Gray firmware, `FRAME_MODE 10HZ_HW_TCA_BUFFERED` |
+| Scope | MDO4104B-6 over Linux USBTMC, SAMPLE/SEQUENCE, **10,000,000 points per channel in the next baseline** (CLI override), 2 s/div, trigger position 0%, horizontal delay OFF |
 | Host | Python 3.11+ with required packages, Linux BLE/BlueZ, permissions for USB serial and USBTMC |
 
 The physical breadboard retains **all three resistor branches** from the documented reference rig: **R1 = 100.0 kΩ** from Matrix32 CH1 cathode, **R2 = 99.4 kΩ** from Matrix32 CH2 cathode, and **R3 = 99.5 kΩ** from Matrix32 CH3 cathode, each connected to the **same shared anode**. The **992 kΩ spare is disconnected**, and other Matrix32 channels are unconnected as in the source setup. **This project's software commands only Matrix32 CH1 and records its output on oscilloscope CH1**; scope CH2 is connected to Nano D7, not Matrix32 CH2. The TPP1000 passive-probe ground is protective-earth referenced on a conventional Tektronix bench scope: **the reference setup is not inherently an isolated differential measurement**. All scope ground and Nano return connections require an electrical safety review before enabling the stimulator.
@@ -27,17 +27,19 @@ The live stimulation settings (SC, SW, SV, ST) are read from [`config/config.jso
 Run from repository root using your selected venv (shown here as `python`).
 
 ```bash
-git switch main
-git pull origin main
+git switch feature/live-oscilloscope-recording
+git pull --ff-only
+# After review/merge, switch to the selected merged branch.
 python -m unittest discover -s tests -p 'test_integrated_matrix32_recording.py' -v
 python -m unittest discover -s tests -p 'test_analyze_integrated*.py' -v
 
 # Default: plan only, no devices opened or stimulation commanded.
-python oscilloscope/record_integrated_matrix32.py
+python oscilloscope/record_integrated_matrix32.py --points 10000000
 
 # Non-stimulating baseline: accesses scope/Nano/Feather/BLE, but NO Matrix32 START.
 timeout --signal=INT --kill-after=20s 180s \
-  python -u oscilloscope/record_integrated_matrix32.py --run
+  python -u oscilloscope/record_integrated_matrix32.py --run \
+  --count 1 --points 10000000 --label integrated_hw_10M_20s_baseline
 ```
 
 After the [electrical safety gate](electrical_bench_setup.md) has been completed and the bench load/probe arrangement confirmed, an authorized operator may run:
@@ -45,7 +47,8 @@ After the [electrical safety gate](electrical_bench_setup.md) has been completed
 ```bash
 timeout --signal=INT --kill-after=20s 180s \
   python -u oscilloscope/record_integrated_matrix32.py \
-  --run --arm --dummy-load-confirmed
+  --run --arm --dummy-load-confirmed \
+  --count 1 --points 10000000 --label integrated_hw_10M_20s_baseline
 ```
 
 For approximately **2 minutes of observed scope data**, add `--count 6`; for approximately **3 minutes**, add `--count 9`. These capture 6/9 **separate 20-second segments**, not a gap-free 2–3-minute waveform. The wall-clock experiment is longer due to USB transfers and clock synchronization. For nine records, increase the **external watchdog** accordingly (e.g. `900s` instead of `180s`) but never rely on it as an electrical shutdown interlock.
@@ -54,13 +57,14 @@ The `--arm` option requires **both** `--run` and `--dummy-load-confirmed`. The e
 
 ## Actual acquisition order
 
-1. Open Nano Every USB session; issue `START` for 10 Hz Gray D7 output.
+1. Open Nano Every USB session, **verify** `FRAME_MODE 10HZ_HW_TCA_BUFFERED` and `FRAME_US 100000`, then issue `START` for hardware-timed 10 Hz Gray D7 output.
 2. Configure and verify scope CH1+CH2, CH2 rising +1 V trigger, 0% left-edge position and delay OFF. **Keep scope stopped**.
 3. Launch the existing [`run_tactile_stimulation.py`](../run_tactile_stimulation.py) controller subprocess. Wait for both Feather MCU encoding parameter ACKs; in armed mode additionally wait for **Matrix32 START completion** based on a fresh nonzero tactile rate. Default startup readiness timeout is **45 s** (`--controller-ready-timeout`: 5–120 s).
-4. For **each** record, obtain **30 binary CRC32 Nano SYNC exchanges** before arming.
-5. Arm the oscilloscope for **one finite 20 s**, 1,000,000-point CH1+CH2 acquisition while the same controller continues to process tactile inputs and live SF updates.
-6. Obtain 30 post-recording SYNC exchanges, then **download and verify the frozen CH1+CH2 waveforms without stopping the controller**. The scope is not acquiring during this transfer; the Matrix32 may still be outputting into the resistor load.
-7. Repeat steps 4–6 with a fresh, independently numbered record. **After the final record**, request controller shutdown and best-effort Matrix32 STOP. Preserve all source waveforms, Nano SYNC epochs, continuous MCU/BLE data and acquisition metadata.
+4. For **each** record, obtain **30 binary CRC32 Nano SYNC exchanges** before arming, then issue `BUFFER_BEGIN`. The Nano timestamps real hardware-generated START events in RAM and does not transmit per-frame USB telemetry during acquisition.
+5. Arm the oscilloscope for **one finite 20 s**, **10,000,000 samples per channel** for the new baseline, CH1+CH2 simultaneously, while the same controller continues to process tactile inputs and live SF updates.
+6. **Immediately after scope completion**, issue `BUFFER_END` then `BUFFER_DUMP`. Verify all stored frame lines arrived and `LOST=0`; any overflow or missing data fails the record.
+7. Obtain 30 post-recording SYNC exchanges, then **download and verify the frozen CH1+CH2 waveforms without stopping the controller**. The scope is not acquiring during this transfer; Matrix32 may still be outputting into the dummy load.
+8. For repeated records, restart buffering with a fresh `BUFFER_BEGIN` for each independent acquisition. **After the final record**, request controller shutdown and best-effort Matrix32 STOP. Preserve all source waveforms, Nano SYNC epochs, continuous MCU/BLE data and acquisition metadata.
 
 The integrated runner performs `--count N` **independent scope acquisitions** (1–12) under one MCU/Matrix32 controller session. Each record has its own pre/post SYNC epoch and waveform files. Scope samples **do not exist** during inter-record downloads, so those gaps must never be presented as continuous coverage. A Nano-triggered capture is **not** triggered by a physical Matrix32 CH1 pulse.
 
@@ -73,7 +77,7 @@ Every integrated run has its own `data/recordings/<UTC>_integrated_matrix32_scop
 ```text
 <run>/
   metadata.json                # experiment config, scope settings, record boundaries
-  nano_serial.jsonl            # Nano FRAME and binary SYNC measurements
+  nano_serial.jsonl            # Nano buffered FRAME dump (post-acquisition) and binary SYNC measurements
   matrix32_runner.log          # controller startup and shutdown
   gray_alignment.json          # per-record CH2-to-Nano frame matches
   epoch_clock_analysis.json    # per-record Nano-to-PC local clock estimates
@@ -148,3 +152,43 @@ The **2 V threshold** and **1 ms deadtime** detect *candidate* positive phases, 
 - **Further frequency-accuracy experiments:** fixed-SF plateaus for several seconds on the verified load can assess steady-state accuracy more robustly than a rapidly changing live input.
 
 For electrical details and source provenance, see [CH1 dummy-load wiring](electrical_bench_setup.md). For the complete Nano frame/timestamp method, see [clock mapping](clock_mapping_and_time_domains.md).
+
+
+## New canonical 10M × 20s integrated baseline (after branch cleanup)
+
+The target is **one** 20-second CH1+CH2 acquisition, with **10M
+samples on each channel** (20M samples combined), an active Feather M4
+tactile stream and the Matrix32 controller. `--run` without `--arm`
+is a non-stimulating system check. **Actual CH1 output is not
+authorized until the electrical safety gate is met and the operator
+supplies `--run --arm --dummy-load-confirmed`.** There is no
+automated electrical interlock.
+
+```bash
+python -m unittest discover -s tests -p 'test_integrated_matrix32_recording.py' -v
+python oscilloscope/record_integrated_matrix32.py \
+  --count 1 --points 10000000 --label integrated_hw_10M_20s_baseline
+# After verifying dummy load, common-ground / earth compatibility,
+# disconnected electrodes, live tactile samples, correct channel
+# scale and physical STOP/disconnect:
+timeout --signal=INT --kill-after=20s 1200s \
+  python -u oscilloscope/record_integrated_matrix32.py \
+  --run --arm --dummy-load-confirmed \
+  --count 1 --points 10000000 --label integrated_hw_10M_20s_baseline
+```
+
+Check the displayed acquisition plan is CH1+CH2, 10M points per
+channel, 2 s/div, 20 s duration, single record and the required
+`nano_mode_required = 10HZ_HW_TCA_BUFFERED`. The Nano has already
+recorded 20M points on CH2 alone in a bench test, **but we have not
+yet verified this simultaneous two-channel 10M configuration**. The
+scope settings readback must match before the controller is armed.
+A long wall-clock timeout accommodates a slow two-channel USB
+download; it does not imply the actual stimulation lasts 1200s.
+
+After capture, use the source-locked CH1 negative-onset approval and
+direct CH1 pulse intervals as primary physical evidence. Cross-device
+Nano/PC/BLE/MCU comparisons must report scope↔Nano local-fit RMS and
+absolute offset limitations without treating a failed 100us threshold
+as invalidating direct CH1 electrical measurements. A physically
+unobserved acquisition gap remains unknown.
