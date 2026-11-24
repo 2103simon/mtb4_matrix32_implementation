@@ -17,6 +17,15 @@ import csv
 import json
 import math
 from pathlib import Path
+import sys
+
+# Allow both "python oscilloscope/audit_frequency_tracking.py" and
+# "python -m oscilloscope.audit_frequency_tracking" from any working directory.
+# The standalone invocation otherwise puts only oscilloscope/ on sys.path,
+# hiding the repository-root analyze_mcu_recording.py module.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import numpy as np
 
@@ -607,14 +616,14 @@ def run(run_dir, *, taxel=None):
         "are hypotheses to inspect, NOT device failures.",
         "",
         "Per-outlier windows are saved under each "
-        "\`record_0000N/frequency_outlier_windows/\` directory. The "
+        "`record_0000N/frequency_outlier_windows/` directory. The "
         "plots show neighboring approved intervals and stable ACK "
         "frequencies where association exists; they do **not** prove "
         "device transition/application latency.",
         "",
         "## Period error and comparison robustness", "",
         "For each stable, active ACK association, "
-        "\`period_error_us = 1e6 × (T_measured_s − 1/f_ACK)\`. "
+        "`period_error_us = 1e6 × (T_measured_s − 1/f_ACK)`. "
         "A zero error means matching periods; accuracy percentages "
         "use only the eligible subset, not all commands or pulses.",
         "",
