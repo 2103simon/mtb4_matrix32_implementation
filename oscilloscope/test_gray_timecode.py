@@ -279,7 +279,8 @@ def parser():
                    choices=(100000, 200000),
                    help="Require matching Nano 100ms or 200ms Gray frame firmware")
     p.add_argument("--expected-frame-mode", choices=(
-                       "10HZ_ORIGINAL", "5HZ_DEFERRED", "10HZ_BUFFERED"),
+                       "10HZ_ORIGINAL", "5HZ_DEFERRED", "10HZ_BUFFERED",
+                       "10HZ_HW_TCA_BUFFERED"),
                    default="10HZ_ORIGINAL",
                    help="Verify exact INFO FRAME_MODE before START")
     p.add_argument("--buffered-frames", action="store_true",
@@ -319,9 +320,10 @@ def plan(args, p):
     if not 1 <= args.count <= 50:
         p.error("--count must be 1..50")
     expected = {"10HZ_ORIGINAL": 100000, "5HZ_DEFERRED": 200000,
-                "10HZ_BUFFERED": 100000}
-    if args.buffered_frames != (args.expected_frame_mode == "10HZ_BUFFERED"):
-        p.error("--buffered-frames requires --expected-frame-mode 10HZ_BUFFERED "
+                "10HZ_BUFFERED": 100000, "10HZ_HW_TCA_BUFFERED": 100000}
+    if args.buffered_frames != (args.expected_frame_mode in (
+            "10HZ_BUFFERED", "10HZ_HW_TCA_BUFFERED")):
+        p.error("--buffered-frames requires an explicitly buffered profile "
                 "and vice versa")
     if args.expected_frame_us != expected[args.expected_frame_mode]:
         p.error("Expected Gray mode and frame duration disagree")
