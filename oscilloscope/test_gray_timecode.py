@@ -54,6 +54,7 @@ class NanoLog:
         self.reader_error = None
         self.log_lock = threading.Lock()
         self.decoder = MixedNanoStreamDecoder()
+        self.frame_lines = []
 
     def __enter__(self):
         import serial  # pyserial is only needed for --run
@@ -102,6 +103,8 @@ class NanoLog:
                         "line": value,
                     }
                     self._write_log(observed)
+                    if value.startswith("FRAME "):
+                        self.frame_lines.append(value)
                     if value.startswith(("ACK ", "ERR ")):
                         self.acks.put((value, arrival_ns))
         except BaseException as exc:
@@ -127,6 +130,44 @@ class NanoLog:
                 raise RuntimeError(f"Nano rejected command: {line}")
             # Ignore late stale replies; they are preserved in the JSONL log.
         raise TimeoutError(f"No matching ACK {op} {seq} from Nano")
+
+    def buffered_capture_begin(self):
+        if not self.frame_lines:
+            initial_count = 0
+        else:
+            initial_count = len(self.frame_lines)
+        ack = self.command("BUFFER_BEGIN", timeout=3.0)
+        tokens = ack.split()
+        if tokens[3:4] != ["CAP"] or int(tokens[4]) <= 0:
+            raise RuntimeError("Malformed buffered Nano BEGIN reply: " + ack)
+        return {"begin_ack": ack, "frame_log_before": initial_count,
+                "capacity": int(tokens[4])}
+
+    def buffered_capture_end_and_dump(self, begun):
+        ack = self.command("BUFFER_END", timeout=3.0)
+        tokens = ack.split()
+        if len(tokens) != 9 or tokens[3] != "COUNT" or tokens[5] != "LOST" or tokens[7] != "CAP":
+            raise RuntimeError("Malformed buffered Nano END reply: " + ack)
+        count, lost, cap = int(tokens[4]), int(tokens[6]), int(tokens[8])
+        if count > cap or cap != begun["capacity"]:
+            raise RuntimeError("Nano buffer count exceeds capacity")
+        observed_before = len(self.frame_lines)
+        dumped = self.command("BUFFER_DUMP", timeout=20.0)
+        dtok = dumped.split()
+        if len(dtok) != 7 or dtok[3] != "COUNT" or dtok[5] != "LOST":
+            raise RuntimeError("Malformed Nano BUFFER_DUMP reply: " + dumped)
+        received = len(self.frame_lines)-observed_before
+        if received != count or int(dtok[4]) != count or int(dtok[6]) != lost:
+            raise RuntimeError(
+                f"Buffered FRAME transfer incomplete: expected {count}, "
+                f"received {received}, summary {dumped}")
+        if lost:
+            raise RuntimeError(
+                f"Nano RAM buffer overflow: LOST={lost}, CAP={cap}; "
+                "record is not suitable for clock alignment")
+        return {"end_ack": ack, "dump_ack": dumped,
+                "frames_received": received, "frames_lost": lost,
+                "capacity": cap}
 
     def sync_exchange(self, *, timeout=1.0):
         """Collect 4 timestamps: PC monotonic ns t1/t4, Nano micros t2/t3."""
@@ -229,9 +270,13 @@ def parser():
     p.add_argument("--expected-frame-us", type=int, default=100000,
                    choices=(100000, 200000),
                    help="Require matching Nano 100ms or 200ms Gray frame firmware")
-    p.add_argument("--expected-frame-mode", choices=("10HZ_ORIGINAL", "5HZ_DEFERRED"),
+    p.add_argument("--expected-frame-mode", choices=(
+                       "10HZ_ORIGINAL", "5HZ_DEFERRED", "10HZ_BUFFERED"),
                    default="10HZ_ORIGINAL",
                    help="Verify exact INFO FRAME_MODE before START")
+    p.add_argument("--buffered-frames", action="store_true",
+                   help="Require opt-in Nano buffered profile and bulk dump only "
+                        "after acquisition; no FRAME serial data during capture")
     p.add_argument("--nano-port", default=None,
                    help="Optional explicit Nano serial path; by default detects Nano Every")
     p.add_argument("--scope-device", default="auto")
@@ -265,7 +310,11 @@ def parser():
 def plan(args, p):
     if not 1 <= args.count <= 50:
         p.error("--count must be 1..50")
-    expected = {"10HZ_ORIGINAL": 100000, "5HZ_DEFERRED": 200000}
+    expected = {"10HZ_ORIGINAL": 100000, "5HZ_DEFERRED": 200000,
+                "10HZ_BUFFERED": 100000}
+    if args.buffered_frames != (args.expected_frame_mode == "10HZ_BUFFERED"):
+        p.error("--buffered-frames requires --expected-frame-mode 10HZ_BUFFERED "
+                "and vice versa")
     if args.expected_frame_us != expected[args.expected_frame_mode]:
         p.error("Expected Gray mode and frame duration disagree")
     if args.points < 2 or args.points > 20000000:
@@ -302,6 +351,7 @@ def plan(args, p):
                    f"{1000000/args.expected_frame_us:g} Hz Gray counter"),
         "nominal_frame_s": args.expected_frame_us / 1e6,
         "expected_frame_mode": args.expected_frame_mode,
+        "buffered_frames": args.buffered_frames,
         "channel_2": "Nano D7; 2 V/div, expected 0-5 V; trigger rising at +1 V",
         "probe_comp": "disconnected",
         "channels": args.channels, "points": args.points,
@@ -352,8 +402,9 @@ def run(args, requested):
             # Older 10Hz firmware has no FRAME_MODE token, but its
             # explicit FRAME_US 100000 setting is already sufficient.
             # Experimental 5Hz capture MUST verify the exact new profile.
-            if args.expected_frame_mode == "5HZ_DEFERRED":
-                expected_firmware.append("FRAME_MODE 5HZ_DEFERRED")
+            if args.expected_frame_mode != "10HZ_ORIGINAL":
+                expected_firmware.append(
+                    f"FRAME_MODE {args.expected_frame_mode}")
             if any(part not in info for part in expected_firmware):
                 raise RuntimeError(
                     "Wrong Nano firmware/Gray frame mode; expected "
@@ -409,11 +460,22 @@ def run(args, requested):
                                 epoch["pre_sync_end_host_monotonic_ns"] = time.monotonic_ns()
                                 print(f"[EPOCH {index}] pre-arm SYNC: "
                                       f"{len(epoch['pre_sync_sequence_ids'])}", flush=True)
+                            buffer_armed = False
+                            if args.buffered_frames:
+                                row["nano_frame_buffer"] = nano.buffered_capture_begin()
+                                buffer_armed = True
                             t0 = time.monotonic()
                             row["arm_request_monotonic_ns"] = time.monotonic_ns()
                             row["acquisition"] = acquire(f, args.acquire_timeout)
                             row["acquisition_host_s"] = time.monotonic() - t0
                             row["acquisition_completed_monotonic_ns"] = time.monotonic_ns()
+                            if args.buffered_frames:
+                                # Stop collecting BEFORE any time-consuming scope
+                                # settings queries / waveform downloads / post SYNC.
+                                row["nano_frame_buffer"].update(
+                                    nano.buffered_capture_end_and_dump(
+                                        row["nano_frame_buffer"]))
+                                buffer_armed = False
                             # Verify position stayed at the requested location
                             # throughout the acquisition, before any transfer.
                             row["scope_settings_after_acquisition"] = scope_settings(
@@ -454,6 +516,13 @@ def run(args, requested):
                                 f"codes {[x['counter_mod_65536'] for x in row['decoded_gray']['frames']]}",
                                 flush=True)
                         except BaseException as exc:
+                            if args.buffered_frames and locals().get("buffer_armed", False):
+                                try:
+                                    row["nano_frame_buffer_abort_ack"] = nano.command(
+                                        "BUFFER_END", timeout=2.0)
+                                except BaseException as stop_exc:
+                                    row["nano_frame_buffer_abort_error"] = str(stop_exc)
+                                buffer_armed = False
                             row["status"] = "failed"
                             row["error"] = f"{type(exc).__name__}: {exc}"
                             raise
