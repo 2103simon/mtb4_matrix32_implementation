@@ -19,7 +19,13 @@
 
 static constexpr uint8_t MARKER_PIN = 7;
 static constexpr uint32_t BAUD = 115200;
+#ifdef GRAY_SLOW_DEFERRED
+static constexpr uint32_t FRAME_US = 200000UL;
+static constexpr bool SLOW_DEFERRED = true;
+#else
 static constexpr uint32_t FRAME_US = 100000UL;
+static constexpr bool SLOW_DEFERRED = false;
+#endif
 static constexpr uint32_t START_US = 4000UL;
 static constexpr uint32_t DATA_BEGIN_US = 7000UL;
 static constexpr uint32_t BIT_SLOT_US = 5000UL;
@@ -35,6 +41,8 @@ static uint32_t frameOriginUs = 0;
 static uint32_t frameIndex = 0;
 static uint16_t frameGray = 0;
 static uint32_t timingOverruns = 0;
+static bool frameLogPending = false;
+static uint32_t pendingFrameEdgeUs = 0;
 static char input[64];
 static uint8_t inputSize = 0;
 
@@ -115,6 +123,7 @@ static void emitFrameLog(uint32_t actualEdgeUs) {
 
 static void stopGenerator() {
   running = false;
+  frameLogPending = false;
   setMarker(false);
 }
 
@@ -122,6 +131,7 @@ static void startGenerator() {
   stopGenerator();
   frameIndex = 0;
   timingOverruns = 0;
+  frameLogPending = false;
   frameGray = gray16(frameIndex);
   // Defer the first frame for 50 ms to allow command ACK to transmit.
   frameOriginUs = micros() + 50000UL;
@@ -152,6 +162,8 @@ static void handleCommand(const char* line, uint32_t receivedUs) {
     Serial.print(FRAME_US);
     Serial.print(F(" BITS ")); Serial.print(BITS);
     Serial.print(F(" RUN ")); Serial.print(running ? 1 : 0);
+    Serial.print(F(" FRAME_MODE "));
+    Serial.print(SLOW_DEFERRED ? F("5HZ_DEFERRED") : F("10HZ_ORIGINAL"));
     Serial.print(F(" NEXT ")); Serial.print(frameIndex);
     Serial.print(F(" OVERRUNS ")); Serial.println(timingOverruns);
   } else if (strcmp(op, "START") == 0) {
@@ -213,6 +225,11 @@ static void tickGenerator() {
   uint32_t position = (uint32_t)offset;
   if (position >= FRAME_US) {
     uint32_t skipped = position / FRAME_US;
+    if (SLOW_DEFERRED && frameLogPending) {
+      // A frame ended before its log could be safely flushed.
+      ++timingOverruns;
+      frameLogPending = false;
+    }
     frameOriginUs += skipped * FRAME_US;
     frameIndex += skipped;
     frameGray = gray16(frameIndex);
@@ -239,9 +256,23 @@ static void tickGenerator() {
       ++timingOverruns;
     }
     setMarker(true);
-    emitFrameLog(micros());
+    const uint32_t edgeTimestamp = micros();
+    if (SLOW_DEFERRED) {
+      pendingFrameEdgeUs = edgeTimestamp;
+      frameLogPending = true;
+    } else {
+      emitFrameLog(edgeTimestamp);
+    }
   } else {
     setMarker(high);
+  }
+  if (SLOW_DEFERRED && frameLogPending &&
+      position >= END_BEGIN_US + END_US) {
+    // D7 is already LOW; we have 103 ms idle before next START.
+    // EDGE_US remains the original post-digitalWrite timestamp, NOT
+    // the later serial message transmission time.
+    emitFrameLog(pendingFrameEdgeUs);
+    frameLogPending = false;
   }
 }
 
@@ -254,6 +285,12 @@ void setup() {
 
 void loop() {
   tickGenerator();
-  pollSerial();
+  if (!SLOW_DEFERRED || !running ||
+      (int32_t)(micros() - frameOriginUs) >=
+          (int32_t)(END_BEGIN_US + END_US) ) {
+    // During the 97-ms encoded waveform, avoid executing serial
+    // commands/SYNC; UART hardware reception remains buffered.
+    pollSerial();
+  }
   tickGenerator();
 }
