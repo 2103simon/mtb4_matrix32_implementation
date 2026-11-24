@@ -226,6 +226,12 @@ class NanoLog:
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--expected-frame-us", type=int, default=100000,
+                   choices=(100000, 200000),
+                   help="Require matching Nano 100ms or 200ms Gray frame firmware")
+    p.add_argument("--expected-frame-mode", choices=("10HZ_ORIGINAL", "5HZ_DEFERRED"),
+                   default="10HZ_ORIGINAL",
+                   help="Verify exact INFO FRAME_MODE before START")
     p.add_argument("--nano-port", default=None,
                    help="Optional explicit Nano serial path; by default detects Nano Every")
     p.add_argument("--scope-device", default="auto")
@@ -259,6 +265,9 @@ def parser():
 def plan(args, p):
     if not 1 <= args.count <= 50:
         p.error("--count must be 1..50")
+    expected = {"10HZ_ORIGINAL": 100000, "5HZ_DEFERRED": 200000}
+    if args.expected_frame_us != expected[args.expected_frame_mode]:
+        p.error("Expected Gray mode and frame duration disagree")
     if args.points < 2 or args.points > 20000000:
         p.error("--points must be 2..20000000")
     # Compare the user-provided timebase directly. Multiplying by 1e-6
@@ -289,7 +298,10 @@ def plan(args, p):
     # record-length writes; verify() checks both values before arming.
     return {
         "schema_version": 1, "experiment": "GRAY_TC_V1",
-        "source": "Arduino Nano Every D7, 10 Hz framed Gray counter",
+        "source": (f"Arduino Nano Every D7, "
+                   f"{1000000/args.expected_frame_us:g} Hz Gray counter"),
+        "nominal_frame_s": args.expected_frame_us / 1e6,
+        "expected_frame_mode": args.expected_frame_mode,
         "channel_2": "Nano D7; 2 V/div, expected 0-5 V; trigger rising at +1 V",
         "probe_comp": "disconnected",
         "channels": args.channels, "points": args.points,
@@ -333,8 +345,15 @@ def run(args, requested):
             metadata["ping"] = nano.synchronize()
             info = nano.command("INFO")
             metadata["nano_info"] = info
-            if "FW GRAY_TC_V1" not in info or "PIN 7" not in info:
-                raise RuntimeError("Wrong Nano firmware or pin; upload arduino_nano PlatformIO project")
+            expected_firmware = (
+                "FW GRAY_TC_V1", "PIN 7",
+                f"FRAME_US {args.expected_frame_us}",
+                f"FRAME_MODE {args.expected_frame_mode}",
+            )
+            if any(part not in info for part in expected_firmware):
+                raise RuntimeError(
+                    "Wrong Nano firmware/Gray frame mode; expected "
+                    + ", ".join(expected_firmware) + "; received " + info)
             if "RUN 1" in info:
                 nano.command("STOP")
             # No automatic retry of START: ambiguous response may mean
@@ -418,7 +437,8 @@ def run(args, requested):
                                     "waveform": validate_csv(file, args.points),
                                 }
                             marker_csv = root / row["channels"]["CH2"]["path"]
-                            row["decoded_gray"] = decode_csv(marker_csv)
+                            row["decoded_gray"] = decode_csv(
+                                marker_csv, frame_s=args.expected_frame_us/1e6)
                             row["status"] = "captured"
                             row["completed_utc"] = utc()
                             if not args.per_record_epochs:
