@@ -74,7 +74,7 @@ analysis/
 1. **Frequency transitions:** physical periods use approved negative onset
    timestamps. Comparing the last pre-interval ACK with any in-interval ACK
    is *compatibility evidence*, never proof of internal application at a
-   particular electrical cycle boundary. The ±0.5–3.5 ms comparisons are
+   particular electrical cycle boundary. The −3.5, −1.8, 0, +1.8, and +3.5 ms comparisons are
    hypothetical offset shifts and **not calibrated uncertainty bounds**.
 2. **Shutdown/restart:** `REJECTED_MISSING_POSITIVE_PHASE` source events must
    remain operator-excluded from the frequency inventory. Original CH1 samples
