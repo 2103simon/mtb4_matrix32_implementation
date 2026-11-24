@@ -455,3 +455,31 @@ Nano/PC/BLE/MCU comparisons must report scope↔Nano local-fit RMS and
 absolute offset limitations without treating a failed 100us threshold
 as invalidating direct CH1 electrical measurements. A physically
 unobserved acquisition gap remains unknown.
+
+
+### MCU trace: estimated oscilloscope coverage
+
+For a completed recording with a saved scope-to-host clock estimate, the
+recorder additionally writes two **offline diagnostic** plots under `analysis/`:
+
+- `mcu_full_stream_scope_windows.png`: the complete MCU pressure/RA-I/SA-II
+  host-arrival history, with dashed estimated scope start/end boundaries.
+- `mcu_scope_overlap_record_00001.png` (and subsequent record numbers):
+  only the MCU readings whose host arrival timestamps fall within that
+  record's estimated scope window. The x-axis remains in the same PC
+  monotonic elapsed-time coordinate as the full trace.
+
+The plots can be regenerated without hardware, stimulation or onset approval:
+
+```bash
+python -m oscilloscope.plot_mcu_scope_coverage \
+  --run-dir data/recordings/<recording_directory> \
+  --taxel 11
+```
+
+Omit `--taxel` to show all taxels. A missing clock map skips these plots;
+failure to generate them does not invalidate a saved acquisition. The dashed
+boundaries and cropped overlap are **provisional**, based on the existing
+scope/Nano/PC clock mapping (which may be unqualified), not independently
+calibrated physical onset times or proof of exact simultaneity. No raw files,
+approved onsets or synchronization fits are changed.
