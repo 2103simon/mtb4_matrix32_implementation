@@ -1,4 +1,8 @@
 """Hardware-free tests for frequency robustness and Gray spacing audit."""
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
 
 import numpy as np
@@ -10,6 +14,21 @@ from oscilloscope.audit_frequency_tracking import (
 
 
 class FrequencyAuditTests(unittest.TestCase):
+    def test_file_entrypoint_resolves_repository_root_from_other_cwd(self):
+        # Regression for running the documented "python oscilloscope/..."
+        # invocation: analyze_mcu_recording.py lives in the repository root.
+        script = Path(__file__).resolve().parents[1] / (
+            "oscilloscope/audit_frequency_tracking.py")
+        with tempfile.TemporaryDirectory() as other_working_dir:
+            result = subprocess.run(
+                [sys.executable, str(script), "--help"],
+                cwd=other_working_dir, capture_output=True, text=True,
+                check=False, timeout=30,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--run-dir", result.stdout)
+        self.assertNotIn("invalid escape sequence", result.stderr)
+
     def test_period_error_sign_and_units(self):
         period_ms, err_us, err_hz, err_pct = _quantities(100., 50.)
         self.assertAlmostEqual(period_ms, 20.)
