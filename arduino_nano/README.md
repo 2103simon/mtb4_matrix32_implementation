@@ -1,6 +1,8 @@
 # Arduino Nano Every — canonical 10 Hz hardware-timed Gray reference
 
-**One build, one firmware.** Open the `arduino_nano/` folder as a PlatformIO project in VS Code (File → Open Folder) if the project/tasks are not visible in the sidebar. ** `arduino_nano/platformio.ini` contains only
+**One build, one firmware.** Open the `arduino_nano/` folder as a PlatformIO project in VS Code (File → Open Folder) if the project/tasks are not visible in the sidebar.
+
+`arduino_nano/platformio.ini` contains only
 `[env:nano_every_10hz_hardware_timer]` and sets `default_envs = nano_every_10hz_hardware_timer`. VS Code's
 PlatformIO **Upload** button builds/uploads this exact firmware once.
 Close serial monitors and the experiment runner before flashing.
