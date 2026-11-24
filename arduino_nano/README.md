@@ -74,3 +74,41 @@ does not establish hardware timing accuracy.
 For a complete explanation of how the physical CH2 Gray frame is matched with its USB `FRAME ... EDGE_US ...` message, and how CRC32 four-timestamp SYNC exchanges provide a *provisional* Nano-to-PC affine mapping, see [clock mapping and time domains](../docs/clock_mapping_and_time_domains.md). The per-record fit is independent for each finite scope acquisition, and does not reconstruct samples absent during pauses.
 
 Project-wide installation, safe wiring, experiments and analysis entry points are in the [root README](../README.md).
+
+
+## Experimental 5Hz deferred-serial clock reference (opt-in)
+
+The default `nano_every` target stays at 10Hz (100ms Gray frame,
+`GRAY_TC_V1`). For a controlled, Matrix32-disconnected clock-only trial:
+
+```bash
+cd arduino_nano
+pio run -e nano_every_5hz_deferred
+pio run -e nano_every_5hz_deferred -t upload --upload-port /dev/ttyACM1
+cd ..
+python oscilloscope/test_gray_5hz_deferred.py
+# After independently verifying Nano D7 CH2 wiring and scope settings:
+python -u oscilloscope/test_gray_5hz_deferred.py --run
+```
+
+The opt-in firmware uses `FRAME_US 200000` and
+`FRAME_MODE 5HZ_DEFERRED`. The 16 Gray slots retain their original
+5-ms schedule and 1-ms HIGH pulses; START remains 4ms and END 7ms.
+The physical waveform occupies the first 97ms, leaving 103ms idle.
+
+At the START rising edge the firmware still calls `micros()`
+immediately after `digitalWrite()` to record `EDGE_US`, but it now
+**defers USB FRAME serial printing** until after the END pulse.
+It also services serial SYNC/commands only in the idle region to
+avoid active-waveform interference.
+
+This is a controlled experimental *software scheduling change*, NOT
+hardware-timer-based pulse generation. The 5Hz mode must be explicitly
+selected and cannot be used silently in the original integrated
+Matrix32 acquisition or existing fixed-10Hz assumptions. It may
+increase USB SYNC roundtrip delay due to waiting for idle windows.
+For measured physical width, inter-pulse gap and clock comparison
+procedures, see the
+[scope-only A/B instructions](../docs/gray_timecode_scope_experiment.md).
+
+To return to the original firmware, reflash `-e nano_every`.
