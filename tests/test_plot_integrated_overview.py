@@ -11,8 +11,8 @@ import unittest
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from plot_integrated_overview import (
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from oscilloscope.plot_integrated_overview import (
     generate, host_to_scope, sha256, waveform_envelope,
 )
 
