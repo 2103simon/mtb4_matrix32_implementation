@@ -39,7 +39,7 @@ def save_csv(path, rows, fields):
         writer.writerows(rows)
 
 
-def geometry(record, frame_log, pulses):
+def geometry(record, frame_log, pulses, *, frame_s=FRAME_S):
     frames = record["decoded_gray"]["frames"]
     audit = audit_physical_pulses(pulses, frames)
     widths, starts, missed = [], [], Counter()
@@ -118,8 +118,8 @@ def geometry(record, frame_log, pulses):
             "frame_steps": steps, "scope_time_s": right["scope_start_s"],
             "scope_spacing_us": dt_scope_us,
             "nano_spacing_us": dt_nano_us,
-            "scope_vs_nominal_us": dt_scope_us-steps*FRAME_S*1e6,
-            "nano_vs_nominal_us": dt_nano_us-steps*FRAME_S*1e6,
+            "scope_vs_nominal_us": dt_scope_us-steps*frame_s*1e6,
+            "nano_vs_nominal_us": dt_nano_us-steps*frame_s*1e6,
             "nano_minus_rate_scaled_scope_us": (
                 dt_nano_us-slope*dt_scope_us
                 if slope is not None else None),
@@ -133,6 +133,7 @@ def geometry(record, frame_log, pulses):
     one = [r for r in spacing if r["frame_steps"] == 1]
     report = {
         "decoded_frames": len(frames),
+        "nominal_frame_s": frame_s,
         "matched_gray_pulses": len(widths),
         "unassigned_complete_high_pulses": audit["unassigned_pulse_count"],
         "all_complete_high_pulses_accounted_for":
@@ -188,7 +189,7 @@ def plot(folder, widths, frames, index):
         axes[1].plot([r["scope_time_s"] for r in one],
                      [r[field] for r in one], marker=".",
                      markersize=2, lw=.75, label=label)
-    axes[1].set(title="Frame start spacing relative to 100 ms",
+    axes[1].set(title="Frame start spacing relative to nominal period",
                 ylabel="Inter-frame error (us)")
     rate = [r for r in one
             if r["nano_minus_rate_scaled_scope_us"] is not None]
@@ -222,13 +223,16 @@ def run(run_dir, *, threshold=2.):
     root = Path(run_dir).expanduser().resolve()
     meta = json.loads((root/"metadata.json").read_text(encoding="utf-8"))
     nano = read_nano_frames(root/"nano_serial.jsonl")
+    frame_s = float(meta.get("plan", {}).get("nominal_frame_s", FRAME_S))
+    if not math.isfinite(frame_s) or frame_s < .097:
+        raise ValueError("Invalid nominal Gray frame period in metadata")
     reports = []
     for rec in sorted(meta["records"], key=lambda r: int(r["index"])):
         idx = int(rec["index"])
         ch2 = root/rec["channels"]["CH2"]["path"]
         print(f"[GRAY PHYSICAL {idx}] Reading CH2: {ch2}", flush=True)
         pulses, waveform = edges_from_csv(ch2, threshold=threshold)
-        widths, spacing, stat = geometry(rec, nano, pulses)
+        widths, spacing, stat = geometry(rec, nano, pulses, frame_s=frame_s)
         folder = root/"analysis"/f"record_{idx:05d}"
         folder.mkdir(parents=True, exist_ok=True)
         save_csv(folder/"gray_pulse_widths.csv", widths, [
@@ -266,6 +270,7 @@ def run(run_dir, *, threshold=2.):
         "records": reports,
         "original_clock_maps_untouched": True,
         "source_locked_CH1_approvals_untouched": True,
+        "nominal_frame_s": frame_s,
         "electrical_gpio_event_timestamp_unverified": True,
     }
     atomic_json(out/"gray_pulse_geometry_summary.json", payload)
@@ -276,7 +281,8 @@ def run(run_dir, *, threshold=2.):
         "The Nano firmware uses micros() to schedule D7 switching in "
         "tickGenerator(). It captures EDGE_US with another micros() call "
         "AFTER the rising-edge digitalWrite(). Both use the same firmware "
-        "timer but are not simultaneous hardware events.", "",
+        "timer but are not simultaneous hardware events. The analyzed "
+        f"nominal frame period is {frame_s*1000:g} ms.", "",
         "| Record | Gray frames | START width median ± std (us) | "
         "DATA width median ± std (us) | END width median ± std (us) | "
         "CH2 frame spacing std (us) | Nano-CH2 rate-corrected spacing "
