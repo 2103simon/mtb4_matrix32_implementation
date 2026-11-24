@@ -35,6 +35,41 @@ The last command requires all three module summaries. It refuses to combine
 incompatible source hashes or missing figures. Existing per-ACK and frequency
 robustness reports are linked when present and checked for consistency.
 
+## Answering "how many requests were ACKed, and how many were executed?"
+
+The consolidated report begins with a **Requested → ACKed → physically observed**
+scorecard. It is regenerated automatically by the runner, or independently:
+
+```bash
+python -u -m oscilloscope.build_final_experiment_report --run-dir "$MTB4_RUN"
+```
+
+The scorecard uses the recorded SF/SC requests and replies, source-linked
+host-timing pairs, the existing per-ACK observability audit (when available),
+and the settled-frequency robustness summary (when available). The builder
+**fails closed on inconsistent command totals or mismatched source hashes**.
+
+For the 2026-11-24 reference recording there are 266 SF requests and 266
+successful SF ACKs (including 22 muted-scheduler SF400 changes), plus 41/41
+successful SC ACKs. There are 246 SF ACKs inside the *estimated* scope window:
+59 have matching, settled electrical-period evidence; the remaining 187 lack
+individually attributable settled evidence (31 potentially superseded, 37
+muted at ACK, 6 muted before the next pulse, 27 insufficiently settled, and
+86 with other insufficient isolated evidence). The other 20 SF ACKs lie outside
+the scope window. The independent steady-state audit has 85/85 compatible
+eligible *intervals*. **Do not combine those interval and command counts into
+an executed-command percentage.**
+
+The report deliberately labels the numbers of SF commands **proved executed**
+and **proved unexecuted** as **not determinable**. A BLE OK indicates protocol
+acknowledgment only, an electrical period matching one ACK is not unique proof
+of its execution, and the host–scope time offset remains unqualified.
+
+Additional outputs under the recording's `analysis/` folder:
+`command_delivery_scorecard.json` and `command_delivery_scorecard.png`.
+These outputs never modify source waveforms, clock fits, operator decisions,
+or existing signed approvals.
+
 ## Output structure
 
 ```text
