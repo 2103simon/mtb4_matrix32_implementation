@@ -25,12 +25,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from communication.nano_binary_protocol import (
     MixedNanoStreamDecoder, pack_sync_request,
 )
-from decode_gray_timecode import decode_csv
-from record_scope import (
-    acquire, atomic_json, configure, scope_settings, validate_csv, verify,
-)
-from scope_device import resolve_scope_device, verify_scope_identity
-from tek_mdo_usb import capture, query
+if __package__:
+    from oscilloscope.decode_gray_timecode import decode_csv
+    from oscilloscope.record_scope import (
+        acquire, atomic_json, configure, scope_settings, validate_csv, verify,
+    )
+    from oscilloscope.scope_device import resolve_scope_device, verify_scope_identity
+    from oscilloscope.tek_mdo_usb import capture, query
+else:
+    from decode_gray_timecode import decode_csv
+    from record_scope import (
+        acquire, atomic_json, configure, scope_settings, validate_csv, verify,
+    )
+    from scope_device import resolve_scope_device, verify_scope_identity
+    from tek_mdo_usb import capture, query
 
 
 def utc():
