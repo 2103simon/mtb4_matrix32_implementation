@@ -8,8 +8,11 @@ gets a fresh BUFFER_BEGIN after its pre-SYNC batch. No Matrix32 output.
 Flash PlatformIO environment nano_every_10hz_buffered explicitly.
 Dry-run default; --run is required for connected hardware.
 """
+from pathlib import Path
 import sys
-from test_gray_epoch_pause import main as epoch_main
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from oscilloscope.test_gray_epoch_pause import main as epoch_main
 
 
 def main(argv=None):

@@ -250,7 +250,7 @@ def plot_record(path, rows, summary, mapped_states, mcu, taxel, encoding,
                         s=9, alpha=.8, label="Approved negative-onset inverse period")
         axes[0].legend(loc="upper right")
     else:
-        axes[0].text(.5, .5, "No approved physical onsets / intervals",
+        axes[0].text(.5, .5, "No approved within-record intervals; frequency unavailable",
                      ha="center", va="center", transform=axes[0].transAxes)
     axes[0].set_ylabel("Physical 1 / period (Hz)")
     axes[0].set_title(
@@ -311,7 +311,7 @@ def plot_commanded_vs_measured(path, rows, summary, states, mcu,
                    [r["physical_inverse_period_hz"] for r in rows],
                    s=9, alpha=.65, label="Approved CH1 measured 1/period")
     else:
-        ax.text(.5, .5, "No approved CH1 intervals (silent capture)",
+        ax.text(.5, .5, "No approved CH1 intervals; frequency unavailable",
                 ha="center", va="center", transform=ax.transAxes)
     if mapping is not None:
         h0 = int(mapping["first_sample_pc_monotonic_ns_est"])
@@ -668,17 +668,22 @@ def plot_session_summary(path, rows):
                 title="Operator-approved negative-onset pulse inventory")
     axes[1].bar(x, [
         r["inverse_period_hz"]["median"]
-        if r["inverse_period_hz"]["median"] is not None else 0
+        if r["inverse_period_hz"]["median"] is not None else np.nan
         for r in rows])
     axes[1].set(ylabel="Median inverse period (Hz)",
                 xlabel="Independent oscilloscope record")
     for ax in axes:
         ax.set_xticks(x, labels)
         ax.grid(axis="y", alpha=.2)
-    axes[1].text(.98, .95, "Zero bar for record 5 means no approved intervals,\n"
-                 "not a measured median of 0 Hz.",
-                 ha="right", va="top", transform=axes[1].transAxes,
-                 fontsize=9)
+    missing = [i for i, row in enumerate(rows) if not row["interval_count"]]
+    for position in missing:
+        axes[1].annotate("n/a", (position, 0), xytext=(0, 5),
+                         textcoords="offset points", ha="center", fontsize=9)
+    if missing:
+        axes[1].text(.98, .95, "n/a: no approved within-record intervals;\n"
+                     "no frequency estimate is available.",
+                     ha="right", va="top", transform=axes[1].transAxes,
+                     fontsize=9)
     fig.savefig(path, dpi=150)
     plt.close(fig)
     return str(path)
@@ -697,7 +702,7 @@ def session_report(summaries, total_record_count):
         f"**Approved onsets:** {total_onsets}. "
         f"**Approved within-record intervals:** {total_intervals}.",
         "",
-        "![Approved onsets and median active-cycle frequency]"
+        "![Approved onsets and median inverse-period frequency]"
         "(approved_session_overview.png)", "",
         "| Record | Approved onsets | Approved intervals | "
         "Median period (ms) | Median inverse period (Hz) | "
@@ -728,9 +733,15 @@ def session_report(summaries, total_record_count):
         "apply timestamps. Diagnostic comparisons are explicitly labeled "
         "and do not constitute calibrated tracking accuracy or latency.",
         "",
-        "Record 5's reviewer-confirmed empty inventory establishes no observed "
-        "CH1 onsets above the detector/scope sensitivity; it does not "
-        "independently certify zero current.",
-        "",
     ]
+    empty_records = [str(row["record_index"]) for row in summaries
+                     if row["onset_count"] == 0]
+    if empty_records:
+        lines += [
+            "Reviewer-confirmed empty onset inventories (records "
+            + ", ".join(empty_records)
+            + ") establish no observed CH1 onsets above the detector/scope "
+              "sensitivity; they do not independently certify zero current.",
+            "",
+        ]
     return "\n".join(lines)

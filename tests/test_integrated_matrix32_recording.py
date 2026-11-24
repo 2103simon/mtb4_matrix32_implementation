@@ -1,15 +1,19 @@
 """Hardware-free contract tests for the integrated bench recorder."""
 import io
+import json
 import tempfile
 from unittest.mock import MagicMock
 from pathlib import Path
 import sys
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "oscilloscope"))
-from record_integrated_matrix32 import main, parser, plan, run, StimulationChild
+sys.path.append(str(Path(__file__).resolve().parents[1] / "oscilloscope"))
+from record_integrated_matrix32 import (
+    main, parser, plan, run, StimulationChild, acquire_buffered_record,
+    verify_nano_info, verify_gray_frame_evidence, NANO_BUFFER_POLL_BUDGET_S,
+)
 from record_scope import configure
 
 
@@ -57,7 +61,7 @@ class IntegratedBenchTests(unittest.TestCase):
                 return "PING_ACK"
             def command(self, command, timeout=None):
                 if command == "INFO":
-                    return ("FW GRAY_TC_V1 PIN 7 FRAME_US 100000 "
+                    return ("ACK INFO 1 FW GRAY_TC_V1 PIN 7 BITS 16 FRAME_US 100000 "
                             "FRAME_MODE 10HZ_HW_TCA_BUFFERED RUN 0")
                 return "ACK " + command
             def binary_sync_exchange(self):
@@ -79,7 +83,9 @@ class IntegratedBenchTests(unittest.TestCase):
                 self.history.append("BUFFER_END_DUMP")
                 return {"end_ack": "ACK BUFFER_END 1 COUNT 201 LOST 0 CAP 256",
                         "dump_ack": "ACK BUFFER_DUMP 1 COUNT 201 LOST 0",
-                        "frames_received": 201, "frames_lost": 0}
+                        "frames_received": 201, "frames_lost": 0,
+                        "frame_payloads_validated": True,
+                        "first_frame_counter": 100, "last_frame_counter": 300}
 
         class FakeScope:
             def __enter__(self):
@@ -130,8 +136,16 @@ class IntegratedBenchTests(unittest.TestCase):
                 patch("record_integrated_matrix32.acquire", side_effect=fake_acquire) as acq,
                 patch("record_integrated_matrix32.capture", return_value={"ok": True}) as transfer,
                 patch("record_integrated_matrix32.validate_csv", return_value={"ok": True}),
+                patch("record_integrated_matrix32.verify_waveform_timing", return_value={"verified": True}),
+                patch("record_integrated_matrix32.verify_waveform_scaling", return_value={"verified": True}),
                 patch("record_integrated_matrix32.decode_csv",
-                      return_value={"decoded_frame_count": 199}),
+                      return_value={"decoded_frame_count": 199,
+                                    "waveform": {"first_time_s": 0, "last_time_s": 19.999998},
+                                    "frames": [{"counter_mod_65536": i,
+                                                "gray_hex": f"{i ^ (i >> 1):04X}",
+                                                "scope_start_s": (i - 100) * 0.1,
+                                                "scope_end_s": (i - 100) * 0.1 + 0.087}
+                                               for i in range(101, 300)]}),
                 patch("analyze_gray_epoch_experiment.analyze",
                       return_value=(
                           {"decoded_frames_total": 597},
@@ -144,6 +158,7 @@ class IntegratedBenchTests(unittest.TestCase):
                     result = run(args, requested)
 
             self.assertEqual(result["status"], "complete")
+            self.assertTrue(result["clock_frame_evidence_complete"])
             self.assertEqual(len(result["records"]), 3)
             self.assertEqual([r["index"] for r in result["records"]], [1, 2, 3])
             self.assertEqual([r["status"] for r in result["records"]],
@@ -177,6 +192,8 @@ class IntegratedBenchTests(unittest.TestCase):
         self.assertEqual(result["nominal_window_s"], 20.0)
         self.assertEqual(result["channels"], [1, 2])
         self.assertFalse(result["matrix32_armed"])
+        self.assertEqual(result["nano_buffer_capacity_required"], 256)
+        self.assertLess(result["effective_acquire_timeout_upper_bound_s"], 25.6)
 
     def test_capture_before_start_requires_explicit_armed_bench(self):
         p = parser()
@@ -236,7 +253,7 @@ class IntegratedBenchTests(unittest.TestCase):
         self.assertLess(commands.index("HORizontal:RECOrdlength 1000000"),
                         commands.index("HORizontal:POSition 0"))
 
-    def test_supported_scope_memory_depths_and_longer_capture_plans(self):
+    def test_supported_memory_depths_and_rejection_of_buffer_overflow_plans(self):
         for points in (1000, 10000, 100000, 1000000, 5000000, 10000000, 20000000):
             with self.subTest(points=points):
                 p = parser()
@@ -247,10 +264,12 @@ class IntegratedBenchTests(unittest.TestCase):
                 (20000000, 6000000, 60)):
             with self.subTest(seconds=seconds):
                 p = parser()
-                data = plan(p.parse_args([
-                    "--points", str(points), "--time-div-us", str(us)
-                ]), p)
-                self.assertEqual(data["nominal_window_s"], seconds)
+                with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    plan(p.parse_args([
+                        "--points", str(points), "--time-div-us", str(us)
+                    ]), p)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            plan(parser().parse_args(["--acquire-timeout", "20"]), parser())
 
     def test_invalid_limits(self):
         p = parser()
@@ -307,6 +326,180 @@ class IntegratedBenchTests(unittest.TestCase):
     def test_child_stop_no_start(self):
         child = StimulationChild(Path("not_used"), arm=False, stale_ms=250)
         self.assertEqual(child.stop(), {"started": False})
+
+
+INFO = ("ACK INFO 2 FW GRAY_TC_V1 PIN 7 FRAME_US 100000 BITS 16 RUN 0 "
+        "FRAME_MODE 10HZ_HW_TCA_BUFFERED NEXT 0 OVERRUNS 0")
+
+
+class BufferedFailureTests(unittest.TestCase):
+    def setUp(self):
+        self.args = parser().parse_args([])
+        plan(self.args, parser())
+        self.nano = MagicMock()
+        self.nano.buffered_capture_begin.return_value = {
+            "begin_ack": "ACK BUFFER_BEGIN 3 CAP 256", "capacity": 256,
+        }
+        self.nano.buffered_capture_end_and_dump.return_value = {
+            "end_ack": "ACK BUFFER_END 4 COUNT 201 LOST 0 CAP 256",
+            "dump_ack": "ACK BUFFER_DUMP 5 COUNT 201 LOST 0",
+            "frames_received": 201, "frames_lost": 0,
+        }
+        self.nano.command.return_value = "ACK BUFFER_END 6 COUNT 12 LOST 0 CAP 256"
+        self.child = MagicMock()
+        self.child.start_failure.is_set.return_value = False
+        self.record = {"index": 1, "status": "started"}
+
+    def test_exact_firmware_fields_reject_prefix_matches_and_duplicates(self):
+        self.assertEqual(verify_nano_info(INFO)["FRAME_US"], "100000")
+        for invalid in (
+            INFO.replace("PIN 7", "PIN 70"),
+            INFO.replace("FRAME_US 100000", "FRAME_US 1000000"),
+            INFO.replace("10HZ_HW_TCA_BUFFERED", "10HZ_HW_TCA_BUFFERED_OLD"),
+            INFO + " RUN 1", INFO + " MALFORMED", INFO.replace("RUN 0", "RUN 10"),
+        ):
+            with self.subTest(reply=invalid), self.assertRaises(RuntimeError):
+                verify_nano_info(invalid)
+
+    def test_gray_identity_qualification_is_independent_of_ch1_and_clock_fit(self):
+        buffer = {"frames_received": 6, "frames_lost": 0,
+                  "frame_payloads_validated": True, "first_frame_counter": 65534}
+        def decoded(counters):
+            return {"decoded_frame_count": len(counters),
+                    "waveform": {"first_time_s": 0, "last_time_s": 0.5},
+                    "frames": [{"counter_mod_65536": counter,
+                                "gray_hex": f"{counter ^ (counter >> 1):04X}",
+                                "scope_start_s": (i + 1) * 0.1,
+                                "scope_end_s": (i + 1) * 0.1 + 0.087}
+                               for i, counter in enumerate(counters)]}
+        valid = verify_gray_frame_evidence(decoded([65535, 0, 1, 2]), buffer)
+        self.assertTrue(valid["complete"])
+        self.assertFalse(valid["clock_fit_evaluated"])
+        for counters in ([], [65535, 1, 2], [0, 0, 1], [10, 11, 12]):
+            with self.subTest(counters=counters):
+                result = verify_gray_frame_evidence(decoded(counters), buffer)
+                self.assertFalse(result["complete"])
+                self.assertTrue(result["issues"])
+                self.assertFalse(result["direct_ch1_evidence_invalidated"])
+        partial = decoded([65535, 0, 1])
+        partial["waveform"]["last_time_s"] = 19.999998
+        result = verify_gray_frame_evidence(partial, buffer)
+        self.assertFalse(result["complete"])
+        self.assertIn("cover the waveform", " ".join(result["issues"]))
+
+    def test_success_has_one_acquisition_and_no_cleanup_command(self):
+        with patch("record_integrated_matrix32.acquire", return_value={"seen_running": True}) as acquire_mock:
+            acquire_buffered_record(self.nano, None, self.args, self.record, self.child)
+        timeout = acquire_mock.call_args.args[1]
+        self.assertGreater(timeout, 20)
+        self.assertLessEqual(timeout, NANO_BUFFER_POLL_BUDGET_S)
+        self.assertEqual(self.record["nano_frame_buffer"]["status"], "verified")
+        self.nano.buffered_capture_end_and_dump.assert_called_once()
+        self.nano.command.assert_not_called()
+
+    def test_acquisition_errors_and_keyboard_interrupt_end_buffering(self):
+        for error in (TimeoutError("scope timeout"), KeyboardInterrupt()):
+            with self.subTest(error=type(error).__name__):
+                self.nano.reset_mock()
+                with patch("record_integrated_matrix32.acquire", side_effect=error):
+                    with self.assertRaises(type(error)) as raised:
+                        acquire_buffered_record(self.nano, None, self.args, self.record, self.child)
+                self.assertIs(raised.exception, error)
+                self.nano.command.assert_called_once_with("BUFFER_END", timeout=2.0)
+                self.nano.buffered_capture_end_and_dump.assert_not_called()
+                self.assertEqual(self.record["status"], "failed")
+                self.assertIn("cleanup_end_ack", self.record["nano_frame_buffer"])
+
+    def test_ambiguous_begin_timeout_still_attempts_end(self):
+        self.nano.buffered_capture_begin.side_effect = TimeoutError("lost BEGIN ACK")
+        with patch("record_integrated_matrix32.acquire") as acquire_mock:
+            with self.assertRaisesRegex(TimeoutError, "lost BEGIN ACK"):
+                acquire_buffered_record(self.nano, None, self.args, self.record, self.child)
+        acquire_mock.assert_not_called()
+        self.nano.buffered_capture_begin.assert_called_once()
+        self.nano.command.assert_called_once_with("BUFFER_END", timeout=2.0)
+
+    def test_cleanup_failure_preserves_primary_exception(self):
+        primary = TimeoutError("scope acquisition")
+        self.nano.command.side_effect = RuntimeError("serial disconnected")
+        with patch("record_integrated_matrix32.acquire", side_effect=primary):
+            with self.assertRaises(TimeoutError) as raised:
+                acquire_buffered_record(self.nano, None, self.args, self.record, self.child)
+        self.assertIs(raised.exception, primary)
+        self.assertIn("serial disconnected", self.record["nano_frame_buffer"]["cleanup_end_error"])
+
+    def test_dump_failure_does_not_repeat_acknowledged_buffer_end(self):
+        def fail_dump(begun):
+            begun["end_ack"] = "ACK BUFFER_END 4 COUNT 201 LOST 0 CAP 256"
+            raise RuntimeError("corrupt dump")
+        self.nano.buffered_capture_end_and_dump.side_effect = fail_dump
+        with patch("record_integrated_matrix32.acquire", return_value={}):
+            with self.assertRaisesRegex(RuntimeError, "corrupt dump"):
+                acquire_buffered_record(self.nano, None, self.args, self.record, self.child)
+        self.nano.command.assert_not_called()
+
+    def test_unexpected_capacity_rejected_before_scope_arm(self):
+        self.nano.buffered_capture_begin.return_value["capacity"] = 64
+        with patch("record_integrated_matrix32.acquire") as acquire_mock:
+            with self.assertRaisesRegex(RuntimeError, "capacity mismatch"):
+                acquire_buffered_record(self.nano, None, self.args, self.record, self.child)
+        acquire_mock.assert_not_called()
+        self.nano.command.assert_called_once_with("BUFFER_END", timeout=2.0)
+
+    def test_delayed_begin_cannot_leave_insufficient_buffer_time(self):
+        with (
+            patch("record_integrated_matrix32.time.monotonic_ns", side_effect=[0, 5_000_000_000]),
+            patch("record_integrated_matrix32.acquire") as acquire_mock,
+        ):
+            with self.assertRaisesRegex(TimeoutError, "Insufficient Nano buffer"):
+                acquire_buffered_record(self.nano, None, self.args, self.record, self.child)
+        acquire_mock.assert_not_called()
+        self.nano.command.assert_called_once_with("BUFFER_END", timeout=2.0)
+
+    def test_controller_fault_during_acquisition_triggers_buffer_cleanup(self):
+        def fault(scope, timeout, on_progress):
+            self.child.start_failure.is_set.return_value = True
+            on_progress({"elapsed_s": 0.1})
+        with patch("record_integrated_matrix32.acquire", side_effect=fault):
+            with self.assertRaisesRegex(RuntimeError, "Controller reported fault"):
+                acquire_buffered_record(self.nano, None, self.args, self.record, self.child)
+        self.nano.command.assert_called_once_with("BUFFER_END", timeout=2.0)
+        self.assertEqual(self.record["acquisition_progress"]["elapsed_s"], 0.1)
+
+    def test_ambiguous_start_timeout_attempts_stop_before_serial_close(self):
+        history = []
+        class Nano:
+            def __init__(self, *args):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                history.append("CLOSE")
+            def synchronize(self):
+                return "ACK PING 1"
+            def command(self, op, **kwargs):
+                history.append(op)
+                if op == "INFO":
+                    return INFO
+                if op == "START":
+                    raise TimeoutError("START ACK lost")
+                return "ACK STOP 4"
+        with tempfile.TemporaryDirectory() as folder:
+            args = parser().parse_args(["--output-root", folder])
+            requested = plan(args, parser())
+            with (
+                patch("record_integrated_matrix32.NanoLog", Nano),
+                patch("record_integrated_matrix32.resolve_port", return_value="nano"),
+                patch("record_integrated_matrix32.resolve_scope_device") as scope,
+                redirect_stdout(io.StringIO()),
+            ):
+                with self.assertRaisesRegex(TimeoutError, "START ACK lost"):
+                    run(args, requested)
+            scope.assert_not_called()
+            metadata = json.loads(next(Path(folder).glob("*/metadata.json")).read_text())
+        self.assertEqual(history, ["INFO", "START", "STOP", "CLOSE"])
+        self.assertEqual(metadata["status"], "failed")
+        self.assertEqual(metadata["nano_stop_ack"], "ACK STOP 4")
 
 
 if __name__ == "__main__":

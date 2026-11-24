@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from communication.serial_ports import resolve_port
 from analyze_nano_clock import analyze_run
-from test_gray_timecode import NanoLog
+from oscilloscope.test_gray_timecode import NanoLog
 
 
 def main(argv=None):

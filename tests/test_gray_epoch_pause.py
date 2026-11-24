@@ -1,5 +1,4 @@
 """Device-free tests of per-record Nano SYNC epochs and safe bench plan."""
-import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -7,18 +6,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "oscilloscope"))
+sys.path.append(str(Path(__file__).resolve().parents[1] / "oscilloscope"))
 from analyze_gray_epoch_experiment import analyze
 from align_gray_records import build_alignment, fit_affine
-from test_gray_timecode import parser, plan
+from oscilloscope.test_gray_timecode import parser, plan
 from record_scope import configure, verify
-# Explicitly load the bench entrypoint under a distinct module name.
-# unittest imports THIS test file as "test_gray_epoch_pause", otherwise a
-# normal import of that name resolves back to this partially loaded file.
-_bench_path = Path(__file__).resolve().parents[1] / "oscilloscope" / "test_gray_epoch_pause.py"
-_bench_spec = importlib.util.spec_from_file_location("gray_epoch_pause_bench", _bench_path)
-_bench_module = importlib.util.module_from_spec(_bench_spec)
-_bench_spec.loader.exec_module(_bench_module)
+from oscilloscope import test_gray_epoch_pause as _bench_module
+
 epoch_main = _bench_module.main
 
 
@@ -145,6 +139,7 @@ class EpochExperimentTests(unittest.TestCase):
             "identity": "TEKTRONIX,MDO4104B-6",
             "time_div_s": "0.02",
             "record_length": "100000",
+            "sample_rate": "500.0000E+3",
             "acquisition_mode": "SAMple",
             "acquisition_stopafter": "SEQuence",
             "fast_acquisition": "OFF",

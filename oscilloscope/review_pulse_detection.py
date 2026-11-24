@@ -209,8 +209,23 @@ def analyze_record(root, record):
     if record.get("status") != "captured":
         raise ValueError(f"Record {idx} was not completely captured")
     path = root / record["channels"]["CH1"]["path"]
-    t, volts = load_wave(path)
     output = root / "analysis" / f"record_{idx:05d}" / "pulse_review"
+    # Refuse before writing detector tables or figures: make_scaffold() can
+    # detect a stale review only AFTER those source-hashed tables exist.
+    # A rerun must not invalidate prior evidence or replace approved markers
+    # with automated candidates, even when the original waveform is unchanged.
+    protected = (
+        "review_manifest.json", "review_decisions.csv", "manual_additions.csv",
+        "review_approval.json", "approved_onsets.csv", "approved_intervals.csv",
+    )
+    if any((output / name).exists() for name in protected):
+        raise FileExistsError(
+            f"Record {idx}: existing pulse-review evidence at {output}. "
+            "Preserve/archive the entire review before generating a new "
+            "version. To refresh an approved waveform figure, use "
+            "plot_approved_ch1_panels.py without rerunning detection."
+        )
+    t, volts = load_wave(path)
     output.mkdir(parents=True, exist_ok=True)
     try:
         result = detect_review(t, volts)

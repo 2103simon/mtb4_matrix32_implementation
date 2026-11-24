@@ -26,13 +26,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from communication.serial_ports import resolve_port
 from record_scope import (
     acquire, atomic_json, configure, scope_settings, validate_csv, verify,
+    verify_waveform_timing, verify_waveform_scaling,
 )
 from scope_device import resolve_scope_device, verify_scope_identity
 from tek_mdo_usb import capture, query
-from test_gray_timecode import NanoLog, utc
+from oscilloscope.test_gray_timecode import NanoLog, utc
 from decode_gray_timecode import decode_csv
 
 ROOT = Path(__file__).resolve().parents[1]
+NANO_FRAME_INTERVAL_S = 0.1
+NANO_BUFFER_CAPACITY = 256
+# A frame can arrive immediately after BUFFER_BEGIN. Reserve one frame plus
+# one second for trigger/USB scheduling and BUFFER_END; LOST is still checked.
+# This polling budget cannot interrupt a blocked USBTMC system call.
+NANO_BUFFER_CLEANUP_RESERVE_S = 1.0
+NANO_BUFFER_POLL_BUDGET_S = (
+    (NANO_BUFFER_CAPACITY - 1) * NANO_FRAME_INTERVAL_S
+    - NANO_BUFFER_CLEANUP_RESERVE_S
+)
 
 
 def parser():
@@ -52,7 +63,9 @@ def parser():
                         "one continuous MCU/Matrix32 session, gaps during transfer")
     p.add_argument("--time-div-us", type=float, default=2000000.0)
     p.add_argument("--trigger-position-pct", type=float, default=0.0)
-    p.add_argument("--acquire-timeout", type=float, default=90.0)
+    p.add_argument("--acquire-timeout", type=float, default=90.0,
+                   help="Requested acquisition wait; additionally bounded by the "
+                        "24.5 s Nano buffer polling budget including BEGIN overhead")
     p.add_argument("--sync-count", type=int, default=30,
                    help="Number of binary CRC32 sync exchanges before AND after recording")
     p.add_argument("--stale-ms", type=int, default=250)
@@ -91,6 +104,15 @@ def plan(args, p):
     if not (math.isfinite(args.acquire_timeout)
             and 5 <= args.acquire_timeout <= 120):
         p.error("--acquire-timeout must be 5..120 seconds")
+    nominal_window_s = 10 * args.time_div_us * 1e-6
+    if nominal_window_s >= NANO_BUFFER_POLL_BUDGET_S:
+        p.error(
+            f"Scope window must be shorter than {NANO_BUFFER_POLL_BUDGET_S:g}s "
+            f"with the fixed {NANO_BUFFER_CAPACITY}-frame Nano buffer; "
+            "use separate finite records for longer sessions"
+        )
+    if args.acquire_timeout <= nominal_window_s:
+        p.error("--acquire-timeout must exceed the nominal scope window")
     if not 8 <= args.sync_count <= 200:
         p.error("--sync-count must be 8..200")
     if not 50 <= args.stale_ms <= 2000:
@@ -136,7 +158,160 @@ def plan(args, p):
         "matrix32_physical_output_timestamp_verified": False,
         "nano_mode_required": "10HZ_HW_TCA_BUFFERED",
         "nano_buffered_frames_required": True,
+        "nano_buffer_capacity_required": NANO_BUFFER_CAPACITY,
+        "nano_buffer_poll_budget_s": NANO_BUFFER_POLL_BUDGET_S,
+        "effective_acquire_timeout_upper_bound_s": min(
+            args.acquire_timeout, NANO_BUFFER_POLL_BUDGET_S),
     }
+
+
+def verify_nano_info(reply):
+    """Match complete INFO fields, never firmware-name or numeric prefixes."""
+    tokens = reply.split()
+    if (len(tokens) < 3 or tokens[:2] != ["ACK", "INFO"]
+            or not tokens[2].isdecimal() or (len(tokens) - 3) % 2):
+        raise RuntimeError("Malformed Nano INFO reply: " + reply)
+    pairs = list(zip(tokens[3::2], tokens[4::2]))
+    fields = dict(pairs)
+    required = {
+        "FW": "GRAY_TC_V1", "PIN": "7", "BITS": "16",
+        "FRAME_US": "100000", "FRAME_MODE": "10HZ_HW_TCA_BUFFERED",
+    }
+    if (len(fields) != len(pairs)
+            or any(fields.get(key) != value for key, value in required.items())
+            or fields.get("RUN") not in ("0", "1")):
+        raise RuntimeError(
+            "Integrated recording requires the final 10Hz hardware-timed "
+            "buffered Nano firmware; received: " + reply
+        )
+    return fields
+
+
+def acquire_buffered_record(nano, scope, args, record, child):
+    """Bound buffering around one acquisition, including ambiguous ACK failures.
+
+    Preserve the primary exception and cleanup outcome separately. START and
+    BUFFER_BEGIN are not retried; an ACK timeout may follow a successful write.
+    No normal FRAME telemetry or clock SYNC is requested during acquisition.
+    """
+    begun_ns = time.monotonic_ns()
+    buffer = {"status": "begin_attempted",
+              "begin_attempted_monotonic_ns": begun_ns}
+    record["nano_frame_buffer"] = buffer
+    deadline_ns = begun_ns + round(NANO_BUFFER_POLL_BUDGET_S * 1e9)
+
+    def progress(observation):
+        record["acquisition_progress"] = observation
+        child.check()
+        if child.start_failure.is_set():
+            raise RuntimeError("Controller reported fault during scope acquisition")
+        if time.monotonic_ns() >= deadline_ns:
+            raise TimeoutError("Nano frame-buffer polling budget exhausted")
+
+    try:
+        buffer.update(nano.buffered_capture_begin())
+        if buffer["capacity"] != NANO_BUFFER_CAPACITY:
+            raise RuntimeError(
+                f"Nano buffer capacity mismatch: expected {NANO_BUFFER_CAPACITY}, "
+                f"received {buffer['capacity']}"
+            )
+        buffer["status"] = "buffering"
+        remaining_s = (deadline_ns - time.monotonic_ns()) / 1e9
+        if remaining_s <= 10 * args.time_div_us * 1e-6:
+            raise TimeoutError("Insufficient Nano buffer time remains to arm scope")
+        record["effective_acquire_timeout_s"] = min(args.acquire_timeout, remaining_s)
+        record["arm_request_monotonic_ns"] = time.monotonic_ns()
+        record["acquisition"] = acquire(
+            scope, record["effective_acquire_timeout_s"], on_progress=progress,
+        )
+        record["acquisition_completed_monotonic_ns"] = time.monotonic_ns()
+        # End immediately, before metadata writes, settings queries or transfers.
+        buffer.update(nano.buffered_capture_end_and_dump(buffer))
+        buffer["status"] = "verified"
+    except BaseException as exc:
+        buffer["status"] = "failed"
+        buffer["error"] = f"{type(exc).__name__}: {exc}"
+        record["status"] = "failed"
+        # BUFFER_END itself is not idempotent. If its ACK was already received
+        # (even if later dump validation failed), the firmware has stopped
+        # buffering. Otherwise explicitly attempt cleanup before outer STOP.
+        if "end_ack" not in buffer:
+            try:
+                buffer["cleanup_end_ack"] = nano.command("BUFFER_END", timeout=2.0)
+            except BaseException as cleanup_exc:
+                buffer["cleanup_end_error"] = repr(cleanup_exc)
+        raise
+
+
+def verify_gray_frame_evidence(decoded, buffer):
+    """Qualify frame identities independently of physical CH1 pulse timing.
+
+    NanoLog already validates every stored counter/timestamp. A complete scope
+    frame must identify one of those rows, with no missing interior frames.
+    This is not a clock fit, and imposes no residual or absolute-latency limit.
+    """
+    frames = decoded.get("frames", [])
+    issues = []
+    if decoded.get("decoded_frame_count") != len(frames):
+        issues.append("Decoded frame count disagrees with the frame inventory")
+    if len(frames) < 3:
+        issues.append("Fewer than three complete Gray frames for clock alignment")
+    count = buffer.get("frames_received", 0)
+    first = buffer.get("first_frame_counter")
+    start_times = []
+    end_times = []
+    if (not buffer.get("frame_payloads_validated") or buffer.get("frames_lost") != 0
+            or not isinstance(first, int) or not 0 < count <= NANO_BUFFER_CAPACITY):
+        issues.append("No complete validated Nano frame buffer for this record")
+    else:
+        previous_offset = None
+        for frame in frames:
+            try:
+                short = int(frame["counter_mod_65536"])
+                gray = int(frame["gray_hex"], 16)
+                start = float(frame["scope_start_s"])
+                end = float(frame["scope_end_s"])
+            except (KeyError, TypeError, ValueError):
+                issues.append("Malformed decoded Gray frame")
+                continue
+            offset = (short - first) % 65536
+            if not 0 <= short < 65536 or offset >= count:
+                issues.append(f"Scope Gray counter {short} is absent from this record's Nano buffer")
+            if gray != short ^ (short >> 1):
+                issues.append("Decoded Gray word disagrees with its matched Nano counter")
+            if previous_offset is not None and offset != previous_offset + 1:
+                issues.append("Decoded scope Gray counters are not consecutive")
+            if (not math.isfinite(start) or not math.isfinite(end) or end <= start
+                    or (start_times and start <= start_times[-1])):
+                issues.append("Decoded scope frame timestamps are invalid or unordered")
+            start_times.append(start)
+            end_times.append(end)
+            previous_offset = offset
+    coverage = {}
+    if start_times:
+        try:
+            first_sample = float(decoded["waveform"]["first_time_s"])
+            last_sample = float(decoded["waveform"]["last_time_s"])
+            if not (math.isfinite(first_sample) and math.isfinite(last_sample)
+                    and first_sample < last_sample):
+                raise ValueError("invalid waveform boundaries")
+            # Partial frames at either boundary are expected. A few matched
+            # frames at one end do not establish reference coverage for 20 s.
+            allowance = 2 * NANO_FRAME_INTERVAL_S
+            leading = start_times[0] - first_sample
+            trailing = last_sample - end_times[-1]
+            coverage = {"leading_uncovered_s": leading,
+                        "trailing_uncovered_s": trailing,
+                        "boundary_allowance_s": allowance}
+            if not (0 <= leading <= allowance and 0 <= trailing <= allowance):
+                issues.append("Complete Gray frames do not cover the waveform within boundary allowance")
+        except (KeyError, TypeError, ValueError):
+            issues.append("Waveform boundaries unavailable for Gray coverage verification")
+    return {"complete": not issues, "issues": list(dict.fromkeys(issues)),
+            "decoded_frames": len(frames), "buffered_frames": count,
+            "coverage": coverage,
+            "clock_fit_evaluated": False,
+            "direct_ch1_evidence_invalidated": False}
 
 
 class StimulationChild:
@@ -307,19 +482,14 @@ def run(args, requested):
         with NanoLog(nano_port, root / "nano_serial.jsonl") as nano:
             meta["ping"] = nano.synchronize()
             meta["nano_info"] = nano.command("INFO")
-            expected_nano = ("FW GRAY_TC_V1", "PIN 7",
-                             "FRAME_US 100000", "FRAME_MODE 10HZ_HW_TCA_BUFFERED")
-            if any(token not in meta["nano_info"] for token in expected_nano):
-                raise RuntimeError(
-                    "Integrated recording requires the final 10Hz hardware-timed "
-                    "buffered Nano firmware; received: " + meta["nano_info"])
-            if "RUN 1" in meta["nano_info"]:
+            meta["nano_info_fields"] = verify_nano_info(meta["nano_info"])
+            if meta["nano_info_fields"]["RUN"] == "1":
                 nano.command("STOP")
             # One START per session. No automatic retry on timeout.
             nano_started = True
-            meta["nano_start_ack"] = nano.command("START")
-            print(f"[NANO] {nano_port}: {meta['nano_start_ack']}", flush=True)
             try:
+                meta["nano_start_ack"] = nano.command("START")
+                print(f"[NANO] {nano_port}: {meta['nano_start_ack']}", flush=True)
                 node = resolve_scope_device(args.scope_device)
                 meta["scope_node"] = str(node)
                 with open(node, "r+b", buffering=0) as scope:
@@ -391,20 +561,7 @@ def run(args, requested):
                         # Record actual Nano START-edge timestamps ONLY inside
                         # this finite scope acquisition. Do not print FRAME
                         # telemetry while acquiring; dump after scope completes.
-                        record["nano_frame_buffer"] = nano.buffered_capture_begin()
-                        atomic_json(root / "metadata.json", meta)
-                        record["arm_request_monotonic_ns"] = time.monotonic_ns()
-                        record["acquisition"] = acquire(
-                            scope, args.acquire_timeout,
-                            on_progress=lambda _: child.check(),
-                        )
-                        record["acquisition_completed_monotonic_ns"] = time.monotonic_ns()
-                        # End buffering immediately after scope completion,
-                        # BEFORE the potentially slow scope queries and CSV
-                        # transfers. Verify no missing/overwritten Nano rows.
-                        record["nano_frame_buffer"].update(
-                            nano.buffered_capture_end_and_dump(
-                                record["nano_frame_buffer"]))
+                        acquire_buffered_record(nano, scope, args, record, child)
                         atomic_json(root / "metadata.json", meta)
                         record["scope_settings_after_acquisition"] = scope_settings(
                             scope, args.channels, args.trigger_channel,
@@ -432,14 +589,29 @@ def run(args, requested):
                         for channel in args.channels:
                             file = (root / "waveforms"
                                     / f"record_{index:05d}_ch{channel}.csv")
-                            record["channels"][f"CH{channel}"] = {
-                                "path": str(file.relative_to(root)),
-                                "transfer": capture(scope, channel, args.points, file),
-                                "waveform": validate_csv(file, args.points),
-                            }
+                            channel_record = {"path": str(file.relative_to(root))}
+                            record["channels"][f"CH{channel}"] = channel_record
+                            channel_record["transfer"] = capture(
+                                scope, channel, args.points, file)
+                            channel_record["waveform"] = validate_csv(file, args.points)
+                            channel_record["timing_verification"] = verify_waveform_timing(
+                                channel_record["waveform"],
+                                record["scope_settings_after_acquisition"], args,
+                                transfer=channel_record["transfer"],
+                            )
+                            channel_record["scaling_verification"] = verify_waveform_scaling(
+                                channel_record["transfer"],
+                                record["scope_settings_after_acquisition"],
+                            )
                         record["decoded_gray"] = decode_csv(
                             root / record["channels"]["CH2"]["path"]
                         )
+                        record["clock_frame_evidence"] = verify_gray_frame_evidence(
+                            record["decoded_gray"], record["nano_frame_buffer"])
+                        if not record["clock_frame_evidence"]["complete"]:
+                            print(f"[FRAME EVIDENCE WARN] Record {index}: "
+                                  + "; ".join(record["clock_frame_evidence"]["issues"])
+                                  + "; raw CH1+CH2 retained", flush=True)
                         record["status"] = "captured"
                         record["finished_utc"] = utc()
                         atomic_json(root / "metadata.json", meta)
@@ -452,6 +624,9 @@ def run(args, requested):
                     meta["matrix32_shutdown"] = child.stop()
                     meta["matrix32_shutdown"]["physical_output_verified_off"] = False
                     meta["matrix32_shutdown"]["operator_must_confirm_output_off"] = True
+                    meta["clock_frame_evidence_complete"] = all(
+                        item["clock_frame_evidence"]["complete"]
+                        for item in meta["records"])
                     atomic_json(root / "metadata.json", meta)
                     meta["status"] = "complete"
             finally:
@@ -472,6 +647,10 @@ def run(args, requested):
             except BaseException as exc:
                 meta["matrix32_shutdown"] = {
                     "output_state": "UNKNOWN", "stop_error": repr(exc)}
+        if child.process is not None:
+            meta["matrix32_shutdown"]["physical_output_verified_off"] = False
+            meta["matrix32_shutdown"]["operator_must_confirm_output_off"] = True
+        meta["finished_utc"] = utc()
         atomic_json(root / "metadata.json", meta)
         print(f"[INTEGRATED] Saved {root} ({meta['status']})", flush=True)
         if child.process is not None:
@@ -480,10 +659,14 @@ def run(args, requested):
 
     # Offline analysis is diagnostic only. It must not erase the valid capture.
     try:
+        if not meta["clock_frame_evidence_complete"]:
+            raise ValueError("Incomplete frame evidence; clock alignment is not qualified")
         from analyze_gray_epoch_experiment import analyze
         alignment, clock = analyze(root)
         atomic_json(root / "gray_alignment.json", alignment)
         atomic_json(root / "epoch_clock_analysis.json", clock)
+        meta["clock_analysis"] = {"status": "diagnostic_complete",
+                                  "absolute_latency_calibrated": False}
         print(f"[ANALYSIS] Clock epochs: "
               f"{clock['qualified_provisional_records']} provisional, "
               f"{clock['exploratory_local_fit_records']} exploratory",
@@ -494,8 +677,13 @@ def run(args, requested):
                   f"Nano->PC drift={item.get('fit', {}).get('drift_ppm_nano_to_host', float('nan')):.1f} ppm, "
                   f"status={item['status']}", flush=True)
     except Exception as exc:
+        meta["clock_analysis"] = {"status": "unavailable",
+                                  "error": f"{type(exc).__name__}: {exc}",
+                                  "direct_ch1_evidence_invalidated": False}
         print(f"[ANALYSIS WARN] Clock analysis: {exc}; raw data retained",
               flush=True)
+    finally:
+        atomic_json(root / "metadata.json", meta)
     return meta
 
 

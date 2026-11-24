@@ -140,32 +140,51 @@ class NanoLog:
         raise TimeoutError(f"No matching ACK {op} {seq} from Nano")
 
     def buffered_capture_begin(self):
-        if not self.frame_lines:
-            initial_count = 0
-        else:
-            initial_count = len(self.frame_lines)
         ack = self.command("BUFFER_BEGIN", timeout=3.0)
         tokens = ack.split()
-        if tokens[3:4] != ["CAP"] or int(tokens[4]) <= 0:
+        if len(tokens) != 5 or tokens[3] != "CAP":
             raise RuntimeError("Malformed buffered Nano BEGIN reply: " + ack)
-        return {"begin_ack": ack, "frame_log_before": initial_count,
-                "capacity": int(tokens[4])}
+        try:
+            capacity = int(tokens[4])
+        except ValueError as exc:
+            raise RuntimeError("Malformed buffered Nano BEGIN reply: " + ack) from exc
+        if not 0 < capacity <= 0xFFFF:
+            raise RuntimeError("Invalid buffered Nano capacity: " + ack)
+        # The ACK establishes the buffer boundary in the ordered serial log.
+        # No routine FRAME lines may arrive after this boundary until DUMP.
+        return {"begin_ack": ack, "frame_log_before": len(self.frame_lines),
+                "capacity": capacity}
 
     def buffered_capture_end_and_dump(self, begun):
         ack = self.command("BUFFER_END", timeout=3.0)
+        # Preserve command completion even if the returned evidence is bad.
+        # BUFFER_END is not idempotent; outer cleanup must not send it again
+        # after an acknowledged end merely because parsing or DUMP failed.
+        begun["end_ack"] = ack
         tokens = ack.split()
         if len(tokens) != 9 or tokens[3] != "COUNT" or tokens[5] != "LOST" or tokens[7] != "CAP":
             raise RuntimeError("Malformed buffered Nano END reply: " + ack)
-        count, lost, cap = int(tokens[4]), int(tokens[6]), int(tokens[8])
-        if count > cap or cap != begun["capacity"]:
+        try:
+            count, lost, cap = int(tokens[4]), int(tokens[6]), int(tokens[8])
+        except ValueError as exc:
+            raise RuntimeError("Malformed buffered Nano END reply: " + ack) from exc
+        if not 0 <= count <= cap or cap != begun["capacity"]:
             raise RuntimeError("Nano buffer count exceeds capacity")
+        if not 0 <= lost <= 0xFFFFFFFF:
+            raise RuntimeError("Invalid Nano buffered loss count: " + ack)
         observed_before = len(self.frame_lines)
         dumped = self.command("BUFFER_DUMP", timeout=20.0)
+        begun["dump_ack"] = dumped
         dtok = dumped.split()
         if len(dtok) != 7 or dtok[3] != "COUNT" or dtok[5] != "LOST":
             raise RuntimeError("Malformed Nano BUFFER_DUMP reply: " + dumped)
-        received = len(self.frame_lines)-observed_before
-        if received != count or int(dtok[4]) != count or int(dtok[6]) != lost:
+        try:
+            dumped_count, dumped_lost = int(dtok[4]), int(dtok[6])
+        except ValueError as exc:
+            raise RuntimeError("Malformed Nano BUFFER_DUMP reply: " + dumped) from exc
+        frame_lines = self.frame_lines[observed_before:]
+        received = len(frame_lines)
+        if received != count or dumped_count != count or dumped_lost != lost:
             raise RuntimeError(
                 f"Buffered FRAME transfer incomplete: expected {count}, "
                 f"received {received}, summary {dumped}")
@@ -173,9 +192,50 @@ class NanoLog:
             raise RuntimeError(
                 f"Nano RAM buffer overflow: LOST={lost}, CAP={cap}; "
                 "record is not suitable for clock alignment")
+        if observed_before != begun["frame_log_before"]:
+            raise RuntimeError(
+                "Nano emitted routine FRAME messages during buffered acquisition")
+        previous_counter = previous_us = None
+        first_counter = None
+        timestamp_wraps = 0
+        for line in frame_lines:
+            match = re.fullmatch(
+                r"FRAME (\d+) GRAY ([0-9A-Fa-f]+) EDGE_US (\d+) OVERRUNS (\d+)",
+                line,
+            )
+            if match is None:
+                raise RuntimeError("Malformed buffered FRAME payload: " + line)
+            counter, gray, edge_us, overruns = (
+                int(match[1]), int(match[2], 16), int(match[3]), int(match[4]))
+            if not all(0 <= value <= 0xFFFFFFFF
+                       for value in (counter, edge_us, overruns)):
+                raise RuntimeError("Buffered FRAME value out of range: " + line)
+            binary = counter & 0xFFFF
+            if gray != binary ^ (binary >> 1):
+                raise RuntimeError("Buffered FRAME Gray/counter mismatch: " + line)
+            if previous_counter is not None:
+                if counter != (previous_counter + 1) & 0xFFFFFFFF:
+                    raise RuntimeError(
+                        "Buffered FRAME counters are not consecutive: " + line)
+                # micros() may wrap during one capture. A duplicate or a
+                # backward timestamp is not a rollover; reject it without
+                # imposing a clock-fit residual or modifying any timestamp.
+                elapsed_us = (edge_us - previous_us) & 0xFFFFFFFF
+                if not 0 < elapsed_us < (1 << 31):
+                    raise RuntimeError(
+                        "Buffered FRAME timestamps are not increasing: " + line)
+                timestamp_wraps += int(edge_us < previous_us)
+            else:
+                first_counter = counter
+            previous_counter, previous_us = counter, edge_us
         return {"end_ack": ack, "dump_ack": dumped,
                 "frames_received": received, "frames_lost": lost,
-                "capacity": cap}
+                "capacity": cap, "frame_payloads_validated": True,
+                "frame_counters_consecutive": True,
+                "frame_timestamps_ordered": True,
+                "first_frame_counter": first_counter,
+                "last_frame_counter": previous_counter,
+                "timestamp_wraps": timestamp_wraps}
 
     def sync_exchange(self, *, timeout=1.0):
         """Collect 4 timestamps: PC monotonic ns t1/t4, Nano micros t2/t3."""

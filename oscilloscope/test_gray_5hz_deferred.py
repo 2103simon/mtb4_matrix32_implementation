@@ -12,8 +12,11 @@ Note: serial commands are deliberately only processed during idle in
 the experimental profile; therefore SYNC RTT/offset may worsen even if
 physical D7 pulse scheduling becomes more regular.
 """
+from pathlib import Path
 import sys
-from test_gray_epoch_pause import main as epoch_main
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from oscilloscope.test_gray_epoch_pause import main as epoch_main
 
 
 def main(argv=None):

@@ -102,7 +102,7 @@ def validate_settings(config, stim_config, *, arm):
 
 
 def requested_frequency(snapshot, taxel, receptor, *, max_hz=400):
-    """Round selected request to Matrix32 Hz; 0 means muted SC1=0/SF=2."""
+    """Round selected request to Matrix32 Hz; 0 requests the current-mute path."""
     key = "ra_rates_hz" if receptor == "ra_i" else "sa_rates_hz"
     value = float(snapshot[key][taxel])
     if not math.isfinite(value) or value < 0:
@@ -440,7 +440,8 @@ async def run(config, stim_config=None, *, arm, record=False,
         "stimulation_control": {
             "armed": arm,
             "record": record,
-            "zero_request_strategy": "SC1=0_then_SF=2; restore_SF_then_SC1",
+            "zero_request_strategy": (
+                f"SC1=0_then_SF={ZERO_CURRENT_FAST_SF_HZ}; restore_SF_then_SC1"),
             "stale_timeout_ms": int(stale_seconds * 1000),
             "source": config["stimulation_source"],
             "matrix32_channel": 1,
