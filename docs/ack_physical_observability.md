@@ -110,3 +110,52 @@ The example-data regression checks 418 approved biphasic pulses, 417 intervals,
 266 successful SF ACKs (246 provisionally inside the scope window), the
 source-locked review's unchanged bytes, and generated figures. It should not
 be treated as a universal assertion for other recordings.
+
+## Completeness of the full recording archive
+
+The complete 24 November 2026 recording archive was compared byte for byte
+with the consolidated 135-file analysis package: all **135** analysis files
+were present and identical. The archive also retained original CH1/CH2
+waveforms, MCU/BLE logs, Nano evidence and acquisition metadata.
+
+A historical `pulse_review/report.md` and its archived predecessor contain
+a link to `../integrated_overview.png`, which older analysis code did not
+produce. This is **one missing derived plot**, not missing raw data or a
+missing signed detector/approval file.
+
+The repaired, offline-only figure generator is now included:
+
+```bash
+MTB4_RUN="data/recordings/20261124T114542660847Z_integrated_hw_10M_20s_resume_check"
+
+python -u -m oscilloscope.plot_integrated_overview \
+  --run-dir "$MTB4_RUN" --record 1
+```
+
+The resulting figure is:
+
+`$MTB4_RUN/analysis/record_00001/integrated_overview.png`
+
+It restores the link in both historical reports without rewriting those
+reports or any signed evidence. The figure includes the full original CH1
+signal as per-bin **min/max extrema**, approved negative onset markers,
+selected-taxel pressure, MCU requested frequency, and approved physical
+inverse periods alongside provisionally time-mapped successful SF ACKs.
+
+The generator checks the signed review evidence and hashes the **complete
+original CH1 CSV** while scanning it to build the min/max display; memory
+use is bounded by the display-bin count. Muted-scheduler SF400 ACKs are
+explicitly counted and omitted from the shared physical-frequency axis, not
+interpreted as 400-Hz physical stimulation. The cross-clock mapping is
+marked **provisional/unqualified** and cannot establish electrical command
+application latency.
+
+To run the five hardware-free regression tests:
+
+```bash
+python -m unittest discover -s tests -p 'test_plot_integrated_overview.py' -v
+```
+
+Neither this figure generator nor the per-ACK audit changes the Nano
+firmware, raw acquisition, original clock fit, signed onset inventory,
+operator decisions, or approval hashes.
