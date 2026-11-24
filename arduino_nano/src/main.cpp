@@ -223,10 +223,10 @@ ISR(TCA0_OVF_vect) {
 }
 
 static void hardwareStop() {
+  // Do not stop or change the TCA prescaler: the Arduino Nano Every
+  // core also clocks TCB peripherals from CLK_TCA. Keep it running.
   TCA0.SINGLE.INTCTRL = 0;
-  TCA0.SINGLE.CTRLA = 0;
-  TCA0.SINGLE.CTRLB = 0;
-  TCA0.SINGLE.CMP1 = 0;
+  TCA0.SINGLE.CTRLB = 0;  // Release peripheral ownership of PA1.
   PORTA.OUTCLR = PIN1_bm;
   PORTMUX.TCAROUTEA = PORTMUX_TCA0_PORTB_gc;
 }
@@ -319,9 +319,11 @@ static void handleCommand(const char* line, uint32_t receivedUs) {
     if (!running || buffering) {
       Serial.print(F("ERR ")); Serial.println(seq);
     } else {
+      noInterrupts();
       bufferedCount = 0;
       bufferedLost = 0;
       buffering = true;
+      interrupts();
       Serial.print(F("ACK BUFFER_BEGIN ")); Serial.print(seq);
       Serial.print(F(" CAP ")); Serial.println(BUFFER_CAPACITY);
     }
