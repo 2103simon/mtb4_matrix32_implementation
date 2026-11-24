@@ -71,7 +71,7 @@ def edges_from_csv(path, threshold=2.0):
                     "rising_edges": len(rises), "complete_high_pulses": len(pulses)}
 
 
-def decode_pulses(pulses, *, tolerance_s=0.00045):
+def decode_pulses(pulses, *, tolerance_s=0.00045, frame_s=FRAME_S):
     """Decode only complete frames with correct delimiters and slot pulses.
 
     The thresholded edge detector is intentionally conservative. Invalid and
@@ -79,6 +79,8 @@ def decode_pulses(pulses, *, tolerance_s=0.00045):
     """
     if not 0 < tolerance_s < ONE_S / 2:
         raise ValueError("tolerance_s must be positive and <0.5 ms")
+    if not math.isfinite(frame_s) or frame_s < END_S+END_WIDTH_S:
+        raise ValueError("frame_s must contain complete 97 ms Gray encoding")
     decoded = []
     for idx, (start_t, duration) in enumerate(pulses):
         if abs(duration - START_S) > tolerance_s:
@@ -127,7 +129,7 @@ def decode_pulses(pulses, *, tolerance_s=0.00045):
         current["increment_from_previous"] = difference
         current["scope_start_delta_s"] = round(
             current["scope_start_s"] - prev["scope_start_s"], 9)
-        current["expected_start_delta_s"] = round(difference * FRAME_S, 9)
+        current["expected_start_delta_s"] = round(difference * frame_s, 9)
         current["spacing_residual_s"] = round(
             current["scope_start_delta_s"] -
             current["expected_start_delta_s"], 9)
@@ -209,13 +211,15 @@ def audit_physical_pulses(pulses, frames, *, tolerance_s=0.00045):
     }
 
 
-def decode_csv(path, threshold=2.0, tolerance_s=0.00045):
+def decode_csv(path, threshold=2.0, tolerance_s=0.00045, *, frame_s=FRAME_S):
     pulses, stats = edges_from_csv(path, threshold=threshold)
-    frames = decode_pulses(pulses, tolerance_s=tolerance_s)
+    frames = decode_pulses(pulses, tolerance_s=tolerance_s,
+                           frame_s=frame_s)
     return {
         "source": str(path),
         "threshold_v": threshold,
         "pulse_tolerance_s": tolerance_s,
+        "nominal_frame_s": frame_s,
         "waveform": stats,
         "frames": frames,
         "decoded_frame_count": len(frames),
