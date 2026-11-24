@@ -345,11 +345,15 @@ def run(args, requested):
             metadata["ping"] = nano.synchronize()
             info = nano.command("INFO")
             metadata["nano_info"] = info
-            expected_firmware = (
+            expected_firmware = [
                 "FW GRAY_TC_V1", "PIN 7",
                 f"FRAME_US {args.expected_frame_us}",
-                f"FRAME_MODE {args.expected_frame_mode}",
-            )
+            ]
+            # Older 10Hz firmware has no FRAME_MODE token, but its
+            # explicit FRAME_US 100000 setting is already sufficient.
+            # Experimental 5Hz capture MUST verify the exact new profile.
+            if args.expected_frame_mode == "5HZ_DEFERRED":
+                expected_firmware.append("FRAME_MODE 5HZ_DEFERRED")
             if any(part not in info for part in expected_firmware):
                 raise RuntimeError(
                     "Wrong Nano firmware/Gray frame mode; expected "
