@@ -24,6 +24,8 @@ class IntegratedBenchTests(unittest.TestCase):
         self.assertFalse(result["matrix32_armed"])
         self.assertEqual(result["trigger_position_pct"], 0)
         self.assertEqual(result["epoch_sync_count"], 30)
+        self.assertEqual(result["nano_mode_required"], "10HZ_HW_TCA_BUFFERED")
+        self.assertTrue(result["nano_buffered_frames_required"])
         self.assertEqual(result["acquisition_order"],
                          "controller_ready_then_pre_sync_then_arm_scope")
 
@@ -45,6 +47,8 @@ class IntegratedBenchTests(unittest.TestCase):
         class FakeNano:
             def __init__(self, *args):
                 self.sequence = 0
+                self.buffer_open = False
+                self.history = []
             def __enter__(self):
                 return self
             def __exit__(self, *args):
@@ -53,11 +57,29 @@ class IntegratedBenchTests(unittest.TestCase):
                 return "PING_ACK"
             def command(self, command, timeout=None):
                 if command == "INFO":
-                    return "FW GRAY_TC_V1 PIN 7 RUN 0"
+                    return ("FW GRAY_TC_V1 PIN 7 FRAME_US 100000 "
+                            "FRAME_MODE 10HZ_HW_TCA_BUFFERED RUN 0")
                 return "ACK " + command
             def binary_sync_exchange(self):
+                if self.buffer_open:
+                    raise AssertionError("SYNC during active frame buffering")
+                self.history.append("SYNC")
                 self.sequence += 1
                 return {"sequence_id": self.sequence, "type": "sync_exchange"}
+            def buffered_capture_begin(self):
+                if self.buffer_open:
+                    raise AssertionError("Already buffering")
+                self.buffer_open = True
+                self.history.append("BUFFER_BEGIN")
+                return {"begin_ack": "ACK BUFFER_BEGIN 1 CAP 256", "capacity": 256}
+            def buffered_capture_end_and_dump(self, begun):
+                if not self.buffer_open or begun["capacity"] != 256:
+                    raise AssertionError("Invalid Nano buffer state")
+                self.buffer_open = False
+                self.history.append("BUFFER_END_DUMP")
+                return {"end_ack": "ACK BUFFER_END 1 COUNT 201 LOST 0 CAP 256",
+                        "dump_ack": "ACK BUFFER_DUMP 1 COUNT 201 LOST 0",
+                        "frames_received": 201, "frames_lost": 0}
 
         class FakeScope:
             def __enter__(self):
@@ -128,6 +150,9 @@ class IntegratedBenchTests(unittest.TestCase):
                              ["captured"] * 3)
             self.assertEqual(acq.call_count, 3)
             self.assertEqual(transfer.call_count, 6)
+            for rec in result["records"]:
+                self.assertEqual(rec["nano_frame_buffer"]["frames_received"], 201)
+                self.assertEqual(rec["nano_frame_buffer"]["frames_lost"], 0)
             self.assertEqual(FakeChild.instances[-1].starts, 1)
             self.assertEqual(FakeChild.instances[-1].stops, 1)
             self.assertEqual(len(result["sync_measurements"]), 48)
@@ -143,6 +168,15 @@ class IntegratedBenchTests(unittest.TestCase):
                     record["channels"]["CH2"]["path"],
                     f"waveforms/record_{i+1:05d}_ch2.csv",
                 )
+
+    def test_10m_20sec_is_supported_without_arming(self):
+        p = parser()
+        args = p.parse_args(["--points", "10000000", "--count", "1"])
+        result = plan(args, p)
+        self.assertEqual(result["points"], 10000000)
+        self.assertEqual(result["nominal_window_s"], 20.0)
+        self.assertEqual(result["channels"], [1, 2])
+        self.assertFalse(result["matrix32_armed"])
 
     def test_capture_before_start_requires_explicit_armed_bench(self):
         p = parser()
