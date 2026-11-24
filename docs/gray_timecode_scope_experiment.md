@@ -1,5 +1,16 @@
 # Nano Every Gray timecode: separate oscilloscope acquisitions and local clock fits
 
+> **Historical timing-study notebook, not a list of current flashable
+> Nano builds.** The canonical firmware is now the single
+> `arduino_nano/platformio.ini` environment `nano_every`, with
+> TCA0-driven 10Hz Gray D7 output and buffered frame timestamps.
+> Older build names below are preserved solely to interpret archived
+> experimental measurements; their firmware profiles were removed from
+> the current Nano source and cannot be selected for uploading.
+> For the next integrated baseline use
+> [integrated Matrix32 scope recording](integrated_matrix32_scope_recording.md).
+
+
 **Current scope-only procedure** for a Tektronix MDO4104B-6 and Arduino **Nano Every**. This page describes the **implemented workflow**; it does not attempt a new review of the earlier Gray benchmark findings. Detailed derivations and uncertainty definitions are in [clock mapping and time domains](clock_mapping_and_time_domains.md).
 
 [Project README](../README.md) · [Nano firmware README](../arduino_nano/README.md) · [Scope scripts](../oscilloscope/README.md) · [Full clock-domain guide](clock_mapping_and_time_domains.md)
