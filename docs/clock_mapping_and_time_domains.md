@@ -10,7 +10,7 @@ It explains what is **observed**, **estimated** and still **uncalibrated**.
 ## Why three clocks are necessary
 
 1. **Tektronix scope sample time**: relative seconds along an individual captured waveform. Scope CH1 contains the Matrix32 physical output; CH2 contains Nano digital markers. Both channels in a *single acquisition* share the scope sampling axis.
-2. **Arduino Nano Every `micros()`**: an independent, rolling 32-bit microsecond counter. The firmware prints time-tagged marker frame IDs and supplies request-receipt/response timestamps.
+2. **Arduino Nano Every `micros()`**: an independent, rolling 32-bit microsecond counter. The firmware buffers time-tagged marker frame IDs and supplies request-receipt/response timestamps.
 3. **Linux PC `time.monotonic_ns()`**: used for serial arrival timestamps, MCU snapshots and Matrix32 command/ACK observations. It is not UTC wall time. Some files also contain creation timestamps in UTC for naming and audit purposes, not for nanosecond synchronization.
 
 The Feather has a further **millisecond MCU timestamp** carried in tactile telemetry. The host's `clock_compensation` and drift-monitor modules provide separate MCU/PC diagnostics. These are **not** the same oscillator or estimator as the Nano↔PC clock fit.
@@ -28,15 +28,15 @@ The Nano Every firmware emits one frame per **100 ms (10 Hz)** on D7:
 | 90–97 ms | END high |
 | 97–100 ms | idle low |
 
-The Gray value is derived from the low sixteen bits of the full frame counter: `gray16 = counter16 XOR (counter16 >> 1)`. After each physical **START rising edge** the firmware calls `emitFrameLog(micros())`, so the USB log provides:
+The Gray value is derived from the low sixteen bits of the full frame counter: `gray16 = counter16 XOR (counter16 >> 1)`. The canonical hardware-timed firmware schedules D7 transitions through TCA0 PWM. At each START, an ISR samples `micros()` shortly **after** the actual hardware edge and stores the value in Nano RAM. Only after the oscilloscope completes acquisition does the host request `BUFFER_END` and `BUFFER_DUMP`, which provide:
 
 ```text
 FRAME <full_counter> GRAY <hex_value> EDGE_US <nano_micros> OVERRUNS <count>
 ```
 
-The D7 edge happens just **before** the firmware samples `micros()` for `EDGE_US`. Scheduling and GPIO/timestamp call overhead are not hardware capture-calibrated; `EDGE_US` is a nearby Nano clock observation, not a direct oscilloscope timestamp. The `OVERRUNS` field detects some scheduler lateness/missed frames, but a zero overrun count does not certify zero microsecond jitter.
+The D7 edge is hardware-timed, but the sampled `EDGE_US` still carries unknown ISR-entry/timestamp latency. It is **not** a hardware-latched edge time or a direct oscilloscope timestamp. The `OVERRUNS` field detects some scheduler lateness/missed frames, but a zero overrun count does not certify zero microsecond jitter.
 
-The USB ASCII `FRAME` message may arrive later than the edge because of USB packet buffering and OS scheduling. **Its host receive time is not used as the physical marker time.**
+During each finite scope recording, no per-frame USB messages are sent. The `FRAME` messages are dumped only **after** scope acquisition; their host arrival time is **never** used as the physical marker time.
 
 ## Stage 1 — map one scope acquisition into Nano time
 
@@ -54,7 +54,7 @@ nano_time_seconds = a * scope_time_seconds + b
 
 Approximately 199 complete 100 ms frames have been observed in 20-second single-record trials. This fit estimates the *relative clock rate* and a *local origin*; it does not yet connect the oscilloscope to PC monotonic time.
 
-Output: `gray_alignment.json` with local `clock_fit`, matched-frame count, edge-fit RMS and maximum residual. The original default qualification threshold is **100 µs RMS**; relaxing it for diagnostics does not turn an unqualified result into calibrated physical timing.
+Output: `gray_alignment.json` with local `clock_fit`, matched-frame count, edge-fit RMS and maximum residual. The existing clock-fit qualification threshold is **100 µs RMS**; an unqualified clock fit does **not** invalidate direct within-record CH1 electrical pulse timings. Relaxing that threshold for diagnostics does not establish absolute calibration.
 
 ## Stage 2 — map Nano time into PC monotonic time
 
@@ -91,7 +91,7 @@ t_pc   ≈ c*t_nano+d
 
 This permits comparison with host timestamps from the Feather serial reader and Matrix32 BLE command logger. A **BLE SF acknowledgment** is still a PC-observed protocol event: it does not prove when a new SF took effect at the physical output. Absolute pulse-to-ACK latency is **provisional**, not verified, even when the least-squares fits have small RMS residuals.
 
-For measuring **pulse-to-pulse intervals solely on scope CH1**, no cross-device clock mapping is necessary. Similarly, MCU update cadence can be analyzed on its own timestamp domain without asserting synchronization to CH1.
+For measuring **source-locked, operator-approved negative CH1 onset intervals solely on scope CH1**, no cross-device clock mapping is necessary. An automatic positive-phase candidate is not equivalent to an approved negative electrical onset. Similarly, MCU update cadence can be analyzed on its own timestamp domain without asserting synchronization to CH1.
 
 ## Independent recordings, continuous logs and gaps
 
