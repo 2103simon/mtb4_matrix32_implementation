@@ -284,3 +284,111 @@ It is possible to obtain a cleaner physical 5 Hz Gray signal and yet
 a **worse host time alignment**, because deferred serial servicing
 delays SYNC replies. Evaluate the physical CH2 geometry, scope-to-Nano
 affine-fit residual, and USB offset quality **separately**.
+
+
+---
+
+## New: 10 Hz on-Nano RAM-buffered Gray recording (clock-only)
+
+This is the separate **third firmware profile**. The two existing
+PlatformIO environments remain available and unchanged:
+`nano_every` (10 Hz immediate serial) and
+`nano_every_5hz_deferred` (5 Hz, serial only in idle).
+The new environment is **`nano_every_10hz_buffered`** (10 Hz,
+no FRAME serial output while recording). Select it explicitly in
+VS Code **PlatformIO → Project Tasks → arduino_nano →
+nano_every_10hz_buffered → General → Upload**.
+
+### How each acquisition works
+
+The PC starts the Nano Gray generator once; its frame counter is
+monotonic through the acquisition gaps. For **each** of three separate
+20-second scope acquisitions:
+
+1. Request 30 pre-arm CRC32 SYNC exchanges while NO timestamp buffer
+   is active (Nano operates normally but does not emit FRAME lines).
+2. Issue `BUFFER_BEGIN` and receive the capacity ACK. It clears the
+   previous buffer and starts retaining each actually observed START
+   edge timestamp from `micros()` directly after `digitalWrite(D7,HIGH)`.
+3. Arm and acquire **CH2 only**, 20 seconds, 1,000,000 samples,
+   2 s/div. The Nano runs the original 10-Hz 4/1/7-ms Gray code.
+   **No per-frame serial telemetry is transmitted during recording.**
+   The firmware still checks for incoming serial commands in its loop.
+4. When the scope reports acquisition completion, immediately send
+   `BUFFER_END` to freeze the timestamp log.
+5. Request `BUFFER_DUMP`; the Nano emits ordinary
+   `FRAME <counter> GRAY <code> EDGE_US <time> OVERRUNS <n>` lines
+   corresponding to stored measurements, followed by a count ACK.
+   This happens after scope acquisition has completed. The PC verifies
+   the count and fails closed on missing entries or buffer overflow.
+6. Request 30 post-capture CRC32 SYNC exchanges, then download the
+   CH2 oscilloscope waveform. Wait 60 seconds before the next record
+   (Nano Gray generation continues, but buffer logging is inactive).
+
+**Memory constraint:** The ATmega4809 has 6 KB SRAM. The experimental
+buffer reserves **256 × 12 = 3072 bytes** for complete 32-bit frame
+counter, 32-bit EDGE_US timestamp and 32-bit overrun counter. At 10Hz,
+this holds approximately **25.6 seconds**. The host must not start
+buffering until just before arming the scope. If acquisition is delayed
+so much that the buffer overflows, an explicit LOST count invalidates
+that record. Existing data is never silently overwritten.
+
+**This experiment is distinct from the 5 Hz delayed-SYNC experiment.**
+SYNC is performed before/after each scope acquisition, not during the
+buffering window. Unlike the 5Hz profile, the new 10Hz profile does
+not deliberately defer SYNC handling to a 103-ms idle period.
+
+### Run (Matrix32 and Feather disconnected; Nano D7 → scope CH2)
+
+In VS Code, select and upload PlatformIO environment
+`nano_every_10hz_buffered` (close the serial monitor first). Pull
+the latest experiment branch before flashing.
+
+```bash
+python -m unittest discover -s tests -p 'test_gray_buffered_capture.py' -v
+python oscilloscope/test_gray_10hz_buffered.py
+# Verify physical CH2 wiring and dry-run plan before the explicit opt-in.
+timeout --signal=INT --kill-after=20s 360s \
+  python -u oscilloscope/test_gray_10hz_buffered.py --run
+```
+
+The recorder refuses to start unless the Nano INFO response explicitly
+contains `FRAME_US 100000` and `FRAME_MODE 10HZ_BUFFERED`.
+The resulting folder name ends in
+`gray_10hz_buffered_epoch_20s`. Existing Nano/PC epoch analysis and
+physical CH2 pulse audit work on these FRAME lines because the stored
+Nano EDGE_US values describe physical events, not the much later USB
+dump receipt times. The files preserve separate scope acquisition gaps.
+
+```bash
+RUN=data/recordings/<your_10hz_buffered_epoch_run>
+python -m oscilloscope.audit_gray_pulse_timing --run-dir "$RUN"
+code "$RUN/analysis/gray_pulse_geometry_report.md"
+code "$RUN/epoch_clock_analysis.json"
+```
+
+Compare physical pulse width, frame-spacing variation, scope-to-Nano
+held-out/affine fit and Nano/PC SYNC diagnostics against the existing
+5 Hz and original 10 Hz captures. Do not equate improved waveform
+geometry with independently calibrated absolute USB offset. A clean
+relative timing map is not established unless the actual fits qualify.
+
+### Engineering caveats
+
+- `BUFFER_BEGIN` and `BUFFER_END` are software command/ACK boundaries,
+  **not precisely measured scope start/stop times**. The buffer
+  deliberately contains a few markers before/after the exact capture
+  and frame matching uses the encoded full counter to select overlaps.
+- The physical D7 switching is still software-timed using `micros()`.
+  The new profile tests whether avoiding serial printing during
+  acquisition improves timing; it does not implement a hardware timer.
+- The Nano may still experience interrupt/scheduler jitter while
+  sampling `micros()`; no experiment should silently replace
+  actual CH2 edges with ideal 100-ms spacing.
+- `BUFFER_DUMP` printing after acquisition can disturb the Nano's
+  physical Gray waveform **during an unrecorded gap**. The next capture
+  starts only after the dump, 30 new pre-SYNC exchanges and a new
+  `BUFFER_BEGIN`, so any such effects remain outside the analyzed
+  scope window.
+- A firmware upload or runtime failure is not a medical-device
+  safety interlock. The experiment is strictly Nano/scope-only.
