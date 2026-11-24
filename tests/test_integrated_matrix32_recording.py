@@ -2,6 +2,7 @@
 import io
 import json
 import tempfile
+import threading
 from unittest.mock import MagicMock
 from pathlib import Path
 import sys
@@ -67,6 +68,63 @@ class IntegratedBenchTests(unittest.TestCase):
                     with self.assertRaises(SystemExit):
                         main(["--run", *argv])
                     run_mock.assert_not_called()
+
+    def test_prompt_preview_runs_timer_without_devices_or_recording_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            schedule = Path(folder) / "prompts.json"
+            schedule.write_text('{"0": "HOLD", "0.05": "RELEASE"}')
+            output_root = Path(folder) / "recordings"
+            terminal = io.StringIO()
+            with patch("record_integrated_matrix32.run",
+                       side_effect=AssertionError("Real recorder started")), \
+                    patch("record_integrated_matrix32.resolve_port",
+                          side_effect=AssertionError("Serial resolved")), \
+                    patch("record_integrated_matrix32.resolve_scope_device",
+                          side_effect=AssertionError("Scope resolved")), \
+                    redirect_stdout(terminal):
+                result = main(["--preview-prompts", "--operator-prompts", str(schedule),
+                               "--time-div-us", "20000", "--output-root", str(output_root)])
+            self.assertTrue(result["delivery_complete"])
+            self.assertEqual(result["printed_count"], 2)
+            self.assertFalse(output_root.exists())
+            self.assertIn("REHEARSAL COMPLETE", terminal.getvalue())
+            self.assertNotIn('"schema_version"', terminal.getvalue())
+
+    def test_preview_rejects_hardware_flags_and_missing_schedule(self):
+        schedule = (Path(__file__).resolve().parents[1]
+                    / "config/operator_prompts_resume_20s.json")
+        for options in ([], ["--operator-prompts", str(schedule), "--run"],
+                        ["--operator-prompts", str(schedule), "--arm"],
+                        ["--operator-prompts", str(schedule), "--count", "2"]):
+            with self.subTest(options=options), redirect_stderr(io.StringIO()), \
+                    redirect_stdout(io.StringIO()), \
+                    patch("record_integrated_matrix32.run") as run_mock:
+                with self.assertRaises(SystemExit):
+                    main(["--preview-prompts", *options])
+                run_mock.assert_not_called()
+
+    def test_guided_main_saves_plan_and_routine_output_without_terminal_clutter(self):
+        def fake_session(args, requested, root, *, console):
+            self.assertIsNotNone(console)
+            print("[NANO] routine device detail", flush=True)
+            print("[WARNING] visible warning", flush=True)
+            console.status("PRESS AND HOLD", "Waiting for the timed instructions.")
+            return {"run_dir": str(root)}
+        schedule = (Path(__file__).resolve().parents[1]
+                    / "config/operator_prompts_resume_20s.json")
+        with tempfile.TemporaryDirectory() as folder:
+            terminal = io.StringIO()
+            with patch("record_integrated_matrix32._run_session", side_effect=fake_session), \
+                    redirect_stdout(terminal):
+                result = main(["--run", "--operator-prompts", str(schedule),
+                               "--output-root", folder])
+            log = (Path(result["run_dir"]) / "console.log").read_text()
+            self.assertIn('"schema_version"', log)
+            self.assertIn("routine device detail", log)
+            self.assertNotIn('"schema_version"', terminal.getvalue())
+            self.assertNotIn("routine device detail", terminal.getvalue())
+            self.assertIn("PRESS AND HOLD", terminal.getvalue())
+            self.assertIn("visible warning", terminal.getvalue())
 
     def test_multiple_record_plan_and_bounds(self):
         p = parser()
@@ -439,23 +497,30 @@ class BufferedFailureTests(unittest.TestCase):
             {0: "HOLD", 3: "RELEASE", 6: "PRESS"}, 20)
         now = [100.0]
         lines = []
+        schedulers = []
         def make_prompts(schedule, **kwargs):
-            return OperatorPrompts(schedule, **kwargs, clock=lambda: now[0],
-                                   emit=lines.append)
-        trigger = {"value": "TRIGGER", "query_end_monotonic_s": 100.0}
-        def acquiring(scope, timeout, on_progress):
+            kwargs.update(clock=lambda: now[0], emit=lines.append)
+            prompts = OperatorPrompts(schedule, **kwargs)
+            start = prompts.start
+            prompts.start = lambda observation: start(observation, background=False)
+            schedulers.append(prompts)
+            return prompts
+        def acquiring(scope, timeout, on_progress, on_run_written):
+            on_run_written({"run_write_begin_monotonic_s": 99.99,
+                            "run_write_end_monotonic_s": 100.0})
             on_progress({"first_trigger_observation": None})
-            self.assertEqual(lines, [])
-            on_progress({"first_trigger_observation": trigger})
+            self.assertEqual(len(lines), 1)
             now[0] = 103.1
-            on_progress({"first_trigger_observation": trigger})
+            on_progress({"first_trigger_observation": None,
+                         "trigger_state_observations": [{"value": "READY"}]})
+            schedulers[0].tick()
             now[0] = 106.1
-            stopped = {"first_trigger_observation": trigger,
+            stopped = {"first_trigger_observation": None,
                        "first_stopped_observation": {"value": "0"}}
             on_progress(stopped)
             return stopped
         def end_dump(buffer):
-            self.assertEqual(self.record["operator_prompts"]["status"], "finished")
+            self.assertEqual(schedulers[0].metadata["status"], "finished")
             self.assertEqual(len(lines), 2)
             return {"end_ack": "ACK BUFFER_END", "frames_lost": 0}
         self.nano.buffered_capture_end_and_dump.side_effect = end_dump
@@ -467,6 +532,8 @@ class BufferedFailureTests(unittest.TestCase):
                          ["printed", "printed", "skipped"])
         self.assertEqual(evidence["finish_reason"], "scope_stopped")
         self.assertEqual(evidence["anchor_monotonic_s"], 100.0)
+        self.assertFalse(evidence["delivery_complete"])
+        self.assertEqual(evidence["printed_count"], 2)
         self.nano.command.assert_not_called()
 
     def test_enabled_prompts_cancel_on_fault_timeout_and_interrupt_before_cleanup(self):
@@ -479,17 +546,23 @@ class BufferedFailureTests(unittest.TestCase):
                 self.child.start_failure.is_set.return_value = False
                 self.record = {"index": 1, "status": "started"}
                 lines = []
+                schedulers = []
                 def make_prompts(schedule, **kwargs):
-                    return OperatorPrompts(schedule, **kwargs, clock=lambda: 100.0,
-                                           emit=lines.append)
-                def acquiring(scope, timeout, on_progress):
+                    kwargs.update(clock=lambda: 100.0, emit=lines.append)
+                    prompts = OperatorPrompts(schedule, **kwargs)
+                    start = prompts.start
+                    prompts.start = lambda observation: start(observation, background=False)
+                    schedulers.append(prompts)
+                    return prompts
+                def acquiring(scope, timeout, on_progress, on_run_written):
                     if isinstance(failure, RuntimeError):
                         self.child.start_failure.is_set.return_value = True
-                    on_progress({"first_trigger_observation": {
-                        "value": "TRIGGER", "query_end_monotonic_s": 100.0}})
+                    on_run_written({"run_write_begin_monotonic_s": 99.99,
+                                    "run_write_end_monotonic_s": 100.0})
+                    on_progress({"first_trigger_observation": None})
                     raise failure
                 def cleanup(*args, **kwargs):
-                    self.assertEqual(self.record["operator_prompts"]["status"], "finished")
+                    self.assertEqual(schedulers[0].metadata["status"], "finished")
                     return "ACK BUFFER_END"
                 self.nano.command.side_effect = cleanup
                 with patch("record_integrated_matrix32.OperatorPrompts", side_effect=make_prompts), \
@@ -504,6 +577,53 @@ class BufferedFailureTests(unittest.TestCase):
                     self.assertEqual(lines, [])
                 self.nano.command.assert_called_once_with("BUFFER_END", timeout=2.0)
                 self.nano.buffered_capture_end_and_dump.assert_not_called()
+
+    def test_nano_end_precedes_join_of_a_blocked_prompt_output(self):
+        self.args.operator_prompt_schedule = normalize_operator_prompts({0: "HOLD"}, 20)
+        entered = threading.Event()
+        release = threading.Event()
+        schedulers = []
+        def blocked_emit(line):
+            entered.set()
+            if not release.wait(1):
+                raise RuntimeError("test output was not released")
+        def make_prompts(schedule, **kwargs):
+            kwargs["emit"] = blocked_emit
+            prompts = OperatorPrompts(schedule, **kwargs)
+            schedulers.append(prompts)
+            return prompts
+        def acquiring(scope, timeout, on_progress, on_run_written):
+            import time
+            on_run_written({"run_write_end_monotonic_s": time.monotonic()})
+            self.assertTrue(entered.wait(0.5))
+            return {"seen_running": True}
+        def end_dump(buffer):
+            self.assertTrue(schedulers[0].finished)
+            self.assertIsNone(schedulers[0].metadata["worker_joined"])
+            release.set()
+            return {"end_ack": "ACK BUFFER_END", "frames_lost": 0}
+        self.nano.buffered_capture_end_and_dump.side_effect = end_dump
+        try:
+            with patch("record_integrated_matrix32.OperatorPrompts", side_effect=make_prompts), \
+                    patch("record_integrated_matrix32.acquire", side_effect=acquiring):
+                acquire_buffered_record(self.nano, None, self.args, self.record, self.child)
+        finally:
+            release.set()
+            for prompts in schedulers:
+                prompts.finish("test_cleanup")
+                prompts.join(1)
+        self.assertTrue(self.record["operator_prompts"]["worker_joined"])
+        self.assertFalse(self.record["operator_prompts"]["delivery_complete"])
+
+    def test_capture_without_started_prompt_timer_records_incomplete_delivery(self):
+        self.args.operator_prompt_schedule = normalize_operator_prompts({0: "HOLD"}, 20)
+        with patch("record_integrated_matrix32.acquire", return_value={"seen_running": True}):
+            acquire_buffered_record(self.nano, None, self.args, self.record, self.child)
+        result = self.record["operator_prompts"]
+        self.assertEqual(result["printed_count"], 0)
+        self.assertEqual(result["cue_count"], 1)
+        self.assertFalse(result["delivery_complete"])
+        self.assertEqual(self.record["nano_frame_buffer"]["status"], "verified")
 
     def test_acquisition_errors_and_keyboard_interrupt_end_buffering(self):
         for error in (TimeoutError("scope timeout"), KeyboardInterrupt()):

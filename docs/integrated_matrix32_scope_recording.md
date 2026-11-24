@@ -104,6 +104,19 @@ Add `--operator-prompts config/operator_prompts_resume_20s.json` to have the
 terminal guide the release/repress experiment. Omit this option to run without
 timed cues. The same recorder and hardware configuration are used in both cases.
 
+**Rehearse the display first:** this runs the complete 20-second instruction
+sequence in real time without opening devices or creating recording files.
+
+```bash
+python -u oscilloscope/record_integrated_matrix32.py \
+  --preview-prompts --count 1 --points 10000000 \
+  --operator-prompts config/operator_prompts_resume_20s.json
+```
+
+The rehearsal requires `--operator-prompts` and one record. Do not combine it
+with `--run`, `--arm` or other arming flags. For the real recording on the
+established verified dummy-load bench, use:
+
 ```bash
 timeout --signal=INT --kill-after=20s 1200s \
   python -u oscilloscope/record_integrated_matrix32.py \
@@ -113,12 +126,20 @@ timeout --signal=INT --kill-after=20s 1200s \
   --operator-prompts config/operator_prompts_resume_20s.json
 ```
 
-Press and hold the selected taxel when the startup message asks, so the existing
-controller can become ready. The timed schedule waits for the host to first
-observe the scope in `TRIGGER` (post-trigger acquisition); setup, pre-SYNC and
-waiting for a trigger do not consume the cue timeline. Watch for these cues:
+Guided real recordings automatically use a quiet terminal. The acquisition plan
+and routine diagnostics go to `console.log` inside the new run directory.
+Warnings, errors and safety messages remain visible. On a terminal, the display
+keeps the current **DO NOW** instruction prominent and shows the countdown to the
+next instruction. When output is redirected, each new instruction is printed as
+a separate block. Add `--verbose` to also show routine diagnostics in the terminal.
 
-| Seconds from the observed acquisition start | Instruction |
+At startup, **PRESS AND HOLD** the selected taxel when asked so the existing
+controller can become ready. Then follow the **DO NOW** display. The timer starts
+immediately after the host finishes writing the scope `RUN` command, before its
+first status query. Setup and pre-SYNC do not consume the cue timeline. The
+supplied schedule is:
+
+| Seconds from the host RUN write | Instruction |
 | ---: | --- |
 | 0 | Hold steady |
 | 3 | Release completely |
@@ -126,9 +147,12 @@ waiting for a trigger do not consume the cue timeline. Watch for these cues:
 | 10 | Release completely |
 | 13 | Press more firmly, then hold until the acquisition ends |
 
-The terminal announces the end after acquisition and Nano buffer collection,
-before waveform download. The controller still runs during download as described
-above; these messages guide the operator and do not command stimulation.
+After acquisition and Nano buffer collection, the terminal announces that the
+record has ended, reports the number of cues delivered, and says that the taxel
+may be released while waveforms are saved. A zero-cue or partial-cue result is
+marked **PROMPTS INCOMPLETE**, even if waveform capture succeeded. The controller
+still runs during download as described above; these messages guide the operator
+and do not command stimulation.
 
 The schedule is an editable **JSON dictionary of seconds to text**:
 
@@ -146,24 +170,38 @@ Save a different dictionary as another JSON file and pass its path to the same
 option. Decimal seconds are supported. Times must be unique, finite and within
 `0 <= time < nominal_window_s`; text must be nonempty and on one line. The
 schedule is checked before devices are opened. Prompts require a 0% trigger
-position so the instructions refer to the post-trigger record, and restart
-independently for each record when `--count` is greater than one.
+position and restart independently for each record when `--count` is greater
+than one.
 
-Cue timing uses the existing approximately 0.1-second acquisition polling loop.
-The epoch is the host completion time of the first observed `TRIGGER` query,
-not an exact electrical trigger timestamp. USB queries or terminal output can
-delay a cue. If several instructions become overdue, only the latest applicable
-one is printed; obsolete cues are marked skipped. Cues stop on observed scope
-completion, the nominal time limit, acquisition failure or cancellation and do
-not continue through transfers.
+An independent monotonic timer delivers the cues, so a slow or blocked scope
+status query does not stop the instruction schedule. The recorded time reference
+is `host_scope_run_write_end`. This is an approximate host reference: it does not
+calibrate the hardware trigger time or remove a delay between arming and the
+actual trigger. Host scheduling or terminal output can still delay a cue. If
+several instructions become overdue, only the latest applicable one is printed;
+obsolete cues are marked skipped.
+
+The earlier implementation waited for a `TRIGGER` status before starting its
+cues. The archived complete 20-second
+`20261124T080841086567Z_integrated_hw_10M_20s_baseline` capture contains only
+`SAVE`, `ARMED` and `READY` trigger-status replies, with no observed `TRIGGER`,
+which reproduces a run with no cues. The revised timer does not use those replies as its
+start gate or treat them alone as completion. Explicit acquisition STOP,
+acquisition failure, cancellation or the nominal cue-window limit ends the
+schedule. Timer cancellation precedes Nano cleanup; waiting for its worker to
+finish occurs afterward.
 
 `metadata.json` saves the requested dictionary as a normalized schedule under
 `plan.operator_prompts`, and each record's anchor, printed/skipped cues, host
-emission times and lateness under `records[].operator_prompts`. These are prompt
-delivery records, not proof of when or how the operator actually pressed the
-taxel; the MCU trace remains the evidence for the actual input.
+emission times and lateness under `records[].operator_prompts`. The per-record
+`cue_count`, `printed_count`, `skipped_count` and `delivery_complete` fields make
+missing instructions explicit. Session-level `operator_prompt_delivery_complete`
+summarizes delivery across all records. These are prompt delivery records, not
+proof of when or how the operator actually pressed the taxel; the MCU trace
+remains the evidence for the actual input.
 
-For a plan-only preview of the configuration:
+For a plan-only inspection of the configuration, omit both `--preview-prompts`
+and `--run`:
 
 ```bash
 python oscilloscope/record_integrated_matrix32.py \

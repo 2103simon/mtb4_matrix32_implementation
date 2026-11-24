@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime, timezone
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -34,6 +35,7 @@ from oscilloscope.test_gray_timecode import NanoLog, utc
 from oscilloscope.operator_prompts import (
     OperatorPrompts, TIME_REFERENCE as PROMPT_TIME_REFERENCE, load_operator_prompts,
 )
+from oscilloscope.guided_console import GuidedConsole
 from decode_gray_timecode import decode_csv
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,13 +84,21 @@ def parser():
     p.add_argument("--label", default="integrated_matrix32_scope")
     p.add_argument("--operator-prompts", type=Path, default=None, metavar="JSON",
                    help="Optional JSON seconds-to-text dictionary of terminal cues; "
-                        "restarts at the first observed scope TRIGGER for every record "
+                        "starts a host timer after each scope RUN write "
                         "and requires 0%% trigger position")
+    p.add_argument("--preview-prompts", action="store_true",
+                   help="Rehearse one operator-prompt schedule in real time without devices")
+    p.add_argument("--verbose", action="store_true",
+                   help="With operator prompts, also show routine diagnostics in the terminal")
     return p
 
 
 def plan(args, p):
     import re
+    if args.preview_prompts and (
+            args.operator_prompts is None or args.run or args.arm
+            or args.dummy_load_confirmed or args.capture_before_start or args.count != 1):
+        p.error("--preview-prompts requires --operator-prompts, --count 1, and no --run/arming flags")
     if args.arm and (not args.run or not args.dummy_load_confirmed):
         p.error("--arm requires BOTH --run and --dummy-load-confirmed")
     if args.dummy_load_confirmed and not args.arm:
@@ -184,6 +194,8 @@ def plan(args, p):
                        if args.operator_prompts is not None else None),
             "time_reference": PROMPT_TIME_REFERENCE,
             "scope_clock_synchronized": False,
+            "timer_independent_of_scope_queries": True,
+            "console_mode": "verbose" if args.verbose else "guided",
             "repeat_each_record": True,
             "schedule": args.operator_prompt_schedule,
         },
@@ -212,7 +224,7 @@ def verify_nano_info(reply):
     return fields
 
 
-def acquire_buffered_record(nano, scope, args, record, child):
+def acquire_buffered_record(nano, scope, args, record, child, *, console=None):
     """Bound buffering around one acquisition, including ambiguous ACK failures.
 
     Preserve the primary exception and cleanup outcome separately. START and
@@ -224,22 +236,32 @@ def acquire_buffered_record(nano, scope, args, record, child):
         prompts = OperatorPrompts(
             args.operator_prompt_schedule, duration_s=10 * args.time_div_us * 1e-6,
             record_index=record["index"], record_count=args.count,
+            emit=console.log_prompt if console is not None else None,
+            display=console.show_prompt if console is not None else None,
         )
-        record["operator_prompts"] = prompts.metadata
+        record["operator_prompts"] = prompts.snapshot()
     begun_ns = time.monotonic_ns()
     buffer = {"status": "begin_attempted",
               "begin_attempted_monotonic_ns": begun_ns}
     record["nano_frame_buffer"] = buffer
     deadline_ns = begun_ns + round(NANO_BUFFER_POLL_BUDGET_S * 1e9)
 
-    def progress(observation):
-        record["acquisition_progress"] = observation
+    def check_capture():
         child.check()
         if child.start_failure.is_set():
             raise RuntimeError("Controller reported fault during scope acquisition")
         if time.monotonic_ns() >= deadline_ns:
             raise TimeoutError("Nano frame-buffer polling budget exhausted")
+
+    def start_prompts(observation):
+        check_capture()
+        prompts.start(observation)
+
+    def progress(observation):
+        record["acquisition_progress"] = observation
+        check_capture()
         if prompts is not None:
+            prompts.check()
             prompts.observe(observation)
 
     try:
@@ -255,8 +277,11 @@ def acquire_buffered_record(nano, scope, args, record, child):
             raise TimeoutError("Insufficient Nano buffer time remains to arm scope")
         record["effective_acquire_timeout_s"] = min(args.acquire_timeout, remaining_s)
         record["arm_request_monotonic_ns"] = time.monotonic_ns()
+        callbacks = {"on_progress": progress}
+        if prompts is not None:
+            callbacks["on_run_written"] = start_prompts
         record["acquisition"] = acquire(
-            scope, record["effective_acquire_timeout_s"], on_progress=progress,
+            scope, record["effective_acquire_timeout_s"], **callbacks,
         )
         record["acquisition_completed_monotonic_ns"] = time.monotonic_ns()
         if prompts is not None:
@@ -279,6 +304,13 @@ def acquire_buffered_record(nano, scope, args, record, child):
             except BaseException as cleanup_exc:
                 buffer["cleanup_end_error"] = repr(cleanup_exc)
         raise
+    finally:
+        if prompts is not None:
+            # Cancel before Nano END (above); join only after END/DUMP or the
+            # cleanup attempt, never while the fixed frame buffer is active.
+            prompts.finish("acquisition_exited")
+            prompts.join(timeout=0.5)
+            record["operator_prompts"] = prompts.snapshot()
 
 
 def verify_gray_frame_evidence(decoded, buffer):
@@ -505,12 +537,33 @@ def run(args, requested):
     root = (args.output_root / run_id).resolve()
     (root / "waveforms").mkdir(parents=True, exist_ok=False)
     (root / "mcu_matrix32").mkdir()
+    if not args.operator_prompt_schedule:
+        return _run_session(args, requested, root)
+    console = GuidedConsole(verbose=args.verbose)
+    with console.capture(root / "console.log"):
+        print(json.dumps(requested, indent=2), flush=True)
+        console.status("SETTING UP GUIDED RECORDING",
+                       f"{args.count} record(s), {requested['nominal_window_s']:g}s each. "
+                       f"Full diagnostics: {root / 'console.log'}")
+        try:
+            return _run_session(args, requested, root, console=console)
+        except BaseException as exc:
+            console.log_prompt(traceback.format_exc())
+            console.status("RECORDING INTERRUPTED" if isinstance(exc, KeyboardInterrupt)
+                           else "RECORDING FAILED",
+                           f"{type(exc).__name__}: {exc}. Details: {root / 'console.log'}")
+            raise
+
+
+def _run_session(args, requested, root, *, console=None):
     meta = {
-        "run_id": run_id, "run_dir": str(root), "plan": requested,
+        "run_id": root.name, "run_dir": str(root), "plan": requested,
         "status": "started", "started_utc": utc(),
         "records": [], "sync_measurements": [],
         "host_clock_synchronization_verified": False,
     }
+    if console is not None:
+        meta["console_log"] = "console.log"
     child = StimulationChild(root, arm=args.arm, stale_ms=args.stale_ms,
                              capture_before_start=args.capture_before_start)
     nano_started = False
@@ -544,13 +597,13 @@ def run(args, requested):
                     # Scope transfers occur between records; physical samples
                     # during those gaps do not exist and must never be stitched.
                     if args.operator_prompt_schedule:
-                        print("[PROMPTS] Timed instructions are enabled. "
-                              "Wait for the [PROMPT record ...] cues after scope triggering.",
-                              flush=True)
                         if args.arm and not args.capture_before_start:
-                            print("[PROMPTS] PRESS AND HOLD the selected taxel now "
-                                  "so the controller can start; follow the timed cues afterward.",
-                                  flush=True)
+                            console.status("PRESS AND HOLD THE SELECTED TAXEL",
+                                           "Keep holding while the controller starts. "
+                                           "Timed instructions will appear automatically.")
+                        else:
+                            console.status("GET READY FOR TIMED INSTRUCTIONS",
+                                           "The cue timer starts when the scope is armed.")
                     meta["controller_started_host_monotonic_ns"] = time.monotonic_ns()
                     meta["controller_pid"] = child.start()
                     print(f"[MATRIX32] Controller starting before scope arming; "
@@ -586,6 +639,9 @@ def run(args, requested):
                         epoch = record["clock_epoch"]
                         print(f"[RECORD {index}/{args.count}] Preparing independent "
                               "scope acquisition", flush=True)
+                        if console is not None:
+                            console.status(f"PREPARING RECORD {index}/{args.count}",
+                                           "Keep holding. Follow DO NOW when the timed display starts.")
 
                         # Separate Nano->host clock epochs around every capture.
                         # Nano full frame counter stays running across gaps.
@@ -607,11 +663,17 @@ def run(args, requested):
                         # Record actual Nano START-edge timestamps ONLY inside
                         # this finite scope acquisition. Do not print FRAME
                         # telemetry while acquiring; dump after scope completes.
-                        acquire_buffered_record(nano, scope, args, record, child)
+                        acquire_buffered_record(nano, scope, args, record, child,
+                                                console=console)
                         if args.operator_prompt_schedule:
-                            print(f"[PROMPTS record {index}/{args.count}] Scope acquisition "
-                                  "finished; timed cues ended. Waveform download follows.",
-                                  flush=True)
+                            delivery = record["operator_prompts"]
+                            complete = delivery["delivery_complete"]
+                            console.status(
+                                "DONE WITH THIS RECORD" if complete else "PROMPTS INCOMPLETE",
+                                f"{delivery['printed_count']}/{delivery['cue_count']} cues delivered. "
+                                "Scope acquisition ended; you may release the taxel. "
+                                "Saving waveforms now.",
+                            )
                         atomic_json(root / "metadata.json", meta)
                         record["scope_settings_after_acquisition"] = scope_settings(
                             scope, args.channels, args.trigger_channel,
@@ -701,6 +763,11 @@ def run(args, requested):
             meta["matrix32_shutdown"]["physical_output_verified_off"] = False
             meta["matrix32_shutdown"]["operator_must_confirm_output_off"] = True
         meta["finished_utc"] = utc()
+        if args.operator_prompt_schedule:
+            meta["operator_prompt_delivery_complete"] = bool(meta["records"]) and all(
+                row.get("operator_prompts", {}).get("delivery_complete", False)
+                for row in meta["records"]
+            )
         atomic_json(root / "metadata.json", meta)
         print(f"[INTEGRATED] Saved {root} ({meta['status']})", flush=True)
         if child.process is not None:
@@ -734,14 +801,49 @@ def run(args, requested):
               flush=True)
     finally:
         atomic_json(root / "metadata.json", meta)
+    if console is not None:
+        console.status(
+            "RECORDING SAVED — ALL CUES DELIVERED"
+            if meta["operator_prompt_delivery_complete"] else "RECORDING SAVED — PROMPTS INCOMPLETE",
+            str(root),
+        )
     return meta
+
+
+def preview_operator_prompts(args):
+    """Rehearse the real timer/display without opening a device or recording."""
+    console = GuidedConsole(verbose=args.verbose)
+    console.status("PROMPT REHEARSAL — NO DEVICES OPENED",
+                   "Follow the display to check that the instructions are easy to see.")
+    prompts = OperatorPrompts(
+        args.operator_prompt_schedule, duration_s=10 * args.time_div_us * 1e-6,
+        emit=console.log_prompt, display=console.show_prompt,
+    )
+    anchor = time.monotonic()
+    try:
+        prompts.start({"run_write_begin_monotonic_s": anchor,
+                       "run_write_end_monotonic_s": anchor, "simulated": True})
+        while not prompts.join(timeout=0.2):
+            prompts.check()
+        prompts.check()
+    finally:
+        prompts.finish("preview_exited")
+        prompts.join(timeout=0.5)
+    result = prompts.snapshot()
+    console.status("REHEARSAL COMPLETE" if result["delivery_complete"]
+                   else "REHEARSAL INCOMPLETE",
+                   f"{result['printed_count']}/{result['cue_count']} cues delivered. No devices opened.")
+    return result
 
 
 def main(argv=None):
     p = parser()
     args = p.parse_args(argv)
     requested = plan(args, p)
-    print(json.dumps(requested, indent=2), flush=True)
+    if args.preview_prompts:
+        return preview_operator_prompts(args)
+    if not (args.run and args.operator_prompt_schedule):
+        print(json.dumps(requested, indent=2), flush=True)
     if not args.run:
         print("[DRY RUN] No devices opened, no stimulation commanded.", flush=True)
         return requested

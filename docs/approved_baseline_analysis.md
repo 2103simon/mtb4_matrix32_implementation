@@ -121,7 +121,24 @@ semantics from one sequence or modify a clock fit to remove the separation.
 For guided manual input, add
 `--operator-prompts config/operator_prompts_resume_20s.json` to the integrated
 recording command. The optional terminal cues provide the hold/release/gentle/
-firmer sequence and record their delivery times. See the
+firmer sequence and record their delivery times. Guided runs keep the current
+**DO NOW** instruction and countdown visible while saving routine diagnostics
+to the run's `console.log`; `--verbose` restores those diagnostics to the terminal.
+Rehearse the real-time display without devices or recording first:
+
+```bash
+python -u oscilloscope/record_integrated_matrix32.py \
+  --preview-prompts --count 1 --points 10000000 \
+  --operator-prompts config/operator_prompts_resume_20s.json
+```
+
+The cue timer starts after the host writes the scope RUN command, independently
+of blocking status queries. Its `host_scope_run_write_end` reference is not a
+calibrated hardware-trigger timestamp. Inspect each record's `operator_prompts`
+delivery counts, `delivery_complete` flag, actual emission times and lateness,
+plus the session's `operator_prompt_delivery_complete` flag. A successful
+waveform capture with **PROMPTS INCOMPLETE** is not evidence that the intended
+manual sequence was delivered. See the
 [timed operator prompt instructions](integrated_matrix32_scope_recording.md#optional-timed-operator-prompts)
 for the editable seconds-to-text dictionary and timing limits. Classify resume
 conditions using the first positive MCU request actually recorded, since a

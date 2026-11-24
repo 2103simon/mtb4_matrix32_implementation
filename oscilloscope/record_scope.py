@@ -193,7 +193,7 @@ def observed_query(f, command):
             "query_end_monotonic_s": after}
 
 
-def acquire(f, timeout, on_armed=None, *, on_progress=None):
+def acquire(f, timeout, on_armed=None, *, on_progress=None, on_run_written=None):
     """Acquire one sequence, optionally reporting host-observed trigger states.
 
     The Tektronix programmer manual defines TRIGGER as acquiring post-trigger
@@ -206,12 +206,18 @@ def acquire(f, timeout, on_armed=None, *, on_progress=None):
 
     Without on_progress, preserve the existing acquisition-only polling path.
     All USB queries can block; the caller must retain the child-process watchdog.
+    on_run_written is an optional host timer hook immediately after the RUN
+    write, before any query. It does not certify a hardware trigger or replace
+    the existing verified-running on_armed callback.
     """
     write(f, "ACQuire:STATE STOP")
     write(f, "ACQuire:STOPAfter SEQuence")
     run_begin = time.monotonic()
     write(f, "ACQuire:STATE RUN")
     run_end = time.monotonic()
+    if on_run_written is not None:
+        on_run_written({"run_write_begin_monotonic_s": run_begin,
+                        "run_write_end_monotonic_s": run_end})
     # RUN establishes an enabled fresh sequence, not its hardware trigger time.
     first = observed_query(f, "ACQuire:STATE?")
     if first["value"] not in ("1", "RUN", "ON"):
