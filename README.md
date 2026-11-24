@@ -117,48 +117,76 @@ Inspect the latest MCU-only recording:
 python analyze_mcu_recording.py
 ```
 
-### 5. First integrated scope recording (safe progression)
+### 5. Integrated 10M-per-channel / 20-second baseline
 
-**Canonical Nano firmware:** `arduino_nano/platformio.ini` now has only
-`[env:nano_every_10hz_hardware_timer]`, which produces 10Hz TCA0 hardware-driven Gray on D7
-with 256-entry RAM-buffered timestamps. The integrated recorder checks the
-exact firmware mode and uses BUFFER_BEGIN / BUFFER_END / BUFFER_DUMP
-around every finite scope acquisition. The 100µs Gray fit threshold remains
-a mapping diagnostic, not a rejection condition for direct approved CH1
-electrical-onset measurements.
-
-**Next experimental baseline:** one simultaneous CH1+CH2 20-second
-capture with `--count 1 --points 10000000` (10M samples **per
-channel**). Review [the safety-gated integrated procedure]
-(docs/integrated_matrix32_scope_recording.md) before enabling Matrix32.
-The following older one-million-point commands remain useful as quick
-hardware checks.
-
-
-Show the integrated plan without opening any device:
+**Canonical Nano project:** open `arduino_nano/` as a PlatformIO project.
+`arduino_nano/platformio.ini` has **one** environment,
+`nano_every_10hz_hardware_timer`, which is also its default Upload target.
+The complete Arduino build inputs remain `platformio.ini` and
+`src/main.cpp`; historical alternative firmware implementations are
+not selectable. From the repo root:
 
 ```bash
-python oscilloscope/record_integrated_matrix32.py
+cd arduino_nano
+pio run -e nano_every_10hz_hardware_timer
+pio run -e nano_every_10hz_hardware_timer -t upload
+cd ..
 ```
 
-Non-stimulating hardware baseline — initializes MCU/BLE/Nano/scope but **does not send Matrix32 output commands**:
+The Nano produces a **10 Hz hardware TCA0 PWM Gray waveform on D7**.
+At every START frame boundary, the TCA0 overflow ISR reads `micros()`
+and buffers `{counter, edgeUs, overruns}` in a fixed **256-entry
+(3,072-byte) RAM array**. The ISR timestamp follows the physical
+edge; it is not hardware-latched. The 256 entries cover 25.6 seconds
+at 10 Hz, provided buffering is not opened substantially earlier than
+a 20-second scope acquisition. **No per-frame FRAME messages are sent
+during acquisition.** The integrated runner requires
+`FRAME_MODE 10HZ_HW_TCA_BUFFERED` and performs 30 pre-recording
+binary SYNC exchanges, `BUFFER_BEGIN`, scope capture,
+`BUFFER_END`/`BUFFER_DUMP` (with zero-loss verification), and
+30 post-recording SYNC exchanges.
+
+**Next baseline:** one simultaneous 20-second CH1+CH2 waveform with
+**10,000,000 samples per channel**, 2 s/div (2 µs nominal sampling
+interval). CH1 measures Matrix32 physical output on the verified dummy
+load; CH2 measures Nano D7. The Feather tactile stream and BLE
+command/ACK logs are retained. Simultaneous two-channel 10M acquisition
+has **not yet been bench-verified**, even though a 20M CH2-only test
+worked.
+
+From the repository root, run a **dry-run plan** (no hardware touched):
 
 ```bash
-timeout --signal=INT --kill-after=20s 180s \
-  python -u oscilloscope/record_integrated_matrix32.py --run
+python oscilloscope/record_integrated_matrix32.py \
+  --count 1 --points 10000000 --label integrated_hw_10M_20s_baseline
 ```
 
-**Bench-only, after independent wiring/dummy-load and scope-probing verification**, physically enable CH1 using all three opt-in flags:
+After an independent grounding, probe, 100 kΩ rated dummy-load,
+no-electrodes and physical-disconnect review, an authorized operator
+can initiate the **armed bench-only** trial:
 
 ```bash
-timeout --signal=INT --kill-after=20s 180s \
+timeout --signal=INT --kill-after=20s 1200s \
   python -u oscilloscope/record_integrated_matrix32.py \
-  --run --arm --dummy-load-confirmed
+  --run --arm --dummy-load-confirmed \
+  --count 1 --points 10000000 --label integrated_hw_10M_20s_baseline
 ```
 
-The normal acquisition configures the scope, waits for the MCU configuration ACKs **and Matrix32 START completion**, takes 30 Nano SYNC measurements, arms the scope, records a nominal **20 s / 1,000,000-point** CH1+CH2 window (2 s/div, 0% trigger), takes 30 more SYNC measurements, and downloads the frozen CH1+CH2 waveforms before rearming. **For multiple records the Matrix32 controller remains active during these unobserved transfer gaps** and is stopped only after the final record (or upon a handled failure). **One integrated invocation captures one record by default; use `--count N` for N separate records under one continuous MCU/Matrix32 session.** Output is saved under `data/recordings/<UTC>_integrated_matrix32_scope/`.
+The watchdog covers potentially slow USB transfer but is **not** an
+electrical interlock. A non-stimulating device check uses `--run`
+without `--arm` or `--dummy-load-confirmed`. Observe Matrix32
+physically OFF after the recording.
 
-See the full [integrated recording and electrical precautions](docs/integrated_matrix32_scope_recording.md).
+The legacy **100 µs scope↔Nano affine-fit threshold** remains a
+clock-mapping diagnostic. An unqualified cross-device fit does not
+invalidate source-locked, operator-approved negative CH1 onsets or
+direct within-record CH1 intervals. Cross-device absolute timing and
+BLE actuation latency remain uncalibrated. Never invent scope samples
+during download gaps.
+
+See the [integrated acquisition and electrical precautions]
+(docs/integrated_matrix32_scope_recording.md) and
+[Nano build/firmware reference](arduino_nano/README.md).
 
 ## CH1 electrical dummy-load setup
 
