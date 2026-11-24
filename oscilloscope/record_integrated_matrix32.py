@@ -5,7 +5,7 @@ are additionally required to send Matrix32 START/SF/SC commands.
 Use only with the operator-verified CH1 resistive dummy-load bench, never a person.
 Scope CH1 = physical Matrix32 dummy-load voltage (operator wiring),
 CH2 = Nano Every D7 Gray reference + rising-edge trigger at 1 V.
-Default scope record = 2 s/div, 1M samples, 0% pretrigger; distinct acquisitions with gaps.
+Default scope record = 2 s/div, 1M samples (override --points 10000000), 0% pretrigger; distinct acquisitions with gaps.
 No stimulation is initiated without an active, fresh MCU sample.
 """
 from __future__ import annotations
@@ -134,6 +134,8 @@ def plan(args, p):
         "matrix32_session_continuous_across_record_gaps": True,
         "waveform_trigger_source": "CH2_NANO",
         "matrix32_physical_output_timestamp_verified": False,
+        "nano_mode_required": "10HZ_HW_TCA_BUFFERED",
+        "nano_buffered_frames_required": True,
     }
 
 
@@ -305,8 +307,12 @@ def run(args, requested):
         with NanoLog(nano_port, root / "nano_serial.jsonl") as nano:
             meta["ping"] = nano.synchronize()
             meta["nano_info"] = nano.command("INFO")
-            if "FW GRAY_TC_V1" not in meta["nano_info"] or "PIN 7" not in meta["nano_info"]:
-                raise RuntimeError("Nano GRAY_TC_V1 firmware on D7 required")
+            expected_nano = ("FW GRAY_TC_V1", "PIN 7",
+                             "FRAME_US 100000", "FRAME_MODE 10HZ_HW_TCA_BUFFERED")
+            if any(token not in meta["nano_info"] for token in expected_nano):
+                raise RuntimeError(
+                    "Integrated recording requires the final 10Hz hardware-timed "
+                    "buffered Nano firmware; received: " + meta["nano_info"])
             if "RUN 1" in meta["nano_info"]:
                 nano.command("STOP")
             # One START per session. No automatic retry on timeout.
@@ -382,12 +388,24 @@ def run(args, requested):
                               "before scope arming", flush=True)
                         atomic_json(root / "metadata.json", meta)
 
+                        # Record actual Nano START-edge timestamps ONLY inside
+                        # this finite scope acquisition. Do not print FRAME
+                        # telemetry while acquiring; dump after scope completes.
+                        record["nano_frame_buffer"] = nano.buffered_capture_begin()
+                        atomic_json(root / "metadata.json", meta)
                         record["arm_request_monotonic_ns"] = time.monotonic_ns()
                         record["acquisition"] = acquire(
                             scope, args.acquire_timeout,
                             on_progress=lambda _: child.check(),
                         )
                         record["acquisition_completed_monotonic_ns"] = time.monotonic_ns()
+                        # End buffering immediately after scope completion,
+                        # BEFORE the potentially slow scope queries and CSV
+                        # transfers. Verify no missing/overwritten Nano rows.
+                        record["nano_frame_buffer"].update(
+                            nano.buffered_capture_end_and_dump(
+                                record["nano_frame_buffer"]))
+                        atomic_json(root / "metadata.json", meta)
                         record["scope_settings_after_acquisition"] = scope_settings(
                             scope, args.channels, args.trigger_channel,
                             horizontal_position=True
