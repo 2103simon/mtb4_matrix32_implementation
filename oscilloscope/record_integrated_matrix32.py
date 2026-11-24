@@ -801,6 +801,13 @@ def _run_session(args, requested, root, *, console=None):
               flush=True)
     finally:
         atomic_json(root / "metadata.json", meta)
+    # Optional offline visual aid: never make plot failure invalidate a capture.
+    try:
+        from oscilloscope.plot_mcu_scope_coverage import render as plot_mcu_coverage
+        plot_mcu_coverage(root)
+    except Exception as exc:
+        print(f"[MCU PLOT WARN] {type(exc).__name__}: {exc}; raw capture retained",
+              flush=True)
     if console is not None:
         console.status(
             "RECORDING SAVED — ALL CUES DELIVERED"
