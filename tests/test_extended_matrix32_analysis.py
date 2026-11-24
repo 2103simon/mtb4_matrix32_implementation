@@ -15,6 +15,9 @@ from oscilloscope.analyze_frequency_transitions import evaluate
 from oscilloscope.analyze_stimulation_shutdown import compute_events
 from oscilloscope.analyze_command_timing import pair_commands, analyze_host_events
 from oscilloscope.run_extended_analysis import run as run_all
+from oscilloscope.build_final_experiment_report import (
+    build_command_delivery_scorecard, plot_command_delivery_scorecard,
+)
 
 
 def event(kind, at_s, **k):
@@ -30,6 +33,51 @@ def synthetic_context(events, timestamps=(.01,.05)):
 
 
 class ExtendedAnalysisTests(unittest.TestCase):
+    def test_request_ack_electrical_evidence_scorecard_has_distinct_denominators(self):
+        events = [event('sf_requested', 0.1, frequency_hz=25),
+                  event('sf_ack', 0.11, frequency_hz=25, status='OK',
+                        evidence={'same_value':False}),
+                  event('sf_requested', 0.2, frequency_hz=40),
+                  event('sf_ack', 0.21, frequency_hz=40, status='OK',
+                        evidence={'same_value':False}),
+                  event('sc_requested', 0.3, current_command=0),
+                  event('sc_ack', 0.31, current_command=0, status='OK')]
+        timing = {'sf_request_ack_pairs':2,'sc_request_ack_pairs':1,
+                  'sf400_muted_scheduler_count':0,'mcu_source_matched_count':2}
+        prior = {'sf_ack_success_all_session':2,
+                 'sf_ack_success_in_provisional_scope_window':1,
+                 'sf_ack_success_outside_scope_window':1,
+                 'ack_classifications_in_scope':{
+                     'STABLE_MATCHING_PERIOD_OBSERVED':1}}
+        robust = {'record_summaries':[{
+            'baseline_ack_stable':5,'baseline_ack_outside_tolerance':0}]}
+        card = build_command_delivery_scorecard(events,timing,prior,robust)
+        self.assertEqual(card['host_commands']['sf']['acks_ok'],2)
+        self.assertEqual(card['host_commands']['sf']['confirmed_value_changes'],2)
+        self.assertEqual(card['host_commands']['sc']['acks_ok'],1)
+        self.assertEqual(card['physical_ack_observability']['matching_settled_period_evidence'],1)
+        self.assertEqual(card['physical_ack_observability']['outside_scope_provisional'],1)
+        self.assertIsNone(card['physical_ack_observability']['proved_executed_commands'])
+        self.assertIsNone(card['physical_ack_observability']['proved_unexecuted_commands'])
+        self.assertEqual(card['settled_electrical_intervals']['diagnostically_compatible_intervals'],5)
+        with tempfile.TemporaryDirectory() as td:
+            plot_command_delivery_scorecard(Path(td)/'scorecard.png',card)
+            self.assertTrue((Path(td)/'scorecard.png').stat().st_size>5000)
+
+    def test_request_ack_scorecard_fails_closed_on_inconsistent_scope_counts(self):
+        ev=[event('sf_requested',.1,frequency_hz=25),
+            event('sf_ack',.2,frequency_hz=25,status='OK')]
+        timing={'sf_request_ack_pairs':1,'sc_request_ack_pairs':0,
+                'sf400_muted_scheduler_count':0,'mcu_source_matched_count':1}
+        prior={'sf_ack_success_all_session':1,
+               'sf_ack_success_in_provisional_scope_window':1,
+               'sf_ack_success_outside_scope_window':0,
+               'ack_classifications_in_scope':{'STABLE_MATCHING_PERIOD_OBSERVED':2}}
+        with self.assertRaisesRegex(ValueError,'do not sum'):
+            build_command_delivery_scorecard(ev,timing,prior,None)
+        missing=build_command_delivery_scorecard(ev,timing,None,None)
+        self.assertIsNone(missing['physical_ack_observability'])
+
     def test_frequency_match_tolerance(self):
         self.assertTrue(compatible(25.01,25))
         self.assertFalse(compatible(29,25))
@@ -141,6 +189,14 @@ class ExtendedAnalysisTests(unittest.TestCase):
         self.assertEqual(shut['operator_excluded_negative_only'],11)
         self.assertEqual(timing['sf_request_ack_pairs'],266)
         self.assertTrue((root/'final_experiment_report.md').exists())
+        report=(root/'final_experiment_report.md').read_text()
+        self.assertIn('SF changes acknowledged OK | **266 / 266**',report)
+        self.assertIn('SC current changes acknowledged OK | **41 / 41**',report)
+        self.assertIn('Not determinable',report)
+        card=json.loads((root/'command_delivery_scorecard.json').read_text())
+        self.assertEqual(card['physical_ack_observability']['matching_settled_period_evidence'],59)
+        self.assertEqual(card['physical_ack_observability']['in_scope_no_individually_attributable_evidence'],187)
+        self.assertTrue((root/'command_delivery_scorecard.png').exists())
         for name in ('frequency_transitions','stimulation_shutdown','command_timing'):
             s=json.loads((root/name/'summary.json').read_text())
             for pic in s['figures']:
