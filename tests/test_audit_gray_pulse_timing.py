@@ -45,6 +45,13 @@ class GrayPulseGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(report["width_start_us"]["median"], 4000)
         self.assertAlmostEqual(report["width_end_us"]["median"], 7000)
         self.assertEqual(len(spaces), 2)
+        self.assertGreater(report["physical_inter_pulse_low_gap_us"]["n"], 0)
+        # Gray zero bits mean gaps vary; START to END low interval in
+        # the all-zero first frame is 86 ms.
+        frame0_end = next(r for r in widths
+                          if r["frame"] == 0 and r["role"] == "END")
+        self.assertAlmostEqual(
+            frame0_end["inter_pulse_low_gap_us"], 86000, places=4)
         self.assertAlmostEqual(
             report["physical_frame_spacing_error_us"]["std"], 0.,
             places=5)
