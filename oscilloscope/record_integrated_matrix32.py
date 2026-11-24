@@ -1,11 +1,11 @@
-"""First integrated, finite Matrix32 + Feather M4 + Nano + Tek scope recording.
+"""Repeated finite Matrix32 + Feather M4 + Nano + Tek scope recording.
 
 Dry run by default. --run opens devices; --arm and --dummy-load-confirmed
 are additionally required to send Matrix32 START/SF/SC commands.
-Use only with a verified isolated dummy load; NEVER a person.
+Use only with the operator-verified CH1 resistive dummy-load bench, never a person.
 Scope CH1 = physical Matrix32 dummy-load voltage (operator wiring),
 CH2 = Nano Every D7 Gray reference + rising-edge trigger at 1 V.
-Scope single-sequence acquisition = 2 s/div, 1M samples, 0% pretrigger.
+Default scope record = 2 s/div, 1M samples (override --points 10000000), 0% pretrigger; distinct acquisitions with gaps.
 No stimulation is initiated without an active, fresh MCU sample.
 """
 from __future__ import annotations
@@ -47,12 +47,18 @@ def parser():
     p.add_argument("--scope-device", default="auto")
     p.add_argument("--ch1-v-div", type=float, default=10.0)
     p.add_argument("--points", type=int, default=1000000)
+    p.add_argument("--count", type=int, default=1,
+                   help="Number of distinct finite CH1+CH2 scope records (1..12); "
+                        "one continuous MCU/Matrix32 session, gaps during transfer")
     p.add_argument("--time-div-us", type=float, default=2000000.0)
     p.add_argument("--trigger-position-pct", type=float, default=0.0)
     p.add_argument("--acquire-timeout", type=float, default=90.0)
     p.add_argument("--sync-count", type=int, default=30,
                    help="Number of binary CRC32 sync exchanges before AND after recording")
     p.add_argument("--stale-ms", type=int, default=250)
+    p.add_argument("--capture-before-start", action="store_true",
+                   help="Bench-only: arm scope after MCU ACKs even if positive sensor input "
+                        "has not yet triggered Matrix32 START; records may contain no output")
     p.add_argument("--controller-ready-timeout", type=float, default=45.0,
                    help="Seconds to wait for Feather config and, with --arm, "
                         "ACK-verified Matrix32 START before scope is armed")
@@ -67,12 +73,16 @@ def plan(args, p):
         p.error("--arm requires BOTH --run and --dummy-load-confirmed")
     if args.dummy_load_confirmed and not args.arm:
         p.error("--dummy-load-confirmed is only used together with --arm")
+    if args.capture_before_start and (not args.run or not args.arm or not args.dummy_load_confirmed):
+        p.error("--capture-before-start requires --run --arm --dummy-load-confirmed")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.label):
         p.error("Invalid --label")
-    if not 100 <= args.points <= 20000000:
-        p.error("--points must be 100..20000000")
-    if not (math.isfinite(args.time_div_us) and 20000 <= args.time_div_us <= 3000000):
-        p.error("--time-div-us must be 20000..3000000")
+    if not 1 <= args.count <= 12:
+        p.error("--count must be 1..12")
+    if args.points not in (1000, 10000, 100000, 1000000, 5000000, 10000000, 20000000):
+        p.error("--points must be a supported scope selection: 1000, 10K, 100K, 1M, 5M, 10M, 20M")
+    if not (math.isfinite(args.time_div_us) and 20000 <= args.time_div_us <= 6000000):
+        p.error("--time-div-us must be 20000..6000000")
     if not (math.isfinite(args.ch1_v_div) and 0.001 <= args.ch1_v_div <= 100):
         p.error("--ch1-v-div must be 0.001..100")
     if not (math.isfinite(args.trigger_position_pct)
@@ -102,6 +112,8 @@ def plan(args, p):
         "ch2": "Nano Every D7 Gray timecode, rising +1V trigger",
         "ch1_v_div": args.ch1_v_div,
         "points": args.points, "time_div_us": args.time_div_us,
+        "scope_record_count": args.count,
+        "nominal_observed_scope_duration_s": args.count * 10 * args.time_div_us * 1e-6,
         "nominal_window_s": 10 * args.time_div_us * 1e-6,
         "trigger_position_pct": args.trigger_position_pct,
         "horizontal_delay_mode_requested": "OFF",
@@ -112,23 +124,29 @@ def plan(args, p):
         "verified_dummy_load_operator_confirmation": bool(args.dummy_load_confirmed),
         "mcu_stale_timeout_ms": args.stale_ms,
         "controller_ready_timeout_s": args.controller_ready_timeout,
+        "capture_before_matrix32_start": args.capture_before_start,
         "acquisition_order": "controller_ready_then_pre_sync_then_arm_scope",
         "no_person_connected": True,
         "clock_offset_calibrated": False,
         "sample_gap_free": False,
-        "single_scope_record": True,
+        "single_scope_record": args.count == 1,
+        "records_are_independent": True,
+        "matrix32_session_continuous_across_record_gaps": True,
         "waveform_trigger_source": "CH2_NANO",
         "matrix32_physical_output_timestamp_verified": False,
+        "nano_mode_required": "10HZ_HW_TCA_BUFFERED",
+        "nano_buffered_frames_required": True,
     }
 
 
 class StimulationChild:
     """Isolated process preserves existing Matrix32 BLE watchdog and shutdown."""
 
-    def __init__(self, root, *, arm, stale_ms):
+    def __init__(self, root, *, arm, stale_ms, capture_before_start=False):
         self.root = Path(root)
         self.arm = arm
         self.stale_ms = stale_ms
+        self.capture_before_start = capture_before_start
         self.process = None
         self.log = None
         self.log_thread = None
@@ -198,7 +216,8 @@ class StimulationChild:
         if self.process is None:
             raise RuntimeError("Controller has not been started")
         deadline = time.monotonic() + timeout
-        expected = self.matrix32_started if self.arm else self.mcu_ready
+        expected = (self.matrix32_started if self.arm and not self.capture_before_start
+                    else self.mcu_ready)
         while not expected.is_set():
             self.check()
             if self.start_failure.is_set():
@@ -209,7 +228,7 @@ class StimulationChild:
             if time.monotonic() >= deadline:
                 raise TimeoutError(
                     f"Controller not ready after {timeout:g}s: "
-                    + ("no ACK-verified Matrix32 START" if self.arm
+                    + ("no ACK-verified Matrix32 START" if self.arm and not self.capture_before_start
                        else "MCU configuration handshake incomplete")
                     + "; see matrix32_runner.log"
                 )
@@ -222,6 +241,8 @@ class StimulationChild:
             "mcu_configured_observed_monotonic_ns": self.mcu_ready_observed_ns,
             "matrix32_start_observed_monotonic_ns": self.matrix32_started_observed_ns,
             "startup_electrical_output_verified": False,
+            "scope_capture_precedes_matrix32_start": bool(
+                self.arm and self.capture_before_start and not self.matrix32_started.is_set()),
         }
 
     def stop(self):
@@ -277,7 +298,8 @@ def run(args, requested):
         "records": [], "sync_measurements": [],
         "host_clock_synchronization_verified": False,
     }
-    child = StimulationChild(root, arm=args.arm, stale_ms=args.stale_ms)
+    child = StimulationChild(root, arm=args.arm, stale_ms=args.stale_ms,
+                             capture_before_start=args.capture_before_start)
     nano_started = False
     try:
         nano_port = resolve_port(args.nano_port, "nano")
@@ -285,8 +307,12 @@ def run(args, requested):
         with NanoLog(nano_port, root / "nano_serial.jsonl") as nano:
             meta["ping"] = nano.synchronize()
             meta["nano_info"] = nano.command("INFO")
-            if "FW GRAY_TC_V1" not in meta["nano_info"] or "PIN 7" not in meta["nano_info"]:
-                raise RuntimeError("Nano GRAY_TC_V1 firmware on D7 required")
+            expected_nano = ("FW GRAY_TC_V1", "PIN 7",
+                             "FRAME_US 100000", "FRAME_MODE 10HZ_HW_TCA_BUFFERED")
+            if any(token not in meta["nano_info"] for token in expected_nano):
+                raise RuntimeError(
+                    "Integrated recording requires the final 10Hz hardware-timed "
+                    "buffered Nano firmware; received: " + meta["nano_info"])
             if "RUN 1" in meta["nano_info"]:
                 nano.command("STOP")
             # One START per session. No automatic retry on timeout.
@@ -306,87 +332,127 @@ def run(args, requested):
                     verify(meta["scope_settings_before"], args)
                     print("[SCOPE] Configuration verified, CH2 Nano trigger at 0% "
                           "(or requested position)", flush=True)
-                    record = {
-                        "index": 1, "status": "started", "started_utc": utc(),
-                        "clock_epoch": {
-                            "epoch_id": 1, "status": "started",
-                            "pre_sync_sequence_ids": [],
-                            "post_sync_sequence_ids": [],
-                        },
-                    }
-                    meta["records"].append(record)
-                    epoch = record["clock_epoch"]
-                    # The scope is configured but explicitly STOPPED here.
-                    # Startup and BLE configuration can take multiple seconds;
-                    # do not let that startup consume the finite waveform.
-                    record["controller_started_host_monotonic_ns"] = time.monotonic_ns()
-                    record["controller_pid"] = child.start()
+                    # Keep one Feather/Matrix32 controller alive for ALL records.
+                    # Scope transfers occur between records; physical samples
+                    # during those gaps do not exist and must never be stitched.
+                    meta["controller_started_host_monotonic_ns"] = time.monotonic_ns()
+                    meta["controller_pid"] = child.start()
                     print(f"[MATRIX32] Controller starting before scope arming; "
                           f"{'ARMED BENCH OUTPUT' if args.arm else 'DRY RUN'}",
                           flush=True)
-                    record["controller_ready"] = child.wait_ready(
+                    meta["controller_ready"] = child.wait_ready(
                         args.controller_ready_timeout
                     )
-                    record["controller_ready_observed_monotonic_ns"] = time.monotonic_ns()
+                    meta["controller_ready_observed_monotonic_ns"] = time.monotonic_ns()
                     print("[MATRIX32] MCU configured"
-                          + ("; Matrix32 START returned" if args.arm
+                          + ("; Matrix32 START returned" if args.arm and not args.capture_before_start
+                             else "; armed scope may precede Matrix32 START" if args.arm
                              else "; dry-run controller ready")
-                          + "; preparing scope acquisition", flush=True)
-
-                    # Bracket capture using fresh, independent Nano SYNCs.
-                    # For safety, fail if the controller stops while syncing.
-                    for _ in range(args.sync_count):
-                        child.check()
-                        row = nano.binary_sync_exchange()
-                        meta["sync_measurements"].append(row)
-                        epoch["pre_sync_sequence_ids"].append(row["sequence_id"])
-                    epoch["pre_sync_end_host_monotonic_ns"] = time.monotonic_ns()
-                    child.check()
-                    print(f"[SYNC] {args.sync_count} CRC32 exchanges before arming",
+                          + f"; preparing {args.count} separate scope records",
                           flush=True)
-                    atomic_json(root / "metadata.json", meta)
 
-                    record["arm_request_monotonic_ns"] = time.monotonic_ns()
-                    record["acquisition"] = acquire(
-                        scope, args.acquire_timeout,
-                        on_progress=lambda _: child.check(),
-                    )
-                    record["acquisition_completed_monotonic_ns"] = time.monotonic_ns()
-                    record["scope_settings_after_acquisition"] = scope_settings(
-                        scope, args.channels, args.trigger_channel,
-                        horizontal_position=True
-                    )
-                    verify(record["scope_settings_after_acquisition"], args)
-                    for _ in range(args.sync_count):
+                    for index in range(1, args.count + 1):
                         child.check()
-                        row = nano.binary_sync_exchange()
-                        meta["sync_measurements"].append(row)
-                        epoch["post_sync_sequence_ids"].append(row["sequence_id"])
-                    epoch["post_sync_end_host_monotonic_ns"] = time.monotonic_ns()
-                    epoch["status"] = "collected"
-                    print(f"[SYNC] {args.sync_count} CRC32 exchanges after acquisition",
-                          flush=True)
-                    # Terminate the Matrix32 process BEFORE potentially slow
-                    # 2 x million-point USBTMC waveform transfers.
+                        if child.start_failure.is_set():
+                            raise RuntimeError(
+                                "Controller reported STOP, warning, or failure; "
+                                "refusing to start another scope record"
+                            )
+                        record = {
+                            "index": index, "status": "started", "started_utc": utc(),
+                            "clock_epoch": {
+                                "epoch_id": index, "status": "started",
+                                "pre_sync_sequence_ids": [],
+                                "post_sync_sequence_ids": [],
+                            },
+                        }
+                        meta["records"].append(record)
+                        epoch = record["clock_epoch"]
+                        print(f"[RECORD {index}/{args.count}] Preparing independent "
+                              "scope acquisition", flush=True)
+
+                        # Separate Nano->host clock epochs around every capture.
+                        # Nano full frame counter stays running across gaps.
+                        for _ in range(args.sync_count):
+                            child.check()
+                            if child.start_failure.is_set():
+                                raise RuntimeError(
+                                    "Controller reported fault during pre-SYNC"
+                                )
+                            row = nano.binary_sync_exchange()
+                            meta["sync_measurements"].append(row)
+                            epoch["pre_sync_sequence_ids"].append(row["sequence_id"])
+                        epoch["pre_sync_end_host_monotonic_ns"] = time.monotonic_ns()
+                        child.check()
+                        print(f"[SYNC {index}] {args.sync_count} CRC32 exchanges "
+                              "before scope arming", flush=True)
+                        atomic_json(root / "metadata.json", meta)
+
+                        # Record actual Nano START-edge timestamps ONLY inside
+                        # this finite scope acquisition. Do not print FRAME
+                        # telemetry while acquiring; dump after scope completes.
+                        record["nano_frame_buffer"] = nano.buffered_capture_begin()
+                        atomic_json(root / "metadata.json", meta)
+                        record["arm_request_monotonic_ns"] = time.monotonic_ns()
+                        record["acquisition"] = acquire(
+                            scope, args.acquire_timeout,
+                            on_progress=lambda _: child.check(),
+                        )
+                        record["acquisition_completed_monotonic_ns"] = time.monotonic_ns()
+                        # End buffering immediately after scope completion,
+                        # BEFORE the potentially slow scope queries and CSV
+                        # transfers. Verify no missing/overwritten Nano rows.
+                        record["nano_frame_buffer"].update(
+                            nano.buffered_capture_end_and_dump(
+                                record["nano_frame_buffer"]))
+                        atomic_json(root / "metadata.json", meta)
+                        record["scope_settings_after_acquisition"] = scope_settings(
+                            scope, args.channels, args.trigger_channel,
+                            horizontal_position=True
+                        )
+                        verify(record["scope_settings_after_acquisition"], args)
+                        for _ in range(args.sync_count):
+                            child.check()
+                            if child.start_failure.is_set():
+                                raise RuntimeError(
+                                    "Controller reported fault during post-SYNC"
+                                )
+                            row = nano.binary_sync_exchange()
+                            meta["sync_measurements"].append(row)
+                            epoch["post_sync_sequence_ids"].append(row["sequence_id"])
+                        epoch["post_sync_end_host_monotonic_ns"] = time.monotonic_ns()
+                        epoch["status"] = "collected"
+                        print(f"[SYNC {index}] {args.sync_count} CRC32 exchanges "
+                              "after scope acquisition", flush=True)
+
+                        # Download the frozen scope SEQUENCE before rearming.
+                        # The controller remains active on the MCU/BLE side
+                        # during the unobserved USBTMC transfer interval.
+                        record["channels"] = {}
+                        for channel in args.channels:
+                            file = (root / "waveforms"
+                                    / f"record_{index:05d}_ch{channel}.csv")
+                            record["channels"][f"CH{channel}"] = {
+                                "path": str(file.relative_to(root)),
+                                "transfer": capture(scope, channel, args.points, file),
+                                "waveform": validate_csv(file, args.points),
+                            }
+                        record["decoded_gray"] = decode_csv(
+                            root / record["channels"]["CH2"]["path"]
+                        )
+                        record["status"] = "captured"
+                        record["finished_utc"] = utc()
+                        atomic_json(root / "metadata.json", meta)
+                        print(f"[RECORD {index}/{args.count}] Captured "
+                              f"{record['decoded_gray']['decoded_frame_count']} "
+                              "complete Gray frames; raw CH1+CH2 saved", flush=True)
+
+                    # Shutdown follows the LAST frozen/downloaded record.
+                    # A STOP/ACK is not a physical proof that the load is off.
                     meta["matrix32_shutdown"] = child.stop()
                     meta["matrix32_shutdown"]["physical_output_verified_off"] = False
                     meta["matrix32_shutdown"]["operator_must_confirm_output_off"] = True
                     atomic_json(root / "metadata.json", meta)
-
-                    record["channels"] = {}
-                    for channel in args.channels:
-                        file = root / "waveforms" / f"record_00001_ch{channel}.csv"
-                        record["channels"][f"CH{channel}"] = {
-                            "path": str(file.relative_to(root)),
-                            "transfer": capture(scope, channel, args.points, file),
-                            "waveform": validate_csv(file, args.points),
-                        }
-                    record["decoded_gray"] = decode_csv(
-                        root / record["channels"]["CH2"]["path"]
-                    )
-                    record["status"] = "captured"
-                    print(f"[GRAY] {record['decoded_gray']['decoded_frame_count']} "
-                          f"complete frames", flush=True)
                     meta["status"] = "complete"
             finally:
                 if nano_started:

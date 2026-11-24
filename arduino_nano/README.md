@@ -1,76 +1,76 @@
-# Arduino Nano Every — Gray timecode reference
+# Arduino Nano Every — canonical 10 Hz hardware-timed Gray reference
 
-Self-contained PlatformIO project (same structure as `adafruit_feather_m4/`).
-Target: **Arduino Nano Every** (ATmega4809), not the classic ATmega328P Nano.
-
-## Build
+**One build, one firmware:** `arduino_nano/platformio.ini` contains only
+`[env:nano_every]` and sets `default_envs = nano_every`. VS Code's
+PlatformIO **Upload** button builds/uploads this exact firmware once.
+Close serial monitors and the experiment runner before flashing.
 
 From the repository root:
 
 ```bash
 cd arduino_nano
 pio run -e nano_every
+pio run -e nano_every -t upload
+cd ..
 ```
 
-## Upload
+If more than one PlatformIO project is open, use **Project Tasks →
+arduino_nano → nano_every → General → Upload**, not an ambiguous
+workspace-wide upload action. Confirm a successful Build and Upload log.
+Port discovery: `pio device list`; an explicit port may be supplied
+with `--upload-port /dev/ttyACM1` when necessary.
 
-Close serial monitors or Python processes holding the Nano port. Discover it
-using `pio device list` or `ls -l /dev/serial/by-id/`, then:
+## Hardware waveform and timestamp semantics
 
-```bash
-pio run -e nano_every -t upload --upload-port /dev/ttyACM1
+- Board: Arduino Nano Every, ATmega4809; scope probe D7 = PA1/TCA0-WO1
+  on CH2. No stimulation electrodes or direct connections to Matrix32.
+- Gray frame: **10 Hz (100 ms)**; START HIGH 0–4 ms; DATA 16 × 5 ms
+  slots, 1 ms HIGH for each set bit, beginning at 7 ms; END HIGH
+  90–97 ms. Full frame counter is carried in the post-acquisition log.
+- TCA0 single-slope PWM hardware generates output transitions; its
+  overflow ISR programs the **next** 1 ms cell using buffered compare.
+  The ISR reads `micros()` near each physical START edge, but **does
+  not hardware-latch the physical edge**. The Nano↔scope clock
+  relationship remains provisional and can be nonlinear.
+- Fixed SRAM buffer: 256 entries × 12 bytes, enough for **25.6 s
+  at 10 Hz**. Each holds `FRAME` counter, `EDGE_US` and overruns.
+  It never overwrites earlier entries; overflow is reported and
+  disqualifies clock fitting for that record.
+
+## Binary SYNC and buffered acquisition
+
+The host uses CRC32-protected binary SYNC messages (12-byte request,
+20-byte reply, A5 5A header), and verifies:
+
+```text
+FW GRAY_TC_V1 PIN 7 FRAME_US 100000 ... FRAME_MODE 10HZ_HW_TCA_BUFFERED
 ```
 
-Replace `/dev/ttyACM0` with the correct Nano device. On some machines
-`platformio` is the executable rather than `pio`.
+`PING`, `INFO`, `START`, `STOP` and text `SYNC` also exist for
+diagnostics. During a scope acquisition, **do not continuously print
+FRAME lines**:
 
-## Serial monitor (optional manual check)
+1. Send 30 pre-acquisition binary SYNC requests.
+2. Send `BUFFER_BEGIN`; verify its ACK/capacity.
+3. Arm/acquire the oscilloscope's finite waveform.
+4. Once the scope has completed acquisition, send `BUFFER_END`.
+5. Send `BUFFER_DUMP` and verify exact frame count and `LOST=0`.
+6. Send 30 post-acquisition binary SYNC requests, then transfer the
+   frozen scope channels. The next record receives a fresh buffer.
 
-```bash
-pio device monitor -b 115200
-```
+The host implementation is
+[`record_integrated_matrix32.py`](../oscilloscope/record_integrated_matrix32.py)
+for integrated work and
+[`test_gray_10hz_hardware_timer.py`](../oscilloscope/test_gray_10hz_hardware_timer.py)
+for bench-only Gray checks. Both require the same exact firmware mode.
 
-Firmware **does not start D7 pulses automatically**. Commands are
-`PING <seq>`, `INFO <seq>`, `START <seq>`, `STOP <seq>`, and `SYNC <seq>`.
-Each command returns a matching `ACK`. `SYNC` returns
-`ACK SYNC <seq> RX_US <micros_at_command_newline> TX_US <micros_before_reply>`.
-The PC brackets the exchange with `time.monotonic_ns()` to estimate
-clock offset and drift. USB delay asymmetry remains an uncertainty.
+For the next planned **single 20-second 10M-sample-per-channel**
+integrated session, follow
+[the integrated bench procedure](../docs/integrated_matrix32_scope_recording.md).
+The script is a dry run until `--run`; Matrix32 output additionally
+requires the operator's two explicit arm/confirmed-dummy-load flags.
+USB/ACK timestamps do not certify when physical stimulation changed.
 
-The **binary CRC32 SYNC v1** request/ACK transport is now the default
-for Nano synchronization after the 2026-11-20 A/B latency comparison. It uses 12-byte requests and 20-byte
-responses, with magic bytes `A5 5A`, version, message type, sequence
-number, Nano timestamps in the response, and IEEE CRC32 over the
-message body (little-endian fields). The ASCII Gray `FRAME` stream and
-legacy commands remain unchanged. See the protocol specification and
-A/B benchmark in `docs/gray_timecode_scope_experiment.md`.
-Text SYNC is retained for legacy compatibility and controlled comparison.
-CRC32 protects frame integrity but cannot reveal asymmetric USB delays.
-At START the firmware
-generates a framed 16-bit Gray counter at 10 Hz on D7 while reporting
-the full counter over USB serial. Never run the serial monitor and
-Python experiment against the same port simultaneously.
-
-## Bench wiring and experiments
-
-See [Gray timecode scope experiment](../docs/gray_timecode_scope_experiment.md)
-for the CH2 Nano D7 marker wiring, single and repeated
-oscilloscope capture commands, decoder, and timing limitations.
-This reference firmware must **not** be connected directly to Matrix32
-stimulation outputs or electrode grounds.
-
-## Layout
-
-- `platformio.ini`: `atmelmegaavr` / `nano_every` / Arduino environment.
-- `src/main.cpp`: complete Gray timecode firmware; previous `.ino`
-  sketch moved here without changing its behavior.
-- `.gitignore`: ignores local PlatformIO build data.
-
-No external libraries are required. This PlatformIO migration alone
-does not establish hardware timing accuracy.
-
-## Mapping D7 Gray markers to PC time
-
-For a complete explanation of how the physical CH2 Gray frame is matched with its USB `FRAME ... EDGE_US ...` message, and how CRC32 four-timestamp SYNC exchanges provide a *provisional* Nano-to-PC affine mapping, see [clock mapping and time domains](../docs/clock_mapping_and_time_domains.md). The per-record fit is independent for each finite scope acquisition, and does not reconstruct samples absent during pauses.
-
-Project-wide installation, safe wiring, experiments and analysis entry points are in the [root README](../README.md).
+**Historical firmware comparisons** remain in Git history and existing
+offline recording datasets. They are not buildable alternatives from
+this canonical PlatformIO project.

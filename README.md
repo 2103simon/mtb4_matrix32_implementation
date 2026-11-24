@@ -119,6 +119,22 @@ python analyze_mcu_recording.py
 
 ### 5. First integrated scope recording (safe progression)
 
+**Canonical Nano firmware:** `arduino_nano/platformio.ini` now has only
+`[env:nano_every]`, which produces 10Hz TCA0 hardware-driven Gray on D7
+with 256-entry RAM-buffered timestamps. The integrated recorder checks the
+exact firmware mode and uses BUFFER_BEGIN / BUFFER_END / BUFFER_DUMP
+around every finite scope acquisition. The 100µs Gray fit threshold remains
+a mapping diagnostic, not a rejection condition for direct approved CH1
+electrical-onset measurements.
+
+**Next experimental baseline:** one simultaneous CH1+CH2 20-second
+capture with `--count 1 --points 10000000` (10M samples **per
+channel**). Review [the safety-gated integrated procedure]
+(docs/integrated_matrix32_scope_recording.md) before enabling Matrix32.
+The following older one-million-point commands remain useful as quick
+hardware checks.
+
+
 Show the integrated plan without opening any device:
 
 ```bash
@@ -140,7 +156,7 @@ timeout --signal=INT --kill-after=20s 180s \
   --run --arm --dummy-load-confirmed
 ```
 
-The normal acquisition configures the scope, waits for the MCU configuration ACKs **and Matrix32 START completion**, takes 30 Nano SYNC measurements, arms the scope, records a nominal **20 s / 1,000,000-point** CH1+CH2 window (2 s/div, 0% trigger), takes 30 more SYNC measurements, attempts Matrix32 STOP and only then downloads the waveforms. **One integrated invocation currently captures one scope record.** Output is saved under `data/recordings/<UTC>_integrated_matrix32_scope/`.
+The normal acquisition configures the scope, waits for the MCU configuration ACKs **and Matrix32 START completion**, takes 30 Nano SYNC measurements, arms the scope, records a nominal **20 s / 1,000,000-point** CH1+CH2 window (2 s/div, 0% trigger), takes 30 more SYNC measurements, and downloads the frozen CH1+CH2 waveforms before rearming. **For multiple records the Matrix32 controller remains active during these unobserved transfer gaps** and is stopped only after the final record (or upon a handled failure). **One integrated invocation captures one record by default; use `--count N` for N separate records under one continuous MCU/Matrix32 session.** Output is saved under `data/recordings/<UTC>_integrated_matrix32_scope/`.
 
 See the full [integrated recording and electrical precautions](docs/integrated_matrix32_scope_recording.md).
 
@@ -167,7 +183,7 @@ The editable host configuration is [`config/config.json`](config/config.json). I
 | `serial.port` | `null` for USB role discovery; explicit path is an override |
 | `clock_compensation`, `clock_drift_monitor` | Separate MCU/PC diagnostic timestamp compensation and export settings |
 
-**Do not equate command values with electrically verified amplitude or dose.** Review the active configuration, load impedance, pulse width, and output constraints before armed testing. The live Matrix32 frequency range is 2–400 Hz; requests below 2 Hz result in a zero-current/muted state rather than an unsafe forced minimum.
+**Do not equate command values with electrically verified amplitude or dose.** Review the active configuration, load impedance, pulse width, and output constraints before armed testing. The live Matrix32 frequency range is 2–400 Hz; requests below 2 Hz cause a **current-zero command (SC1=0) followed by SF=400**, in that order and with checked ACKs, rather than an unsupported SF=0 command. The follow-up fast scheduler setting is intended to speed future cycle-boundary opportunities; SC1=0 can itself wait until the end of the preceding cycle and is **not** an emergency physical OFF guarantee.
 
 For MCU-driven Matrix32 operation without the oscilloscope, the separate controller is:
 
@@ -226,6 +242,8 @@ python -u oscilloscope/analyze_integrated_matrix32.py \
 
 The analyzer reports measured **candidate positive-phase pulses** from CH1; per-cycle physical frequencies; BLE ACK-indicated SF; and provisional compatibility/mismatch when timing evidence allows. It also retains a sliding-window view for trends. **BLE ACKs are not physical pulse-edge timestamps**, and protocol success does not verify exact device-application time.
 
+For an integrated **six- or nine-record** session, use `--count 6` or `--count 9` after verifying the full bench and an initial short sequence. Each acquisition is independently synchronized; the oscilloscope is **not recording during waveform transfers** and the Matrix32 controller stays active until the final record. See the [integrated recording guide](docs/integrated_matrix32_scope_recording.md) for the longer watchdog and electrical precautions.
+
 For repeated **Gray-only** capture with pauses (not Matrix32 stimulation), see [Gray acquisition experiments](docs/gray_timecode_scope_experiment.md) and `oscilloscope/test_gray_epoch_pause.py`. For scope-only finite and repeated capture, see [oscilloscope guide](oscilloscope/README.md).
 
 ## How time synchronization works
@@ -270,6 +288,10 @@ Read the fully worked [clock-mapping and uncertainty guide](docs/clock_mapping_a
 | [`tests/`](tests/) | Host-side deterministic regression tests; no substitute for live bench validation |
 | [`docs/`](docs/) | Experiment procedures, timing evidence, firmware, serial discovery, design notes |
 | [`analysis/`](analysis/) | Committed standalone MCU analysis plots; new integrated reports are under each run's `analysis/` |
+
+### Experimental pulse-detection audit
+
+For the new multi-record experiments, the [analysis review workflow](docs/analysis_review_workflow.md) documents the proven Gray-frame decoder, source-preserving Matrix32 **negative-onset detector**, per-record candidate/rejected/suppressed CSV inventories, MCU arrival cadence and BLE ACK statistics, and the unresolved rules for attributing physical periods to ACKed SF states. The offline [`review_pulse_detection.py`](oscilloscope/review_pulse_detection.py) creates **unverified** onset and interval evidence; it does **not** approve all pulses or prove every ACK frequency was output.
 
 ## Verification and limitations
 

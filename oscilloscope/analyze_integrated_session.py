@@ -15,14 +15,8 @@ import numpy as np
 
 from analyze_mcu_recording import choose_recording, load_recordings, plot_traces
 from oscilloscope.record_scope import atomic_json
-from oscilloscope.matrix32_dynamic_frequency import (
-    analyze_dynamic_cycles, plot_dynamic_tracking,
-)
 from oscilloscope.analyze_integrated_matrix32 import (
-    acknowledged_frequency_states, compare_physical_with_acks, load_wave,
-    make_plots, plot_frequency_comparison, pulse_statistics, read_events,
-    rising_pulses, sliding_physical_rates, summarize_frequency_by_ack,
-    tentative_host_map, write_markdown_report,
+    acknowledged_frequency_states, load_wave, read_events, tentative_host_map,
 )
 
 
@@ -86,6 +80,32 @@ def summarize_full_stream(mcu, events):
     pc = np.asarray(mcu["taxel_pc_ns"], dtype=np.int64)
     diff = np.diff(pc)
     valid = diff[diff > 0]
+    # All time measurements here are native PC monotonic; no scope-to-Nano
+    # clock fit is needed for continuous MCU/ACK throughput statistics.
+    full_span_s = float((int(pc[-1]) - int(pc[0])) / 1e9)
+    ok_sf = sorted(
+        [e for e in events if e.get("event") == "sf_ack"
+         and e.get("status") == "OK" and "pc_monotonic_ns" in e],
+        key=lambda e: int(e["pc_monotonic_ns"]),
+    )
+    sf_times = np.asarray([int(e["pc_monotonic_ns"]) for e in ok_sf],
+                          dtype=np.int64)
+    sf_deltas = np.diff(sf_times)
+    positive_sf_deltas = sf_deltas[sf_deltas > 0]
+    sf_requested = [e for e in events if e.get("event") == "sf_requested"]
+    sf_muted = [e for e in ok_sf if e.get("zero_current_workaround")]
+    sf_restore_while_muted = [
+        e for e in ok_sf if e.get("restoring_current")
+    ]
+    sf_active = [
+        e for e in ok_sf
+        if not e.get("zero_current_workaround")
+        and not e.get("restoring_current")
+    ]
+    sf_failed = [e for e in events if e.get("event") == "sf_failed"]
+    acked_frequencies = sorted({
+        int(e["frequency_hz"]) for e in ok_sf if e.get("frequency_hz") is not None
+    })
     return {
         "recording_id": mcu["recording_id"],
         "rate_snapshots": int(len(pc)),
@@ -98,139 +118,176 @@ def summarize_full_stream(mcu, events):
         "host_arrival_rate_hz": (
             float(1e9/np.median(valid)) if len(valid) else None
         ),
+        "arrival_interval_p10_ms": (
+            float(np.percentile(valid, 10)/1e6) if len(valid) else None
+        ),
+        "arrival_interval_p90_ms": (
+            float(np.percentile(valid, 90)/1e6) if len(valid) else None
+        ),
+        "total_mcu_arrivals_per_second": (
+            float((len(pc)-1)/full_span_s) if full_span_s > 0 else None
+        ),
+        "arrival_nonpositive_delta_count": int(len(diff)-len(valid)),
+        "arrival_intervals_above_twice_median_count": (
+            int(np.count_nonzero(valid > 2 * np.median(valid)))
+            if len(valid) else None
+        ),
         "ble_events": len(events),
         "ble_events_by_type": dict(Counter(e.get("event", "?") for e in events)),
+        "sf_requested_event_count": len(sf_requested),
+        "sf_ack_ok_count": len(ok_sf),
+        "sf_failed_event_count": len(sf_failed),
+        "sf_ack_non_ok_count": sum(
+            e.get("event") == "sf_ack" and e.get("status") != "OK"
+            for e in events
+        ),
+        "sf_ack_ok_rate_per_mcu_recording_second": (
+            float(len(ok_sf)/full_span_s) if full_span_s > 0 else None
+        ),
+        "sf_ack_ok_rate_per_ack_span_second": (
+            float((len(ok_sf)-1) / ((int(sf_times[-1])-int(sf_times[0]))/1e9))
+            if len(ok_sf) > 1 and sf_times[-1] > sf_times[0] else None
+        ),
+        "sf_ack_ok_median_interack_ms": (
+            float(np.median(positive_sf_deltas)/1e6)
+            if len(positive_sf_deltas) else None
+        ),
+        "sf_ack_ok_p90_interack_ms": (
+            float(np.percentile(positive_sf_deltas, 90)/1e6)
+            if len(positive_sf_deltas) else None
+        ),
+        "sf_ack_ok_distinct_frequencies_hz": acked_frequencies,
+        "sf_ack_ok_muted_fast_scheduler_count": len(sf_muted),
+        "sf_ack_ok_restore_while_zero_current_count": len(sf_restore_while_muted),
+        "sf_ack_ok_active_frequency_count": len(sf_active),
+        "sf_ack_ok_active_frequencies_hz": sorted({
+            int(e["frequency_hz"]) for e in sf_active
+            if e.get("frequency_hz") is not None
+        }),
+        "sf400_during_sc_zero_is_not_physical_400hz_evidence": True,
+        "sf_ack_matching_warning": (
+            "Event counts are not per-command identity matches. "
+            "ACKs indicate protocol success; actual electrical output "
+            "must be checked on physically observed CH1 intervals."
+        ),
         "is_scope_recording": False,
     }
 
 
-def analyze_one(root, record, mcu, events, ack_states, *, threshold_v,
-                deadtime_ms, taxel, zoom_start, zoom_sec, window_s, step_s,
-                tolerance_hz, tolerance_fraction):
-    """Compute every statistic from this record's OWN CH1 and host overlap."""
+def analyze_one(root, record, mcu, events, ack_states, *, taxel=None):
+    """Use only source-locked approved S02 negative onsets for CH1 metrics.
+
+    No positive-threshold event detector, no positive-edge frequency plots,
+    no fallback to unreviewed data. Absence or stale approval fails closed.
+    """
+    from oscilloscope.approved_frequency_analysis import analyze_approved_record
     idx = int(record["index"])
-    tag = f"record_{idx:05d}"
-    output = root / "analysis" / tag
+    output = root / "analysis" / f"record_{idx:05d}"
     output.mkdir(parents=True, exist_ok=True)
-    t, volts = load_wave(root / record["channels"]["CH1"]["path"])
-    starts = rising_pulses(t, volts, threshold_v, deadtime_ms/1000)
-    pulses = pulse_statistics(t, starts, threshold_v)
+    approval_path = output / "pulse_review" / "review_approval.json"
+    if not approval_path.exists():
+        raise ValueError(
+            f"Record {idx}: source-locked negative-onset approval missing: "
+            f"{approval_path}. Run review_pulse_detection.py and "
+            "apply_pulse_review.py with operator review before integration."
+        )
+    ch1 = record["channels"]["CH1"]
+    path = root / ch1["path"]
+    # Read exact saved scope time boundaries, not host estimates. This is a
+    # finite 5-million-sample recording; no new threshold detection is run.
+    t, volts = load_wave(path)
+    start_s, end_s = float(t[0]), float(t[-1])
     mapping = tentative_host_map(root, record_index=idx)
     overlap = coverage_overlaps(mapping, mcu, events)
     local_mcu = select_overlap_mcu(mcu, mapping)
     source = mcu.get("experiment_settings", {}).get("configuration", {}).get(
         "stimulation_source", {})
-    taxel = int(source.get("taxel", 11) if taxel is None else taxel)
-    if taxel not in range(12):
+    selected_taxel = int(source.get("taxel", 11) if taxel is None else taxel)
+    encoding = source.get("encoding", "sa_ii")
+    if selected_taxel not in range(12):
         raise ValueError("Taxel must be 0..11")
-    enc = source.get("encoding", "sa_ii")
-    local_rates = (local_mcu["sa_rate_hz"] if enc == "sa_ii"
-                   else local_mcu["ra_rate_hz"])
-    windows = sliding_physical_rates(starts, float(t[0]), float(t[-1]),
-                                    window_s, step_s)
-    compared = compare_physical_with_acks(
-        windows, ack_states, mapping, float(t[0]), float(t[-1]),
-        tolerance_hz, tolerance_fraction
-    )
-    dynamic = analyze_dynamic_cycles(
-        starts, ack_states, mapping, float(t[0]), float(t[-1])
-    )
-    counts = Counter(row["assessment"] for row in compared)
-    in_scope_events = (
-        [event for event in events
-         if ("pc_monotonic_ns" in event
-             and overlap["first_sample_host_ns_est"]
-             <= int(event["pc_monotonic_ns"])
-             <= overlap["last_sample_host_ns_est"])]
-        if mapping is not None else []
+    if encoding not in ("sa_ii", "ra_i"):
+        raise ValueError(f"Unsupported stimulation encoding: {encoding}")
+    rates = (local_mcu["sa_rate_hz"] if encoding == "sa_ii"
+             else local_mcu["ra_rate_hz"])
+    n = len(local_mcu["taxel_pc_ns"])
+    deltas = np.diff(local_mcu["taxel_pc_ns"]) if n > 1 else np.array([])
+    positive_deltas = deltas[deltas > 0]
+    in_scope_events = [
+        e for e in events
+        if mapping is not None and "pc_monotonic_ns" in e
+        and overlap["first_sample_host_ns_est"]
+            <= int(e["pc_monotonic_ns"])
+            <= overlap["last_sample_host_ns_est"]
+    ]
+    approved = analyze_approved_record(
+        root, record, mcu, ack_states, mapping, selected_taxel,
+        encoding, start_s, end_s,
     )
     report = {
-        "schema_version": 2,
-        "run_id": root.name,
-        "record_index": idx,
-        "recording_status": "captured",
+        "schema_version": 3,
+        "run_id": root.name, "record_index": idx, "recording_status": "captured",
+        "physical_detection_method": "OPERATOR_APPROVED_S02_NEGATIVE_ONSETS_ONLY",
         "scope": {
-            "ch1_path": record["channels"]["CH1"]["path"],
+            "ch1_path": ch1["path"],
             "ch2_path": record["channels"]["CH2"]["path"],
             "samples": int(len(t)),
-            "duration_s": float(t[-1]-t[0]),
-            "scope_time_start_s": float(t[0]),
-            "scope_time_end_s": float(t[-1]),
-            "ch1_min_v": float(np.min(volts)),
-            "ch1_max_v": float(np.max(volts)),
+            "duration_s": end_s-start_s,
+            "scope_time_start_s": start_s, "scope_time_end_s": end_s,
+            "ch1_min_v": float(np.min(volts)), "ch1_max_v": float(np.max(volts)),
             "gray_frames": record.get("decoded_gray", {}).get("decoded_frame_count"),
-            "pulse_detection": pulses,
         },
         "mcu": {
-            "recording_id": mcu["recording_id"],
-            "samples": int(len(local_mcu["taxel_pc_ns"])),
-            "samples_are_full_stream": False,
-            "taxel": taxel,
-            "encoding": enc,
+            "recording_id": mcu["recording_id"], "samples": int(n),
+            "taxel": selected_taxel, "encoding": encoding,
             "observed_update_rate_hz": (
-                float(1e9/np.median(np.diff(local_mcu["taxel_pc_ns"])[
-                    np.diff(local_mcu["taxel_pc_ns"]) > 0]))
-                if len(local_mcu["taxel_pc_ns"]) > 1 and np.any(
-                    np.diff(local_mcu["taxel_pc_ns"]) > 0) else None
-            ),
+                float(1e9/np.median(positive_deltas))
+                if len(positive_deltas) else None),
             "requested_rate_min_hz": (
-                float(np.min(local_rates[:, taxel])) if len(local_rates) else None
-            ),
+                float(np.min(rates[:, selected_taxel])) if len(rates) else None),
             "requested_rate_max_hz": (
-                float(np.max(local_rates[:, taxel])) if len(local_rates) else None
-            ),
+                float(np.max(rates[:, selected_taxel])) if len(rates) else None),
         },
         "matrix32_commands": {
             "events": len(in_scope_events) if mapping else None,
-            "counts_by_event": dict(Counter(
-                e.get("event", "?") for e in in_scope_events)),
-            "events_are_full_stream": False,
+            "counts_by_event": dict(Counter(e.get("event", "?")
+                                            for e in in_scope_events)),
+            "scope_overlap_is_provisional": True,
         },
         "scope_to_host_overlap": overlap,
         "clock_mapping": mapping,
-        "frequency_comparison": {
-            "window_s": window_s, "step_s": step_s,
-            "tolerance_hz": tolerance_hz,
-            "tolerance_fraction": tolerance_fraction,
-            "windows": compared,
-            "by_ack_frequency": summarize_frequency_by_ack(compared, ack_states),
-            "comparable_windows": counts["compatible_provisional"]
-                                  + counts["discrepant_provisional"],
-            "compatible_windows": counts["compatible_provisional"],
-            "discrepant_windows": counts["discrepant_provisional"],
-            "not_comparable_windows": counts["not_comparable"],
+        "approved_frequency": approved,
+        "reviewed_negative_onsets": {
+            "status": "OPERATOR_SOURCE_LOCKED_APPROVED",
+            "onset_count": approved["onset_count"],
+            "interval_count": approved["interval_count"],
         },
-        "dynamic_tracking": dynamic,
         "warnings": [
-            "Record time starts at its OWN first oscilloscope sample; do not "
-            "concatenate record time axes or include acquisition gaps.",
-            "MCU and BLE counts are restricted to this record's provisionally "
-            "mapped host coverage; without an independent clock map they are unknown.",
-            "USB/Nano host clock offset remains uncalibrated; ACK time is not "
-            "Matrix32 physical application time.",
+            "All physical frequency results use approved negative onsets only.",
+            "No intervals are built across scope acquisition gaps.",
+            "Host/ACK alignment and command application time remain unverified.",
         ],
+        "record_report": str(output / "report.md"),
+        "record_summary": str(output / "summary.json"),
     }
-    report["plots"] = make_plots(
-        root, t, volts, starts, local_mcu, in_scope_events, mapping,
-        taxel, zoom_start, zoom_sec, record_index=idx,
-    )
-    report["plots"].append(plot_frequency_comparison(
-        root, windows, compared, mapping, record_index=idx,
-    ))
-    report["plots"].append(plot_dynamic_tracking(
-        output / "matrix32_dynamic_tracking.png",
-        dynamic, ack_states, mapping, float(t[0]), float(t[-1])
-    ))
-    report["record_report"] = str(output / "report.md")
-    report["record_summary"] = str(output / "summary.json")
     atomic_json(output / "summary.json", report)
-    write_markdown_report(root, report, record_index=idx, per_record=True)
-    print(f"[RECORD {idx}] scope {len(t):,} pts / {t[-1]-t[0]:.3f}s, "
-          f"{pulses['positive_rising_events']} positive pulses, "
-          f"MCU overlap {overlap['mcu_sample_count']}, "
-          f"BLE overlap {overlap['ble_event_count']}, "
-          f"dynamic {dynamic['compatible']}/{dynamic['classified']} "
-          "compatible (provisional)")
+    (output / "report.md").write_text(
+        f"# Record {idx}: operator-approved negative-onset analysis\n\n"
+        f"**{approved['onset_count']} approved onsets, "
+        f"{approved['interval_count']} approved within-record intervals.**\n\n"
+        f"[Full approved frequency analysis and figures]"
+        f"(approved_frequency_report.md)\n\n"
+        f"[Human-reviewed CH1 trace and per-pulse decisions]"
+        f"(pulse_review/report.md)\n\n"
+        f"Source: source-locked S02 negative-event detector and "
+        f"operator-reviewed pulse inventory. No positive-edge fallback.\n",
+        encoding="utf-8",
+    )
+    print(f"[APPROVED RECORD {idx}] {len(t):,} CH1 samples / "
+          f"{end_s-start_s:.3f} s; {approved['onset_count']} onsets; "
+          f"{approved['interval_count']} intervals; median inverse period "
+          f"{approved['inverse_period_hz']['median']} Hz (no positive-edge "
+          "analysis; host/ACK attribution provisional)")
     return report
 
 
@@ -256,97 +313,75 @@ def describe_gaps(reports):
 
 
 def session_markdown(root, session):
+    """Approved-only session narrative; MCU/BLE host telemetry remains separate."""
+    from oscilloscope.approved_frequency_analysis import session_report
+    rows = session["approved_frequency_records"]
     lines = [
         f"# Integrated Matrix32 session: {session['run_id']}", "",
-        "> Each scope acquisition was analyzed on its own local time axis. "
-        "MCU/BLE logs are continuous streams. Cross-device and cross-record "
-        "timing is provisional; no gaps have been interpolated.",
-        "", "## At a glance", "",
+        "**Primary physical evidence: source-locked, operator-approved "
+        "negative CH1 onsets only.** No positive-edge detector is run.",
+        "",
+        session_report(rows, session["scope_record_count"]),
+        "## Continuous MCU and BLE telemetry (host-native)", "",
         "| Metric | Value |", "| --- | ---: |",
-        f"| Scope acquisitions | {session['scope_record_count']} |",
-        f"| Sum of observed scope durations (excludes gaps) | "
+        f"| Scope records | {session['scope_record_count']} |",
+        f"| Total acquired CH1 duration | "
         f"{session['total_observed_scope_s']:.3f} s |",
-        f"| Sum of physical CH1 pulse candidates within records | "
-        f"{session['total_scope_positive_events']} |",
-        f"| Full MCU snapshots (counted once) | "
+        f"| Full MCU snapshots | "
         f"{session['mcu_full_stream']['rate_snapshots']} |",
-        f"| Full BLE trace events (counted once) | "
+        f"| Full BLE trace events | "
         f"{session['mcu_full_stream']['ble_events']} |",
-        "", "## Each independent scope record", "",
-        "| Record | Observed duration | Positive CH1 events | "
-        "MCU samples in scope | BLE events in scope | Clock fit | Report |",
-        "| ---: | ---: | ---: | ---: | ---: | --- | --- |",
-    ]
-    for item in session["records"]:
-        scope = item["scope"]
-        overlap = item["scope_to_host_overlap"]
-        index = item["record_index"]
-        clock = item["clock_mapping"]
-        status = clock["status"] if clock else "no host mapping"
-        mcu_count = overlap["mcu_sample_count"]
-        ble_count = overlap["ble_event_count"]
-        lines.append(
-            f"| {index} | {scope['duration_s']:.3f} s | "
-            f"{scope['pulse_detection']['positive_rising_events']} | "
-            f"{mcu_count if mcu_count is not None else 'unknown'} | "
-            f"{ble_count if ble_count is not None else 'unknown'} | "
-            f"{status} | [Record {index}](record_{index:05d}/report.md) |"
-        )
-    lines.extend([
-        "", "## Gaps between acquisitions", "",
-        "| After | Before | Estimated unobserved time | Status |",
+        f"| SF requests | "
+        f"{session['mcu_full_stream']['sf_requested_event_count']} |",
+        f"| Successful SF ACKs | "
+        f"{session['mcu_full_stream']['sf_ack_ok_count']} |",
+        f"| Failed SF events | "
+        f"{session['mcu_full_stream']['sf_failed_event_count']} |",
+        f"| Non-OK SF ACKs | "
+        f"{session['mcu_full_stream']['sf_ack_non_ok_count']} |",
+        f"| Muted fast scheduler SF ACKs | "
+        f"{session['mcu_full_stream']['sf_ack_ok_muted_fast_scheduler_count']} |",
+        "",
+        "BLE acknowledgments indicate protocol success but do not prove "
+        "physical output or exact timing of application.",
+        "", "![Continuous MCU rate data](mcu_full_stream.png)", "",
+        "## Unobserved gaps between independent acquisitions", "",
+        "| After record | Before record | Estimated duration (s) | Status |",
         "| ---: | ---: | ---: | --- |",
-    ])
-    if not session["inter_record_gaps"]:
-        lines.append("| — | — | None: one scope acquisition | — |")
+    ]
     for gap in session["inter_record_gaps"]:
-        value = (f"{gap['estimated_gap_s']:.3f} s"
-                 if gap["estimated_gap_s"] is not None else "unknown")
+        duration = (f"{gap['estimated_gap_s']:.3f}"
+                    if gap['estimated_gap_s'] is not None else "unknown")
         lines.append(
             f"| {gap['after_record']} | {gap['before_record']} | "
-            f"{value} | {gap['status']} |"
+            f"{duration} | {gap['status']} |"
         )
-    lines += [
-        "", "## Continuous MCU and Matrix32 command logs", "",
-        f"The MCU recorded **{session['mcu_full_stream']['rate_snapshots']} "
-        f"rate snapshots** over "
-        f"**{session['mcu_full_stream']['arrival_span_s']:.3f} s** of "
-        "PC arrival time, which is **not** the same as total scope coverage.",
-        f"The Matrix32 BLE trace contains **"
-        f"{session['mcu_full_stream']['ble_events']} events** across the "
-        "whole controller lifetime. These are counted only once here.",
-        "", "![Independent full MCU stream](mcu_full_stream.png)", "",
-        "## Command versus physical measurement", "",
-        "Each record report compares its OWN CH1 pulse events with the "
-        "BLE ACK states projected onto that record using its OWN provisional "
-        "Nano-to-PC clock fit. No scope pulses or sample times are joined "
-        "across record boundaries. No combined single-stream latency "
-        "or instantaneous-frequency fit is reported.",
-        "", "## Interpretive limitations", "",
-        "- Per-record MCU and BLE overlap counts depend on provisional "
-        "scope-to-host mapping, which has uncalibrated USB asymmetry.",
-        "- The total scope duration is the sum of acquired durations, "
-        "never the wall-clock span including idle pauses.",
-        "- Total pulse event count is an integer sum of independent records, "
-        "not proof of continuous physical output between them.",
-        "- For pulse frequency accuracy, inspect individual record reports "
-        "or acquire fixed-frequency plateaus.",
-        "", "## Files", "",
-        "- [Session summary JSON](integrated_summary.json)",
-    ]
-    for item in session["records"]:
-        n = item["record_index"]
-        lines.append(f"- [Record {n} summary JSON](record_{n:05d}/summary.json)")
-    output = root / "analysis" / "integrated_report.md"
-    output.write_text("\n".join(lines)+"\n", encoding="utf-8")
-    return output
+    lines.extend([
+        "", "## Why are some clocks unqualified?", "",
+        "See the [per-record clock qualification audit]"
+        "(clock_qualification_report.md) for **every failed criterion**, "
+        "actual Gray frame residuals, USB clock-fit diagnostics and "
+        "outlier sensitivity. Diagnostic alternative fits never replace "
+        "the original maps or silently qualify a record.",
+        "", "## Evidence limitations", "",
+        "- Each approved interval uses two consecutive negative CH1 onsets "
+        "within the same acquired record.",
+        "- Absence of observed pulses is a statement at the detector and "
+        "scope sensitivity, not a current-off certification.",
+        "- All MCU/BLE association and transition assessments depend on "
+        "provisional cross-clock alignment; no physical apply latency proved.",
+        "- No physical event time is interpolated across acquisition gaps.",
+        "", "## Machine-readable evidence", "",
+        "- [Session summary](integrated_summary.json)",
+        "- [Per-record approved interval tables and plots]"
+        "(record_00001/approved_frequency_report.md)",
+    ])
+    out = root / "analysis" / "integrated_report.md"
+    out.write_text("\n".join(lines)+"\n", encoding="utf-8")
+    return str(out)
 
 
-def analyze_session(root, meta, *, threshold_v=2, deadtime_ms=1,
-                    taxel=None, zoom_start=None, zoom_sec=0.5, show=False,
-                    frequency_window_s=1.0, frequency_step_s=0.25,
-                    frequency_tolerance_hz=3.0,
-                    frequency_tolerance_fraction=0.05):
+def analyze_session(root, meta, *, taxel=None, show=False):
     root = Path(root)
     records = record_boundaries(meta.get("records", []))
     mcu_dir = root / "mcu_matrix32"
@@ -370,43 +405,56 @@ def analyze_session(root, meta, *, threshold_v=2, deadtime_ms=1,
     output.mkdir(exist_ok=True)
     full_plot = output / "mcu_full_stream.png"
     plot_traces(mcu, full_plot, selected_taxel=taxel, x_axis="pc")
+    from oscilloscope.approved_frequency_analysis import plot_session_summary
     reports = []
+    approved_summaries = []
     for rec in records:
-        reports.append(analyze_one(
-            root, rec, mcu, events, ack_states,
-            threshold_v=threshold_v, deadtime_ms=deadtime_ms, taxel=taxel,
-            zoom_start=zoom_start, zoom_sec=zoom_sec,
-            window_s=frequency_window_s, step_s=frequency_step_s,
-            tolerance_hz=frequency_tolerance_hz,
-            tolerance_fraction=frequency_tolerance_fraction,
-        ))
+        report = analyze_one(root, rec, mcu, events, ack_states, taxel=taxel)
+        reports.append(report)
+        approved_summaries.append(report["approved_frequency"])
+    plot_session_summary(output / "approved_session_overview.png",
+                         approved_summaries)
     gaps = describe_gaps(reports)
     session = {
-        "schema_version": 2,
+        "schema_version": 3,
         "run_id": meta["run_id"],
         "session_status": meta.get("status"),
         "scope_record_count": len(reports),
         "total_observed_scope_s": float(sum(
             r["scope"]["duration_s"] for r in reports)),
-        "total_scope_positive_events": sum(
-            r["scope"]["pulse_detection"]["positive_rising_events"]
-            for r in reports),
+        "physical_pulse_source": "OPERATOR_APPROVED_S02_NEGATIVE_ONSETS",
+        "approved_negative_onset_record_count": len(approved_summaries),
+        "approved_negative_onset_count": sum(
+            r["onset_count"] for r in approved_summaries),
+        "approved_within_record_interval_count": sum(
+            r["interval_count"] for r in approved_summaries),
+        "approved_frequency_records": approved_summaries,
         "mcu_full_stream": summarize_full_stream(mcu, events),
-        "records": [
-            {"record_index": r["record_index"], "scope": r["scope"],
-             "mcu": r["mcu"], "matrix32_commands": r["matrix32_commands"],
-             "clock_mapping": r["clock_mapping"],
-             "scope_to_host_overlap": r["scope_to_host_overlap"],
-             "record_report": r["record_report"],
-             "record_summary": r["record_summary"],
-             "dynamic_summary": {
-                 "classified": r["dynamic_tracking"]["classified"],
-                 "compatible": r["dynamic_tracking"]["compatible"],
-                 "discrepant": r["dynamic_tracking"]["discrepant"],
-                 "not_comparable": r["dynamic_tracking"]["not_comparable"],
-             }}
+        "records": [{
+            "record_index": r["record_index"],
+            "scope": r["scope"], "mcu": r["mcu"],
+            "matrix32_commands": r["matrix32_commands"],
+            "clock_mapping": r["clock_mapping"],
+            "scope_to_host_overlap": r["scope_to_host_overlap"],
+            "reviewed_negative_onsets": r["reviewed_negative_onsets"],
+            "approved_frequency": r["approved_frequency"],
+            "record_report": r["record_report"],
+            "record_summary": r["record_summary"],
+        } for r in reports],
+        "human_approved_scope_records": sum(
+            r.get("reviewed_negative_onsets", {}).get("status")
+            == "OPERATOR_SOURCE_LOCKED_APPROVED" for r in reports
+        ),
+        "human_approved_onsets_only": sum(
+            int(r["reviewed_negative_onsets"]["onset_count"])
             for r in reports
-        ],
+            if r.get("reviewed_negative_onsets", {}).get("status")
+            == "OPERATOR_SOURCE_LOCKED_APPROVED"
+        ),
+        "human_approved_onsets_coverage": (
+            "Partial unless every independent record was human reviewed. "
+            "Never infer pulse rates across gaps."
+        ),
         "inter_record_gaps": gaps,
         "continuous_time_series_were_concatenated": False,
         "physical_samples_interpolated_across_gaps": False,
@@ -418,6 +466,26 @@ def analyze_session(root, meta, *, threshold_v=2, deadtime_ms=1,
             "sub-millisecond absolute timing across devices.",
         ],
     }
+    # Diagnose, but NEVER silently recalibrate, the original Gray/Nano/PC
+    # synchronization. Missing epoch metadata is a documented limitation.
+    from oscilloscope.clock_qualification_diagnostics import diagnose
+    if (root / "epoch_clock_analysis.json").exists():
+        clock_report, clock_records = diagnose(root)
+        session["clock_qualification_diagnostics"] = {
+            "report": str(clock_report),
+            "records": [{
+                "record_index": x["record_index"],
+                "status": x["original_status"],
+                "failed_checks": x["failed_checks"],
+                "robust_candidate": x["robust_candidate"],
+            } for x in clock_records],
+            "original_clock_maps_untouched": True,
+        }
+    else:
+        session["clock_qualification_diagnostics"] = {
+            "status": "NO_EPOCH_CLOCK_ANALYSIS",
+            "original_clock_maps_untouched": True,
+        }
     atomic_json(output / "integrated_summary.json", session)
     report = session_markdown(root, session)
     print(f"[SESSION] {len(reports)} independent scope record(s); "

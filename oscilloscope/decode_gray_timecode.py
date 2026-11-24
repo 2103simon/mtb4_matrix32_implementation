@@ -1,4 +1,4 @@
-"""Decode Arduino Nano Gray timecode from Tektronix CH4 CSV.
+"""Decode Arduino Nano Gray timecode from Tektronix CH2 CSV.
 
 Reads time_s,voltage_v; recognizes complete framed messages only.
 No attempt to reconstruct physically unrecorded gaps or to infer host sync.
@@ -71,7 +71,7 @@ def edges_from_csv(path, threshold=2.0):
                     "rising_edges": len(rises), "complete_high_pulses": len(pulses)}
 
 
-def decode_pulses(pulses, *, tolerance_s=0.00045):
+def decode_pulses(pulses, *, tolerance_s=0.00045, frame_s=FRAME_S):
     """Decode only complete frames with correct delimiters and slot pulses.
 
     The thresholded edge detector is intentionally conservative. Invalid and
@@ -79,6 +79,8 @@ def decode_pulses(pulses, *, tolerance_s=0.00045):
     """
     if not 0 < tolerance_s < ONE_S / 2:
         raise ValueError("tolerance_s must be positive and <0.5 ms")
+    if not math.isfinite(frame_s) or frame_s < END_S+END_WIDTH_S:
+        raise ValueError("frame_s must contain complete 97 ms Gray encoding")
     decoded = []
     for idx, (start_t, duration) in enumerate(pulses):
         if abs(duration - START_S) > tolerance_s:
@@ -127,23 +129,101 @@ def decode_pulses(pulses, *, tolerance_s=0.00045):
         current["increment_from_previous"] = difference
         current["scope_start_delta_s"] = round(
             current["scope_start_s"] - prev["scope_start_s"], 9)
-        current["expected_start_delta_s"] = round(difference * FRAME_S, 9)
+        current["expected_start_delta_s"] = round(difference * frame_s, 9)
         current["spacing_residual_s"] = round(
             current["scope_start_delta_s"] -
             current["expected_start_delta_s"], 9)
     return decoded
 
 
-def decode_csv(path, threshold=2.0, tolerance_s=0.00045):
+def audit_physical_pulses(pulses, frames, *, tolerance_s=0.00045):
+    """Account for EVERY complete high pulse on the physical CH2 waveform.
+
+    START and END plus 1-bit slots are distinguished by timing and width.
+    Unassigned pulses are retained explicitly for edge-review, never silently
+    ignored; a successful frame decode alone is not a completeness proof.
+    """
+    assigned = set()
+    per_frame = []
+    for frame in frames:
+        t0 = frame["scope_start_s"]
+        frame_parts = []
+        expectations = [("START", t0, START_S)]
+        expectations.extend(
+            (f"BIT_{bit_idx:02d}",
+             t0 + DATA_S + bit_idx * SLOT_S, ONE_S)
+            for bit_idx, value in enumerate(frame["bits_msb_first"])
+            if value == "1"
+        )
+        expectations.append(("END", t0 + END_S, END_WIDTH_S))
+        for name, t_expected, width_expected in expectations:
+            matches = [
+                i for i, (t, width) in enumerate(pulses)
+                if i not in assigned
+                and abs(t - t_expected) <= tolerance_s
+                and abs(width - width_expected) <= tolerance_s
+            ]
+            if len(matches) != 1:
+                frame_parts.append({
+                    "role": name, "matched": False,
+                    "matching_pulse_count": len(matches),
+                })
+                continue
+            i = matches[0]
+            assigned.add(i)
+            frame_parts.append({
+                "role": name, "matched": True, "pulse_index": i,
+                "start_s": pulses[i][0], "width_s": pulses[i][1],
+                "rise_residual_us": (pulses[i][0] - t_expected) * 1e6,
+                "width_residual_us": (pulses[i][1] - width_expected) * 1e6,
+            })
+        per_frame.append({
+            "counter_mod_65536": frame["counter_mod_65536"],
+            "scope_start_s": t0,
+            "expected_pulses": len(expectations),
+            "matched_pulses": sum(part["matched"] for part in frame_parts),
+            "all_start_data_end_pulses_accounted_for": all(
+                part["matched"] for part in frame_parts
+            ),
+            "pulses": frame_parts,
+        })
+    unassigned = [
+        {"pulse_index": i, "start_s": float(t), "width_s": float(width)}
+        for i, (t, width) in enumerate(pulses)
+        if i not in assigned
+    ]
+    return {
+        "complete_high_pulse_count": len(pulses),
+        "decoded_frame_count": len(frames),
+        "assigned_pulse_count": len(assigned),
+        "unassigned_pulse_count": len(unassigned),
+        "unassigned_pulses": unassigned,
+        "frames": per_frame,
+        "all_complete_high_pulses_accounted_for": (
+            bool(frames) and not unassigned
+            and all(x["all_start_data_end_pulses_accounted_for"] for x in per_frame)
+        ),
+        "audit_scope": (
+            "All complete thresholded high pulses (START, each 1 bit, END) "
+            "are accounted for; does not prove missing weak edges or "
+            "truncated start/end boundary pulses were observed."
+        ),
+    }
+
+
+def decode_csv(path, threshold=2.0, tolerance_s=0.00045, *, frame_s=FRAME_S):
     pulses, stats = edges_from_csv(path, threshold=threshold)
-    frames = decode_pulses(pulses, tolerance_s=tolerance_s)
+    frames = decode_pulses(pulses, tolerance_s=tolerance_s,
+                           frame_s=frame_s)
     return {
         "source": str(path),
         "threshold_v": threshold,
         "pulse_tolerance_s": tolerance_s,
+        "nominal_frame_s": frame_s,
         "waveform": stats,
         "frames": frames,
         "decoded_frame_count": len(frames),
+        "edge_audit": audit_physical_pulses(pulses, frames, tolerance_s=tolerance_s),
         "time_alignment_verified": False,
         "interpretation": (
             "Each Gray counter identifies its position modulo 65536 in the "
@@ -157,16 +237,21 @@ def decode_csv(path, threshold=2.0, tolerance_s=0.00045):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("csv", nargs="+", type=Path,
-                   help="One or more CH4 CSV waveforms from separate acquisitions")
+                   help="One or more CH2 CSV waveforms from separate acquisitions")
     p.add_argument("--threshold", type=float, default=2.0)
     p.add_argument("--tolerance-us", type=float, default=450)
+    p.add_argument("--frame-ms", type=float, default=100.,
+                   help="Expected frame repetition in ms (100 original; 200 experimental)")
     p.add_argument("--output", type=Path, help="Write JSON report")
     args = p.parse_args(argv)
-    if not math.isfinite(args.threshold) or not 0 < args.tolerance_us < 500:
-        p.error("Invalid threshold or tolerance")
+    if (not math.isfinite(args.threshold) or
+            not 0 < args.tolerance_us < 500 or
+            not math.isfinite(args.frame_ms) or args.frame_ms < 97):
+        p.error("Invalid threshold, tolerance or Gray frame duration")
     report = {
         "schema_version": 1, "decoder": "GRAY_TC_V1",
-        "records": [decode_csv(file, args.threshold, args.tolerance_us * 1e-6)
+        "records": [decode_csv(file, args.threshold, args.tolerance_us * 1e-6,
+                               frame_s=args.frame_ms*1e-3)
                     for file in args.csv],
     }
     payload = json.dumps(report, indent=2) + "\n"

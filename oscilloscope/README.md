@@ -24,7 +24,7 @@ Use an **external OS watchdog** on instrument runs, since a blocking USBTMC tran
 | [`record_scope_live.py`](record_scope_live.py) | Scope only | Repeated **separate** finite scope acquisitions, gaps retained |
 | [`test_gray_timecode.py`](test_gray_timecode.py) | Nano + scope | Decode CH2 Gray timecode; optionally multiple captures |
 | [`test_gray_epoch_pause.py`](test_gray_epoch_pause.py) | Nano + scope | Three 20-second captures, normally with 60-second pauses and independent pre/post SYNC epochs |
-| [`record_integrated_matrix32.py`](record_integrated_matrix32.py) | Feather + Matrix32 BLE + Nano + scope | One 20-second simultaneous CH1 physical output and CH2 Nano reference recording |
+| [`record_integrated_matrix32.py`](record_integrated_matrix32.py) | Feather + Matrix32 BLE + Nano + scope | One or more separate 20-second CH1 physical output + CH2 Nano reference records under one continuous controller session |
 | [`decode_gray_timecode.py`](decode_gray_timecode.py) | Offline files | Extract Gray frames and scope-local times from CH2 CSV |
 | [`align_gray_records.py`](align_gray_records.py) | Offline files | Match CH2 counter/edge times to Nano USB full counter + `EDGE_US` |
 | [`analyze_gray_epoch_experiment.py`](analyze_gray_epoch_experiment.py) | Offline files | Per-record Nano↔PC SYNC fit, quality and drift report |
@@ -35,7 +35,7 @@ Use an **external OS watchdog** on instrument runs, since a blocking USBTMC tran
 | [`compare_nano_sync_transports.py`](compare_nano_sync_transports.py) | Offline files | Legacy text versus CRC32 binary SYNC transport comparison |
 | [`test_nano_clock_sync.py`](test_nano_clock_sync.py) | Nano (when explicitly run) | Nano clock/serial transport diagnostic |
 
-The name `record_scope_live.py` means **repeated finite acquisitions**, not gap-free continuous raw ADC streaming. The integrated runner currently produces **one** scope acquisition per invocation even though the offline analyzer supports multiple record entries.
+The name `record_scope_live.py` means **repeated finite acquisitions**, not gap-free continuous raw ADC streaming. The integrated runner accepts **`--count N` (1–12)** and produces N independent scope acquisitions while retaining the same MCU/Matrix32 controller and Nano generator. It downloads each frozen record before rearming, so there are unavoidable **unobserved acquisition gaps**; the offline analyzer already supports independent record entries.
 
 ## Scope-only finite capture
 
@@ -57,6 +57,33 @@ timeout --signal=INT --kill-after=20s 180s \
 ```
 
 The resulting records must not be concatenated as if there were continuous scope samples; see [timing domains and gaps](../docs/clock_mapping_and_time_domains.md).
+
+## Supported record lengths and higher-resolution captures
+
+The operator verified these **discrete record-length selections** on the Tektronix MDO4104B-6: **1,000; 10,000; 100,000; 1,000,000; 5,000,000; 10,000,000; 20,000,000 points**. The scope's actual horizontal scale and record length are checked before acquisition; a mismatch safely aborts the run.
+
+**Hardware observation, 2026-11-23:** requesting **3 s/div** for a nominal 30 s capture returned **2 s/div** from the instrument. The integrated runner correctly failed before acquisition with `time_div_s: expected 3.0, scope reports 2.0`. Do **not** recommend 30 s at 3 s/div on this bench. A 6 s/div request has not been verified and may also snap to a standard timebase. Prefer verified 1-2-5-series horizontal settings, subject to an actual scope-settings readback.
+
+| Candidate single acquisition | Timebase (10 divisions) | Points per channel | Nominal sample spacing | Samples per 100 µs phase | Raw two-channel 16-bit transfer |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Existing baseline: 20 s | 2 s/div | 1M | 20 µs | 5 | 4 MB |
+| **Recommended next trial: 20 s** | **2 s/div** | **5M** | **4 µs** | **25** | **20 MB** |
+| Longer: 50 s | 5 s/div | 5M | 10 µs | 10 | 20 MB |
+| Longer/finer: 50 s | 5 s/div | 10M | 5 µs | 20 | 40 MB |
+| Maximum-depth option: 50 s | 5 s/div | 20M | 2.5 µs | 40 | 80 MB |
+
+These are *nominal* window/points calculations, not confirmed waveform preamble values. The 5 s/div cases require instrument verification. At 400 Hz, 20 s contains about 8,000 pulse periods and 50 s about 20,000. Longer records show more frequency transitions; higher sample density improves edge and pulse-width measurements. Neither changes the ~44 Hz BLE command update rate, application ACK latency or the uncertainty of physical apply timing.
+
+The downloader currently expands each sample to three CSV columns and holds complete waveforms in memory; the CSV validator also reads the entire waveform. At large depths, disk use, RAM, download time and analysis runtime can substantially exceed the raw binary size. Test a non-stimulating capture first and set the external process watchdog to cover setup and transfers. Independent repeated acquisitions have unobserved gaps; a single long record avoids inter-record download gaps but does not align MCU and scope clocks automatically.
+
+**Dry-run plans** (no devices touched):
+
+```bash
+python oscilloscope/record_integrated_matrix32.py --points 5000000 --time-div-us 2000000 --count 1
+python oscilloscope/record_integrated_matrix32.py --points 10000000 --time-div-us 5000000 --count 1
+```
+
+The live runner retains its separate `--run --arm --dummy-load-confirmed` gates. The 30 s/5M option was **not** accepted by the oscilloscope in the observed run; do not treat a Python dry run as instrument acceptance.
 
 ## Gray timecode, Nano serial and clock experiments
 
@@ -104,7 +131,7 @@ timeout --signal=INT --kill-after=20s 180s \
   python -u oscilloscope/record_integrated_matrix32.py --run
 ```
 
-**Live isolated dummy-load measurement** after approved wiring, probing and physical disconnect checks:
+**Live CH1 dummy-load measurement** after approved wiring, probing and physical disconnect checks (one 20-second record):
 
 ```bash
 timeout --signal=INT --kill-after=20s 180s \
@@ -122,7 +149,49 @@ The integrated sequence is:
 6. Take 30 post-recording SYNC exchanges, request Matrix32 STOP, download CH1+CH2 after output shutdown attempt, and preserve raw data.
 7. Compute diagnostic per-record Gray/SYNC alignment, which may be **unqualified** under the legacy 100 µs scope RMS threshold without invalidating raw scope-local pulse measurements.
 
-A software STOP/ACK does not establish that electrical output is absent: verify CH1 and use physical disconnection when required.
+For a longer sequence, use `--count 6` (six × 20 s, **120 s observed scope time**) or `--count 9` (nine × 20 s, **180 s observed scope time**). The overall session is longer than that because of Nano pre/post SYNC and **two-channel waveform transfers** between acquisitions. For example, once a two-record dry-run/bench trial has been validated:
+
+```bash
+# One MCU/Matrix32 session and nine independent CH1+CH2 scope records.
+# 900 seconds is an external wall-clock guard, not the requested scope duration.
+timeout --signal=INT --kill-after=20s 900s \
+  python -u oscilloscope/record_integrated_matrix32.py \
+  --run --arm --dummy-load-confirmed --count 9
+```
+
+**Electrical safety:** Matrix32 output may remain active during the **unobserved USBTMC waveform download gaps**. Software STOP is requested only after the final capture, or on a caught error/interruption. The external shell watchdog cannot guarantee an electrical STOP if blocking USBTMC calls or process termination bypass Python cleanup. Maintain an independent physical disconnect and monitor the output appropriately. A software STOP/ACK does not establish that electrical output is absent.
+
+### Capturing when the selected sensor initially requests 0 Hz
+
+An armed controller normally waits for a fresh positive (at least 2 Hz)
+selected tactile rate before configuring and starting Matrix32. With a
+zero-rate SA-II taxel this can cause a 45-second *startup readiness timeout*,
+even while MCU telemetry and encoding ACKs are healthy. `read_mcu.py` printing
+telemetry does not mean the selected SA-II rate is positive.
+
+An **explicit bench-only** option, `--capture-before-start`, changes only
+the integrated recorder's readiness condition: it may arm the scope after
+the MCU encoding handshake, **without** pretending the Matrix32 is started.
+The stimulation worker still refuses to START on zero input; it starts only
+if fresh positive input arrives later. This does **not** send an unverified
+SC=0/SF=400 START sequence. As a result, a record may contain **no Matrix32
+output**. The session metadata marks
+`controller_ready.scope_capture_precedes_matrix32_start`, and physical
+CH1 pulse observations must be checked rather than inferred from the
+capture status.
+
+```bash
+# Dry-run plan, NO hardware or Matrix32 output:
+python oscilloscope/record_integrated_matrix32.py --points 5000000 --time-div-us 2000000 --count 6
+```
+
+For an operator-approved live bench run, `--capture-before-start` additionally
+requires `--run --arm --dummy-load-confirmed` and a physical disconnect.
+It is not a substitute for hardware verification of SC=0/SF=400 at startup.
+
+### Experimental pulse review before frequency attribution
+
+The [analysis review workflow](../docs/analysis_review_workflow.md) describes source-locked negative-onset detection from the related Matrix32 project. Run [`review_pulse_detection.py`](review_pulse_detection.py) on saved CH1 recordings to export accepted, rejected and suppressed pulse candidates, inverse-period estimates and raw zooms for manual audit. The historical 2 V positive-phase analyzer remains separately available; no candidate is automatically approved as a verified physical pulse.
 
 ## Offline analysis and report layout
 
@@ -155,6 +224,14 @@ Output:
 **At session level**, the analyzer counts the full MCU and BLE logs **once**, sums *observed* scope durations and pulse counts, and explicitly reports gaps. It does **not** join pulse intervals across recordings or recover samples that were never acquired.
 
 A 1-second sliding-window frequency trend is useful for overview but can produce zero eligible *steady-state* windows when SF changes every few tens of milliseconds. The separate per-cycle dynamic analysis handles rapid changes cautiously: ACK transitions, muted intervals and times near updates are excluded or marked not comparable. All resulting cross-clock classifications are **provisional** because USB one-way asymmetry and physical Matrix32 apply times remain uncalibrated.
+
+## Zero-frequency combined-write feasibility
+
+Cross-reference: `2103simon/matrix32_nerve_stimulation`, branch `cleanup/analysis-consolidation`, especially `docs/live_frequency_updates.md` and `docs/matrix32_ble_stack_fingerprint_research.md`. The related repository retains the Matrix32 V1.3 manual.
+
+The supported command encoder sends a full 32-channel `>SC;...<` current vector and a separate `>SF;...<` global-frequency frame. There is **no established combined/atomic SC+SF command**. The Matrix32 returns generic `>OK<` indications without a command identifier. Concatenating frames into one BLE write would not establish that both were parsed or accepted, and moving SF=400 before SC=0 has physically taken effect could temporarily increase the output rate at the old current.
+
+The qualified optimized SF transport has one outstanding command and a minimum 7.5 ms ACK-to-next-write interval. Short-gap experiments found a link stall. **Decision:** retain sequential ACK-verified SC=0 then SF=400; do not introduce unqualified packet batching or drop either application ACK. Neither ACK proves electrical output is zero. A combined mode requires explicit protocol support and a separate dummy-load transition/ACK qualification before deployment.
 
 ## Tests
 

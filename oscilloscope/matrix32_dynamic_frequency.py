@@ -179,7 +179,9 @@ def plot_dynamic_tracking(path, comparison, ack_states, mapping,
            ylabel="Positive-pulse instantaneous / ACK frequency (Hz)",
            title="Dynamic Matrix32 tracking: each physical pulse interval vs latest ACK")
     ax.grid(alpha=0.2)
-    ax.legend(loc="upper right", fontsize=8, ncol=2)
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(loc="upper right", fontsize=8, ncol=2)
     fig.savefig(path, dpi=140)
     plt.close(fig)
     return str(path)
