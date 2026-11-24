@@ -121,9 +121,28 @@ def geometry(record, frame_log, pulses, *, frame_s=FRAME_S):
             row["inter_pulse_low_gap_us"] = (
                 row["rise_s"] - previous["rise_s"] -
                 previous["physical_width_us"]/1e6)*1e6
+            def nominal_phase_us(item):
+                if item["role"] == "START":
+                    return 0.
+                if item["role"] == "END":
+                    return 90000.
+                return 7000.+5000.*int(item["role"].split("_")[1])
+            expected_rise_gap = nominal_phase_us(row)-nominal_phase_us(previous)
+            row["nominal_inter_pulse_rise_gap_us"] = expected_rise_gap
+            row["inter_pulse_rise_gap_error_us"] = (
+                row["inter_pulse_rise_gap_us"]-expected_rise_gap)
+            previous_nominal_width = previous["nominal_width_us"]
+            row["nominal_low_gap_us"] = expected_rise_gap-previous_nominal_width
+            row["inter_pulse_low_gap_error_us"] = (
+                row["inter_pulse_low_gap_us"]-row["nominal_low_gap_us"])
         else:
-            row["inter_pulse_rise_gap_us"] = None
-            row["inter_pulse_low_gap_us"] = None
+            for key in (
+                "inter_pulse_rise_gap_us", "inter_pulse_low_gap_us",
+                "nominal_inter_pulse_rise_gap_us",
+                "inter_pulse_rise_gap_error_us", "nominal_low_gap_us",
+                "inter_pulse_low_gap_error_us",
+            ):
+                row[key] = None
     spacing = []
     # Build rate-corrected comparison exclusively from physically observed
     # START edges. Never reconstruct unrecorded pulses or cross scope records.
@@ -189,6 +208,12 @@ def geometry(record, frame_log, pulses, *, frame_s=FRAME_S):
         "physical_inter_pulse_low_gap_us": summarize([
             r["inter_pulse_low_gap_us"] for r in widths
             if r["inter_pulse_low_gap_us"] is not None]),
+        "physical_inter_pulse_low_gap_error_us": summarize([
+            r["inter_pulse_low_gap_error_us"] for r in widths
+            if r["inter_pulse_low_gap_error_us"] is not None]),
+        "physical_inter_pulse_rise_gap_error_us": summarize([
+            r["inter_pulse_rise_gap_error_us"] for r in widths
+            if r["inter_pulse_rise_gap_error_us"] is not None]),
         "physical_frame_spacing_error_us": summarize(
             [r["scope_vs_nominal_us"] for r in one]),
         "nano_frame_spacing_error_us": summarize(
@@ -255,6 +280,30 @@ def plot(folder, widths, frames, index):
     ax.grid(alpha=.2)
     fig.savefig(folder/"gray_width_histograms.png", dpi=145)
     plt.close(fig)
+    fig, axes = plt.subplots(2, 1, figsize=(13, 8),
+                             layout="constrained")
+    gaps = [r for r in widths
+            if r["inter_pulse_rise_gap_error_us"] is not None]
+    if gaps:
+        axes[0].scatter(
+            [r["rise_s"] for r in gaps],
+            [r["inter_pulse_rise_gap_error_us"] for r in gaps],
+            s=6, alpha=.55, label="Observed rise gap minus encoded expectation")
+        axes[1].scatter(
+            [r["rise_s"] for r in gaps],
+            [r["inter_pulse_low_gap_error_us"] for r in gaps],
+            s=6, alpha=.55, label="Observed LOW gap minus encoded expectation")
+    axes[0].set(title=f"Record {index}: rise spacing error, Gray aware",
+                ylabel="Rise-to-rise gap error (us)")
+    axes[1].set(xlabel="Scope-local time (s)",
+                ylabel="LOW gap error (us)")
+    for ax in axes:
+        ax.axhline(0, color="black", ls="--", alpha=.5)
+        ax.grid(alpha=.2)
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend(fontsize=8)
+    fig.savefig(folder/"gray_inter_pulse_gap_errors.png", dpi=145)
+    plt.close(fig)
 
 
 def run(run_dir, *, threshold=2.):
@@ -277,7 +326,10 @@ def run(run_dir, *, threshold=2.):
             "frame", "role", "group", "scope_frame_s", "rise_s",
             "rise_offset_us", "physical_width_us", "nominal_width_us",
             "width_error_us", "inter_pulse_rise_gap_us",
-            "inter_pulse_low_gap_us", "raw_bit_schedule_error_us",
+            "inter_pulse_low_gap_us",
+            "nominal_inter_pulse_rise_gap_us",
+            "inter_pulse_rise_gap_error_us", "nominal_low_gap_us",
+            "inter_pulse_low_gap_error_us", "raw_bit_schedule_error_us",
             "phase_rescaled_bit_error_us", "frame_start_to_end_scale",
         ])
         save_csv(folder/"gray_frame_spacing_physical_vs_nano.csv", spacing, [
@@ -375,6 +427,8 @@ def run(run_dir, *, threshold=2.):
             f"(record_{idx:05d}/gray_pulse_geometry.png)", "",
             f"![Measured pulse-width error histograms]"
             f"(record_{idx:05d}/gray_width_histograms.png)", "",
+            f"![Physical rise-to-rise and LOW gap timing errors]"
+            f"(record_{idx:05d}/gray_inter_pulse_gap_errors.png)", "",
         ]
     lines += [
         "## Diagnostic START/END anchored local time rescaling", "",
