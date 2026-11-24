@@ -120,7 +120,7 @@ python analyze_mcu_recording.py
 ### 5. First integrated scope recording (safe progression)
 
 **Canonical Nano firmware:** `arduino_nano/platformio.ini` now has only
-`[env:nano_every]`, which produces 10Hz TCA0 hardware-driven Gray on D7
+`[env:nano_every_10hz_hardware_timer]`, which produces 10Hz TCA0 hardware-driven Gray on D7
 with 256-entry RAM-buffered timestamps. The integrated recorder checks the
 exact firmware mode and uses BUFFER_BEGIN / BUFFER_END / BUFFER_DUMP
 around every finite scope acquisition. The 100µs Gray fit threshold remains
