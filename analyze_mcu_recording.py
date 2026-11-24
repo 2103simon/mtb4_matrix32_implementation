@@ -191,7 +191,8 @@ def _experiment_label(data):
     )
 
 
-def plot_traces(data, output, interval=None, selected_taxel=None, x_axis="mcu"):
+def plot_traces(data, output, interval=None, selected_taxel=None, x_axis="mcu",
+                scope_windows=None):
     """Three aligned panels: raw taxels, RA requested rate, SA requested rate."""
     if x_axis == "pc":
         if "taxel_pc_ns" not in data:
@@ -248,6 +249,27 @@ def plot_traces(data, output, interval=None, selected_taxel=None, x_axis="mcu"):
             ax.set_yticks([selected_taxel] if selected_taxel is not None
                           else range(CHANNEL_COUNT))
             ax.grid(True, alpha=0.25)
+
+    # Estimated scope coverage is shown only on PC arrival time. Boundaries
+    # come from an uncalibrated scope/Nano/host map, not ground truth.
+    if scope_windows:
+        if x_axis != "pc":
+            raise ValueError("Scope-window overlays require x_axis='pc'")
+        for j, (begin_ms, end_ms) in enumerate(scope_windows, start=1):
+            if not np.isfinite(begin_ms) or not np.isfinite(end_ms) or end_ms <= begin_ms:
+                raise ValueError("Invalid provisional scope window")
+            for ax in axs:
+                ax.axvline(begin_ms, color="black", ls="--", lw=1.25,
+                           label="Scope start (estimated)" if ax is axs[0] and j == 1 else None)
+                ax.axvline(end_ms, color="black", ls="--", lw=1.25,
+                           label="Scope end (estimated)" if ax is axs[0] and j == 1 else None)
+            axs[0].text((begin_ms + end_ms) / 2, 0.03 + 0.06 * ((j - 1) % 3),
+                        f"scope record {j} (provisional)", ha="center",
+                        va="bottom", transform=axs[0].get_xaxis_transform(),
+                        fontsize=8, bbox=dict(facecolor="white", alpha=0.8,
+                                              edgecolor="none"))
+        handles, labels = axs[0].get_legend_handles_labels()
+        axs[0].legend(handles, labels, ncol=4, fontsize=8, loc="upper center")
 
     axs[-1].set_xlabel("Elapsed PC arrival time (ms)" if x_axis == "pc"
                         else "Elapsed corrected MCU time (ms)")
