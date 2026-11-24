@@ -182,50 +182,24 @@ def plot_report(output, t, volts, result):
     times = t.tolist()
     values = volts.tolist()
     shown = []
-    xs, lo, hi = minmax_envelope(times, values)
-    fig, ax = plt.subplots(figsize=(14, 5))
-    ax.fill_between(xs, lo, hi, alpha=.65,
-                    label="CH1 original sample min/max envelope")
-    for key, label, marker in (
-        ("accepted_pulses", "accepted candidate", "x"),
-        ("rejected", "rejected transition", "o"),
-        ("suppressed", "suppressed crossing", "+"),
-    ):
-        group = result[key]
-        if group:
-            ax.scatter([row["time_s"] for row in group],
-                       [row["voltage_v"] for row in group],
-                       s=22 if key != "accepted_pulses" else 8,
-                       marker=marker, label=label)
-    threshold = result.get("threshold", {})
-    if "threshold_v" in threshold:
-        ax.axhline(threshold["threshold_v"], ls="--", lw=.8,
-                   label="negative detection threshold")
-    ax.set(xlabel="Scope-local time (s)", ylabel="CH1 voltage (V)",
-           title=f"Record {result['record_index']}: full pulse inventory (unreviewed)")
-    ax.grid(alpha=.2)
-    ax.legend(fontsize=8)
-    fig.tight_layout()
-    fig.savefig(figures / "waveform_full.png", dpi=160)
-    plt.close(fig)
-    shown.append("waveform_full.png")
-
-    # Identical source evidence and candidate markers, but present the
-    # nominal 20-s acquisition as four independent 5-s views. Display bins
-    # retain min/max sample extrema; this does NOT downsample analysis,
-    # move event timestamps, alter decisions, or cross scope-record gaps.
-    panel_seconds = 5.0
+    # The FIRST pulse-review figure is now a four-panel display of the
+    # original, unmodified CH1 samples and the ORIGINAL detector candidates.
+    # For each 5-s view min/max display bins preserve individual extrema;
+    # source-locked approval decisions are unaffected.
     window_start = float(t[0])
     window_end = float(t[-1])
-    n_panels = max(1, int(np.ceil((window_end-window_start)/panel_seconds)))
+    panel_seconds = 5.0
+    n_panels = max(1, int(np.ceil(
+        (window_end-window_start)/panel_seconds)))
     fig, axes = plt.subplots(
         n_panels, 1, figsize=(16, max(4, 3.7*n_panels)),
         sharey=True, layout="constrained")
     axes = np.atleast_1d(axes)
+    threshold = result.get("threshold", {})
     groups = (
-        ("accepted_pulses", "accepted candidate", "x", 10, "C1"),
-        ("rejected", "rejected transition", "o", 23, "C3"),
-        ("suppressed", "suppressed crossing", "+", 26, "C4"),
+        ("accepted_pulses", "accepted onset candidate", "x", 15, "C1"),
+        ("rejected", "rejected transition", "o", 25, "C3"),
+        ("suppressed", "suppressed crossing", "+", 30, "C4"),
     )
     for panel, ax in enumerate(axes):
         left = window_start + panel*panel_seconds
@@ -234,10 +208,11 @@ def plot_report(output, t, volts, result):
         hi_idx = int(np.searchsorted(t, right, side="right"))
         if hi_idx > lo_idx:
             px, low, high = minmax_envelope(
-                t[lo_idx:hi_idx].tolist(), volts[lo_idx:hi_idx].tolist(),
-                bins=1700)
-            ax.fill_between(px, low, high, alpha=.6,
-                            label="CH1 original min/max envelope")
+                t[lo_idx:hi_idx].tolist(),
+                volts[lo_idx:hi_idx].tolist(), bins=1700)
+            ax.fill_between(
+                px, low, high, alpha=.6,
+                label="CH1 original samples (min/max display)")
         for key, label, marker, size, color in groups:
             points = [event for event in result[key]
                       if left <= float(event["time_s"]) <
@@ -247,23 +222,22 @@ def plot_report(output, t, volts, result):
                     [event["time_s"] for event in points],
                     [event["voltage_v"] for event in points],
                     marker=marker, s=size, color=color,
-                    label=f"{label} (n={len(points)})", zorder=3)
+                    label=f"{label}: {len(points)}", zorder=3)
         if "threshold_v" in threshold:
-            ax.axhline(
-                threshold["threshold_v"], ls="--", lw=.8,
-                label="negative detection threshold")
+            ax.axhline(threshold["threshold_v"], ls="--", lw=.8,
+                       label="negative detection threshold")
         ax.set_xlim(left, left+panel_seconds)
         ax.set_ylabel("CH1 voltage (V)")
         ax.set_title(
-            f"Record {result['record_index']}: "
+            f"Record {result['record_index']}, "
             f"{left-window_start:.0f}–{left-window_start+panel_seconds:.0f} s "
-            "relative to record start")
+            "from capture start")
         ax.grid(alpha=.2)
         ax.legend(fontsize=8, loc="best")
     axes[-1].set_xlabel("Scope-local time (s)")
-    fig.savefig(figures / "waveform_four_5s_panels.png", dpi=170)
+    fig.savefig(figures / "waveform_full.png", dpi=170)
     plt.close(fig)
-    shown.append("waveform_four_5s_panels.png")
+    shown.append("waveform_full.png")
 
     # S01 original raw-sample helper: first candidate onset in detail.
     if result["accepted_pulses"]:
@@ -474,8 +448,7 @@ def report_markdown(result, output, manifest, figures, *, root=None, record=None
         "", "## 4. Diagnostic figures", "",
     ]
     for picture in figures:
-        if picture in ("waveform_full.png", "waveform_four_5s_panels.png",
-                       "waveform_event_detail.png"):
+        if picture in ("waveform_full.png", "waveform_event_detail.png"):
             lines += [f"![{picture}](figures/{picture})", ""]
     flagged = [p for p in figures if p.startswith("figures/rejected/")]
     relaxed_figures = [p for p in figures if p.startswith("flagged_accepted/")]
