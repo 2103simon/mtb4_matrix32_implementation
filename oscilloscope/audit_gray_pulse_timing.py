@@ -81,6 +81,20 @@ def geometry(record, frame_log, pulses):
             "overruns": int(nano["overruns"]),
         })
     starts.sort(key=lambda x: x["frame"])
+    # Distances between successive *actually present* HIGH pulses are
+    # content-dependent: Gray zero bits create no physical pulse.
+    widths.sort(key=lambda r: (r["frame"], r["rise_s"]))
+    for i, row in enumerate(widths):
+        previous = widths[i-1] if i and widths[i-1]["frame"] == row["frame"] else None
+        if previous:
+            row["inter_pulse_rise_gap_us"] = (
+                row["rise_s"]-previous["rise_s"])*1e6
+            row["inter_pulse_low_gap_us"] = (
+                row["rise_s"] - previous["rise_s"] -
+                previous["physical_width_us"]/1e6)*1e6
+        else:
+            row["inter_pulse_rise_gap_us"] = None
+            row["inter_pulse_low_gap_us"] = None
     spacing = []
     # Build rate-corrected comparison exclusively from physically observed
     # START edges. Never reconstruct unrecorded pulses or cross scope records.
@@ -130,6 +144,12 @@ def geometry(record, frame_log, pulses):
         "slot_rise_start_residual_us": summarize(slot_errors["START"]),
         "slot_rise_data_residual_us": summarize(slot_errors["DATA"]),
         "slot_rise_end_residual_us": summarize(slot_errors["END"]),
+        "physical_inter_pulse_rise_gap_us": summarize([
+            r["inter_pulse_rise_gap_us"] for r in widths
+            if r["inter_pulse_rise_gap_us"] is not None]),
+        "physical_inter_pulse_low_gap_us": summarize([
+            r["inter_pulse_low_gap_us"] for r in widths
+            if r["inter_pulse_low_gap_us"] is not None]),
         "physical_frame_spacing_error_us": summarize(
             [r["scope_vs_nominal_us"] for r in one]),
         "nano_frame_spacing_error_us": summarize(
@@ -214,7 +234,8 @@ def run(run_dir, *, threshold=2.):
         save_csv(folder/"gray_pulse_widths.csv", widths, [
             "frame", "role", "group", "scope_frame_s", "rise_s",
             "rise_offset_us", "physical_width_us", "nominal_width_us",
-            "width_error_us",
+            "width_error_us", "inter_pulse_rise_gap_us",
+            "inter_pulse_low_gap_us",
         ])
         save_csv(folder/"gray_frame_spacing_physical_vs_nano.csv", spacing, [
             "frame_from", "frame_to", "frame_steps", "scope_time_s",
@@ -283,8 +304,9 @@ def run(run_dir, *, threshold=2.):
         "- Stable physical spacing but varying digital EDGE_US spacing "
         "suggests variable timestamp placement or logging timing.",
         "- DATA HIGH pulses are content-dependent. The script measures "
-        "their individual 1-ms widths and rise locations relative to "
-        "expected 5-ms slots; arbitrary pulse-to-pulse gaps are not "
+        "their individual 1-ms widths, physical inter-pulse gaps (both "
+        "rise-to-rise and low-gap durations), and rise locations relative "
+        "to expected 5-ms slots; arbitrary pulse-to-pulse gaps are not "
         "expected to remain constant.",
         "- All widths depend on scope threshold crossing, sampling "
         "resolution and signal slew. A passing Gray decoder is not "
