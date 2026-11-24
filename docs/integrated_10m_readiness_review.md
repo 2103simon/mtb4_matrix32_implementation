@@ -2,6 +2,18 @@
 
 ## Decision
 
+This section records the pre-acquisition source review. A subsequently
+supplied 2026-11-24 baseline contains one 10M-sample CH1+CH2 record, observed
+`10HZ_HW_TCA_BUFFERED` INFO, 203 buffered frames with zero reported loss,
+200 matched complete scope Gray frames, and source-locked operator approval
+of 1,011 CH1 onsets. The original CH1 hash and review hashes were verified
+against that archive. This supplies the previously missing acquisition/INFO
+evidence; it does not substitute for the unresolved dependency-enabled full
+test run, compiler memory report or independent electrical checks below.
+Run-specific analysis results remain with the recording rather than this
+source-readiness document. See [approved baseline analysis](approved_baseline_analysis.md)
+for the reproducible post-acquisition workflow.
+
 The selected Nano hardware-timer implementation is retained. The code audit found
 host-side reliability and evidence-preservation defects and fixes them without
 changing the Nano waveform, timing source, fixed RAM buffer, raw recordings or

@@ -286,27 +286,29 @@ async def frequency_worker(sm, device, ready, taxel, receptor, *, arm,
                 )
                 muted_current = True
                 print("[SC ACK] SC1=0 accepted (no visible pulses in prior bench test; verify scope)")
-                if device.config["sf"] != ZERO_CURRENT_FAST_SF_HZ:
+            # A cancelled resume can change SF while current remains zero.
+            # Preserve the muted scheduler without repeating an ACKed SC0.
+            if device.config["sf"] != ZERO_CURRENT_FAST_SF_HZ:
+                if capture is not None:
+                    capture.emit("sf_requested", frequency_hz=ZERO_CURRENT_FAST_SF_HZ,
+                                 source_sample_ns=sample_ns,
+                                 zero_current_workaround=True,
+                                 fast_zero_current_scheduler=True)
+                try:
+                    sf_record = await device.apply_live_frequency(ZERO_CURRENT_FAST_SF_HZ)
+                except BaseException as exc:
                     if capture is not None:
-                        capture.emit("sf_requested", frequency_hz=ZERO_CURRENT_FAST_SF_HZ,
-                                     source_sample_ns=sample_ns,
-                                     zero_current_workaround=True,
-                                     fast_zero_current_scheduler=True)
-                    try:
-                        sf_record = await device.apply_live_frequency(ZERO_CURRENT_FAST_SF_HZ)
-                    except BaseException as exc:
-                        if capture is not None:
-                            capture.emit("sf_failed", frequency_hz=ZERO_CURRENT_FAST_SF_HZ,
-                                         error=repr(exc),
-                                         evidence=getattr(exc, "record", None))
-                        raise
-                    if capture is not None:
-                        capture.emit("sf_ack", frequency_hz=ZERO_CURRENT_FAST_SF_HZ, status=sf_record["status"],
-                                     evidence=sf_record, zero_current_workaround=True,
-                                     fast_zero_current_scheduler=True)
-                    if sf_record["status"] != "OK":
-                        raise RuntimeError("Zero-current fast SF=400 was not ACK-verified")
-                last_command = 0
+                        capture.emit("sf_failed", frequency_hz=ZERO_CURRENT_FAST_SF_HZ,
+                                     error=repr(exc),
+                                     evidence=getattr(exc, "record", None))
+                    raise
+                if capture is not None:
+                    capture.emit("sf_ack", frequency_hz=ZERO_CURRENT_FAST_SF_HZ, status=sf_record["status"],
+                                 evidence=sf_record, zero_current_workaround=True,
+                                 fast_zero_current_scheduler=True)
+                if sf_record["status"] != "OK":
+                    raise RuntimeError("Zero-current fast SF=400 was not ACK-verified")
+            last_command = 0
             continue
         if stopped:
             # The initial SF must match the first live sample, not a stale
@@ -374,8 +376,18 @@ async def frequency_worker(sm, device, ready, taxel, receptor, *, arm,
                                  restoring_current=True)
                 if record["status"] != "OK":
                     raise RuntimeError("Positive SF restore was not ACK-verified")
+            # The latest request may have returned to zero during the SF ACK.
+            fresh = sm.get_latest_rates_snapshot()
+            if fresh is None or ((time.monotonic_ns() - fresh["pc_arrival_monotonic_ns"]) / 1e9) > stale_seconds:
+                raise TimeoutError("Tactile input went stale before current restore")
+            if requested_frequency(fresh, taxel, receptor) == 0:
+                # Frames parsed from one serial batch can share an arrival
+                # timestamp. Reprocess this zero even if its timestamp matches.
+                last_sample_ns = None
+                continue  # Keep SC0; the zero path will restore muted SF400.
             await send_live_current(
-                device, original_current, capture=capture, source_sample_ns=sample_ns
+                device, original_current, capture=capture,
+                source_sample_ns=fresh["pc_arrival_monotonic_ns"]
             )
             muted_current = False
             last_command = target_hz

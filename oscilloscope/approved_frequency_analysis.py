@@ -516,8 +516,8 @@ def report_markdown(summary):
         f"{summary.get('mcu_context', {}).get('taxel_value', {}).get('max')} |",
         f"| MCU zero-request snapshots (provisional) | "
         f"{summary.get('mcu_context', {}).get('zero_requested_snapshots_provisional', 'n/a')} |",
-        f"| SF ACK events in mapped window (provisional) | "
-        f"{summary.get('mcu_context', {}).get('mapped_sf_ack_events_provisional', 'n/a')} |",
+        f"| SF ACK events represented as active output states (provisional) | "
+        f"{summary.get('mcu_context', {}).get('mapped_active_sf_ack_state_events_provisional', summary.get('mcu_context', {}).get('mapped_sf_ack_events_provisional', 'n/a'))} |",
         f"| SC=0 ACK events in mapped window (provisional) | "
         f"{summary.get('mcu_context', {}).get('mapped_sc_zero_ack_events_provisional', 'n/a')} |",
         "", "## Commanded versus measured (same trial)", "",
@@ -618,6 +618,9 @@ def analyze_approved_record(root, record, mcu, ack_states, mapping, taxel,
         mask = (pc >= h0) & (pc <= h1)
     else:
         mask = np.zeros(len(pc), dtype=bool)
+    active_sf_state_count = int(sum(
+        scope_start <= x["scope_time_s_est"] <= scope_end
+        and x.get("source") == "sf_ack" for x in states))
     summary["mcu_context"] = {
         "taxel": taxel, "encoding": encoding,
         "rate_snapshot_count_provisional": int(np.count_nonzero(mask)),
@@ -628,9 +631,11 @@ def analyze_approved_record(root, record, mcu, ack_states, mapping, taxel,
         "mapped_ack_state_events_provisional": int(sum(
             scope_start <= x["scope_time_s_est"] <= scope_end
             for x in states)),
-        "mapped_sf_ack_events_provisional": int(sum(
-            scope_start <= x["scope_time_s_est"] <= scope_end
-            and x.get("source") == "sf_ack" for x in states)),
+        "mapped_active_sf_ack_state_events_provisional": active_sf_state_count,
+        # Historical alias: this counts derived active SF states, not all
+        # raw SF acknowledgments. SF changes while muted are omitted.
+        "mapped_sf_ack_events_provisional": active_sf_state_count,
+        "sf_ack_state_events_exclude_updates_while_muted": True,
         "mapped_sc_zero_ack_events_provisional": int(sum(
             scope_start <= x["scope_time_s_est"] <= scope_end
             and x.get("source") == "sc_ack_muted" for x in states)),

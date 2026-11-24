@@ -190,6 +190,11 @@ The scope, Nano, MCU and BLE measurements have **different native time domains**
 
 ## Offline analysis: review negative onsets before frequency analysis
 
+After the source-locked review and integrated analysis below, use the
+[approved baseline analysis workflow](approved_baseline_analysis.md) for
+frequency comparisons across declared offset uncertainty and physical CH2
+Gray timing diagnostics. The saved affine map and its status remain intact.
+
 All commands in this section are offline and open no serial, BLE or scope
 hardware. Verify physical Matrix32 output is off after acquisition, preserve the
 entire run directory, and use an explicit `--run-dir`. The default latest-run
