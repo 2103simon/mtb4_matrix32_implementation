@@ -119,6 +119,22 @@ python analyze_mcu_recording.py
 
 ### 5. First integrated scope recording (safe progression)
 
+**Canonical Nano firmware:** `arduino_nano/platformio.ini` now has only
+`[env:nano_every]`, which produces 10Hz TCA0 hardware-driven Gray on D7
+with 256-entry RAM-buffered timestamps. The integrated recorder checks the
+exact firmware mode and uses BUFFER_BEGIN / BUFFER_END / BUFFER_DUMP
+around every finite scope acquisition. The 100µs Gray fit threshold remains
+a mapping diagnostic, not a rejection condition for direct approved CH1
+electrical-onset measurements.
+
+**Next experimental baseline:** one simultaneous CH1+CH2 20-second
+capture with `--count 1 --points 10000000` (10M samples **per
+channel**). Review [the safety-gated integrated procedure]
+(docs/integrated_matrix32_scope_recording.md) before enabling Matrix32.
+The following older one-million-point commands remain useful as quick
+hardware checks.
+
+
 Show the integrated plan without opening any device:
 
 ```bash
