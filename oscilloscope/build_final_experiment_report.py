@@ -5,7 +5,6 @@ source hashes. Existing pulse approval and per-ACK evidence must match too.
 """
 from __future__ import annotations
 import argparse
-from collections import Counter
 from pathlib import Path
 
 from oscilloscope.extended_analysis_common import read_context, load_json, write_json
@@ -40,7 +39,7 @@ def build_command_delivery_scorecard(events, timing, prior, robust):
             'acks_non_ok': len(acks) - ok,
             'requests_without_ack': len(requests) - len(acks),
         }
-    changes = [e.get('evidence', {}).get('same_value')
+    changes = [(e.get('evidence') or {}).get('same_value')
                for e in events if e.get('event') == 'sf_ack']
     host['sf']['confirmed_value_changes'] = (sum(value is False for value in changes)
         if all(value is not None for value in changes) else None)
