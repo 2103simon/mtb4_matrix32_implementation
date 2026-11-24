@@ -70,11 +70,17 @@ def render_four_panels(t, v, onsets, path, *, record, seconds=5.):
                 & (marker_times < right if i < 3 else marker_times <= end))
         chosen = marker_times[keep]
         if len(chosen):
-            # Vertical lines remain visible even with dense pulse activity;
-            # they mark approved electrical negative onset times.
-            ax.vlines(chosen, ymin=float(np.min(v)), ymax=float(np.max(v)),
-                      color="C3", alpha=.27, linewidth=.55,
-                      label=f"Approved negative onsets: {len(chosen)}")
+            # Put visible X markers directly on the original waveform
+            # sample nearest each approved onset. This is display-only:
+            # use the existing source-locked onset times, never redetect.
+            positions = np.searchsorted(t, chosen, side="left")
+            positions = np.clip(positions, 0, len(t)-1)
+            before = np.maximum(positions-1, 0)
+            use_before = np.abs(t[before]-chosen) < np.abs(t[positions]-chosen)
+            nearest = np.where(use_before, before, positions)
+            ax.scatter(chosen, v[nearest], marker="x", color="C3",
+                       linewidths=1.4, s=32, alpha=.9, zorder=5,
+                       label=f"Approved detected onsets: {len(chosen)}")
         ax.set(
             xlim=(left, right),
             ylabel="CH1 voltage (V)",
@@ -120,6 +126,18 @@ def run(run_dir, *, record=None):
             following = original.find("\n## ", first+len(heading))
             original = (original[:first].rstrip()+"\n"
                         + (original[following:] if following >= 0 else ""))
+        # The same image previously appeared a second time under
+        # "CH1 onset-marked traces". Remove all duplicate references,
+        # retaining only the FIRST occurrence in the diagnostic section.
+        import re
+        copies = 0
+        def keep_first_image(match):
+            nonlocal copies
+            copies += 1
+            return match.group(0) if copies == 1 else ""
+        original = re.sub(
+            r"(?m)^!\\[[^\\]\\n]*\\]\\(figures/waveform_full\\.png\\)\\s*\\n?",
+            keep_first_image, original)
         # The first plot now has four panels; make the caption accurate.
         original = original.replace(
             "![waveform_full.png](figures/waveform_full.png)",
