@@ -113,24 +113,24 @@ def run(run_dir, *, record=None):
         if not report.is_file():
             raise FileNotFoundError(f"Expected existing pulse-review report: {report}")
         section = (
-            "## Approved pulse markers: four 5-second views\\n\\n"
+            "## Approved pulse markers: four 5-second views\n\n"
             "The source-locked operator-approved negative CH1 onsets are "
             "overlaid on the unmodified CH1 waveform. Every panel covers "
             "a separate 5-second interval of this scope record; the "
             "display envelope retains source minimum and maximum values. "
-            "No pulse detection, approval, or timing data is changed.\\n\\n"
+            "No pulse detection, approval, or timing data is changed.\n\n"
             "![Approved CH1 negative-onset markers in four 5-second panels]"
-            "(figures/waveform_approved_four_5s_panels.png)\\n"
-        ).replace("\\\\n", "\\n")
+            "(figures/waveform_approved_four_5s_panels.png)\n"
+        )
         original = report.read_text(encoding="utf-8")
         heading = "## Approved pulse markers: four 5-second views"
         if heading in original:
             old_start = original.index(heading)
-            next_heading = original.find("\\n## ", old_start+len(heading))
+            next_heading = original.find("\n## ", old_start+len(heading))
             updated = (original[:old_start] + section
                        + (original[next_heading:] if next_heading >= 0 else ""))
         else:
-            updated = original.rstrip()+"\\n\\n"+section
+            updated = original.rstrip()+"\n\n"+section
         if updated != original:
             report.write_text(updated, encoding="utf-8")
         print(f"[PLOT] {path}: {len(onsets)} approved onsets; linked in {report}")
