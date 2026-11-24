@@ -149,3 +149,138 @@ What this experiment supports: confirming that a physical marker corresponds to 
 What it does **not** support: USB one-way delay calibration; proof of sub-millisecond absolute scope↔PC offset; recovery of samples missing between captures; or measurement of Matrix32 CH1 physical output (CH1 is not recorded here).
 
 Future re-examination of historical Gray trials and any revised experimental conclusions should be performed separately on an experiment branch, not folded into this current operating guide. For the existing estimator assumptions and engineering detail see [clock mapping](clock_mapping_and_time_domains.md) and [scope integration](integrated_matrix32_scope_recording.md).
+
+
+---
+
+## Controlled clock-only trial: 5 Hz with delayed serial telemetry
+
+The original 10 Hz test stays available, **unchanged**, in the PlatformIO
+`nano_every` environment. A new experimental target
+`nano_every_5hz_deferred` implements:
+
+| Setting | Original 10 Hz | Experimental 5 Hz |
+| --- | --- | --- |
+| Frame period | 100 ms | 200 ms |
+| START / DATA / END geometry | 4 / 1 / 7 ms | **unchanged** |
+| First 97 ms of frame | Encoded Gray signal | Encoded Gray signal |
+| Remaining idle | 3 ms | **103 ms** |
+| FRAME serial report | Immediately after START | **After END**, in idle |
+| Serial/SYNC servicing | Every main loop | **Idle only** |
+| Intended use | Original scope/Nano reference | **Clock-only A/B comparison** |
+
+**Hardware timer:** the ATmega4809 already contains a TCA timer with
+compare channels and four TCB timers. The Arduino core uses a hardware
+timer for `micros()`, but our D7 waveform uses repeated software
+`digitalWrite` calls controlled by `tickGenerator()`; it is NOT
+currently a dedicated timer-compare waveform. No external timer board is
+required for a future hardware-timed design. Using a timer channel for
+D7 requires checking peripheral pin routing and avoiding conflicts with
+the Arduino core's own timer resources.
+
+**Caveat:** This 5 Hz profile simultaneously changes repetition rate
+and serial scheduling. If it improves timing we will know the combined
+intervention helps, but a third experiment would be required to attribute
+the improvement to either part independently. Deferring SYNC handling
+may increase USB round-trip times and worsen Nano-to-PC offset bounds,
+even if CH2 physical pulse geometry improves.
+
+### Flash the 5 Hz test firmware
+
+Use a bench setup with Nano D7 connected only to Tektronix CH2 according
+to the verified safe grounding arrangement. Disconnect Matrix32
+stimulation outputs and electrodes completely. Do **not** run a serial
+monitor simultaneously with the recorder.
+
+```bash
+cd ~/code/mtb4_matrix32_implementation
+conda activate matrix32
+git switch feature/live-oscilloscope-recording
+git pull --ff-only
+cd arduino_nano
+
+pio run -e nano_every_5hz_deferred
+# Substitute the actual Nano Every port (check pio device list).
+pio run -e nano_every_5hz_deferred -t upload --upload-port /dev/ttyACM1
+cd ..
+```
+
+A 5 Hz firmware now reports `FRAME_US 200000` and
+`FRAME_MODE 5HZ_DEFERRED` in its `INFO` reply. The capture tool checks
+**both** values before starting the clock, and aborts rather than
+silently recording with the wrong Gray variant.
+
+### Dry run and acquire
+
+```bash
+python -m unittest discover -s tests -p 'test_gray_5hz_deferred.py' -v
+python oscilloscope/test_gray_5hz_deferred.py
+# Only if CH2 physical wiring, waveform levels and settings are verified:
+timeout --signal=INT --kill-after=20s 360s \
+  python -u oscilloscope/test_gray_5hz_deferred.py --run
+```
+
+The same wrapper produces **3 separate 20 s oscilloscope records** with
+30 binary SYNC exchanges before and after every record and 60 s gaps,
+as in the original 10 Hz epoch experiment. There is **no Matrix32
+stimulation**, CH1 measurement, or reconstruction of the unrecorded gaps.
+
+A matched, freshly collected 10 Hz control experiment is preferable
+to comparing only with historical integrated CH1/CH2 measurements:
+
+```bash
+cd arduino_nano
+pio run -e nano_every -t upload --upload-port /dev/ttyACM1
+cd ..
+timeout --signal=INT --kill-after=20s 360s \
+  python -u oscilloscope/test_gray_epoch_pause.py --run
+```
+
+**Do not overwrite or relabel historical runs.** Flash the specific
+firmware target before each experiment and save each run in a new
+timestamped folder. A firmware upload is never attempted by the Python
+recorder.
+
+### Analyze physical widths and candidate local time rescaling
+
+```bash
+BASE=data/recordings/<your_fresh_10hz_clock_only_run>
+TEST=data/recordings/<your_5hz_deferred_clock_only_run>
+
+python -m oscilloscope.audit_gray_pulse_timing --run-dir "$BASE"
+python -m oscilloscope.audit_gray_pulse_timing --run-dir "$TEST"
+python -m oscilloscope.compare_gray_schedules \
+  --baseline "$BASE" --candidate "$TEST"
+code "$TEST/analysis/gray_schedule_comparison.md"
+```
+
+The physical pulse audit extracts ALL thresholded, complete CH2 Gray
+START (4 ms), DATA HIGH (1 ms) and END (7 ms) pulses in decoded
+frames. It reports every pulse's high duration, rise-phase error, and
+within-frame rise-to-rise and low-gap spacing. Gray zero bits produce
+no HIGH pulse, so inter-pulse distances are **content dependent**.
+The audit also compares physical CH2 START-to-START spacing to digital
+`EDGE_US` spacing after compensating a constant relative clock rate.
+Unmatched/unassigned waveform pulses remain visible.
+
+The audit additionally tests a **diagnostic phase rescaling**:
+use the physical START and END rising edges (nominally separated by
+90 ms) as anchors, and predict the DATA rises that were **not** used
+to estimate the scale. Compare those bit-rise errors before and after
+the putative correction. This is a cross-check of a local Gray
+timing model, **not authorization to time-warp scope samples** or
+Matrix32 physical CH1 pulses. The scope sample times are the primary
+physical measurement. The analysis never silently forces physical
+pulses to be 4/1/7 ms wide.
+
+Outputs include `gray_pulse_geometry_report.md`,
+`gray_pulse_widths.csv`,
+`gray_frame_spacing_physical_vs_nano.csv`,
+`gray_schedule_comparison.md` and
+`gray_schedule_comparison.csv` in each recording's analysis directory
+or candidate run comparison folder.
+
+It is possible to obtain a cleaner physical 5 Hz Gray signal and yet
+a **worse host time alignment**, because deferred serial servicing
+delays SYNC replies. Evaluate the physical CH2 geometry, scope-to-Nano
+affine-fit residual, and USB offset quality **separately**.
