@@ -68,10 +68,12 @@ plots and command-line tuning flags have been removed from the integrated
 analysis path. The original CH1 waveforms and source-locked review files
 remain intact.
 
-The current 1,000,000-sample/20-second acquisition has **20 us/sample**.
-This gives ~5 samples over a 100-us phase, unlike the finer sampling
-of some reference analyses. Expect explicit short-pulse resolution and
-threshold-sensitivity warnings and inspect raw zooms.
+The canonical 10,000,000-sample/20-second baseline has nominal
+**2 us/sample**, approximately 50 samples over a 100-us phase. Historical
+1,000,000-sample/20-second acquisitions have **20 us/sample**, approximately
+5 samples per such phase. Use each original waveform's actual sample interval;
+do not resample old data to imply finer physical resolution. Inspect raw zooms
+and retain short-pulse and threshold-sensitivity warnings.
 
 ### Run the detector review (offline only)
 
@@ -96,8 +98,8 @@ Each `analysis/record_0000N/pulse_review/` contains:
 | `rejected_onsets.csv` | every rejected crossing |
 | `suppressed_onsets.csv` | every within-deadtime/too-close crossing |
 | `periods_unverified.csv` | each consecutive accepted-onset interval and its inverse period; **not confirmed frequency** |
-| `candidate_overview.png` | min/max envelope and all accepted/rejected/suppressed onset locations |
-| `raw_zoom_*.png` | full un-decimated samples near record start, middle, end and selected anomalies |
+| `figures/waveform_full.png` | four-panel waveform overview with unapproved onset candidates |
+| `figures/waveform_event_detail.png` and linked diagnostic figures | full-resolution samples and flagged crossing context |
 
 **Manual gate:** The detector never sets `complete_pulse_detection_approved`
 to true. Inspect misdetected, missing, clipped, boundary, threshold-sensitive

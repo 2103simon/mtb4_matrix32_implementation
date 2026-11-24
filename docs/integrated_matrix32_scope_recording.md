@@ -188,49 +188,109 @@ Every integrated run has its own `data/recordings/<UTC>_integrated_matrix32_scop
 
 The scope, Nano, MCU and BLE measurements have **different native time domains**. The controller remains active across recorded acquisition gaps, so physical output can occur while the scope is **not acquiring**; the Python runner cannot infer those missing pulses. Do not concatenate individual scope records or label time outside a measured 20 s window as observed output. The full MCU/Matrix32 log is preserved once, even though it starts before and may end after scope acquisition.
 
-## Offline analysis and human-readable report
+## Offline analysis: review negative onsets before frequency analysis
+
+All commands in this section are offline and open no serial, BLE or scope
+hardware. Verify physical Matrix32 output is off after acquisition, preserve the
+entire run directory, and use an explicit `--run-dir`. The default latest-run
+selector only matches `*_integrated_matrix32_scope`; a custom label such as
+`*_integrated_hw_10M_20s_baseline` must be selected explicitly.
+
+### 1. Generate the unapproved negative-onset review
+
+From the repository root, replace the directory below with the exact saved run:
 
 ```bash
-# Latest completed integrated session
-python -u oscilloscope/analyze_integrated_matrix32.py
+MTB4_RUN="data/recordings/<INTEGRATED_RUN>"
 
-# An explicitly selected experiment session
-python -u oscilloscope/analyze_integrated_matrix32.py \
-  --run-dir data/recordings/<INTEGRATED_RUN>
-
-# Focus on a taxel and waveform detail window
-python -u oscilloscope/analyze_integrated_matrix32.py \
-  --run-dir data/recordings/<INTEGRATED_RUN> \
-  --taxel 11 --zoom-start-s 5 --zoom-sec 0.2
+python -u oscilloscope/review_pulse_detection.py \
+  --run-dir "$MTB4_RUN" --record 1
 ```
 
-The offline analyzer opens **no BLE/serial/scope hardware**. Its independent per-record outputs include:
+This creates `analysis/record_00001/pulse_review/report.md`, source-locked
+candidate tables, diagnostic metrics, editable review decisions, and figures.
+The first waveform overview has four vertically stacked five-second panels.
+Markers are automated candidates until the operator approves the inventory.
+Existing review evidence is protected: do not delete it to bypass a rerun refusal.
 
-- **Direct CH1 measurements:** voltage extrema, candidate positive-phase pulses, pulse-to-pulse intervals, rate/count trends, detailed sample waveform.
-- **MCU coverage:** selected taxel and encoding; only samples whose host-arrival timestamps fall within the record's **provisionally** mapped scope interval. Missing clock fit makes cross-device overlap **unknown**, not zero.
-- **Matrix32 BLE evidence:** requested frequency, ACK-indicated SF and muted/STOP states. ACKs are **protocol events**, not electrical application timestamps.
-- **Frequency-tracking evidence:** an overview using a **1 s sliding window / 0.25 s step**, and a rapid-change test comparing each measured pulse interval with the last ACK-indicated frequency only outside excluded transition/mute/unknown periods. Dynamic compatibility uses an **8 Hz or 15% tolerance**, whichever is larger. Settled 1 s windows use a different, stricter threshold and can legitimately be unavailable while SF changes rapidly.
-- **Clock uncertainty:** per-record scope→Nano Gray frame alignment and Nano→PC four-timestamp SYNC fit, with qualification warnings and uncalibrated one-way USB offset.
+Inspect the full negative-onset inventory, rejected/suppressed crossings,
+threshold-sensitive cases, boundary pulses and raw waveform details. Record
+INCLUDE/EXCLUDE decisions in `review_decisions.csv` and any genuine missing
+negative onsets in `manual_additions.csv`; preserve the generated source tables.
+The [review workflow](analysis_review_workflow.md) explains these decisions.
 
-The **record report** explains measurements and plots for its own acquisition; the **session report** links records, sums only actually observed scope durations and pulse counts, marks acquisition gaps, and counts the continuous MCU/Matrix32 logs just once. It never infers an instantaneous pulse rate across an unobserved gap.
+### 2. Apply approval only after the operator's completed review
 
-Optional pulse detector / sliding window parameters:
+The following is a scientific signoff, not a command to run automatically after
+detection. Substitute the actual reviewer and only use the confirmation flags
+after their stated conditions have been satisfied:
 
 ```bash
-python -u oscilloscope/analyze_integrated_matrix32.py \
-  --frequency-window-s 1 --frequency-step-s 0.25 \
-  --frequency-tolerance-hz 3 --frequency-tolerance-fraction 0.05 \
-  --threshold-v 2 --deadtime-ms 1
+python oscilloscope/apply_pulse_review.py \
+  --run-dir "$MTB4_RUN" --record 1 \
+  --reviewer "ACTUAL_REVIEWER_NAME" \
+  --confirm-accepted --confirm-complete
 ```
 
-The **2 V threshold** and **1 ms deadtime** detect *candidate* positive phases, not independently validated complete biphasic cycles. A scope-local CH1 pulse rate does not require USB clock synchronization; any comparison to PC-host command timing **does** and remains provisional.
+Unresolved rejected/suppressed crossings block approval. The approval writes
+separate `approved_onsets.csv`, `approved_intervals.csv` and
+`review_approval.json`, locked to the original CH1 waveform and review files.
+
+### 3. Generate the approved overview and integrated analysis
+
+After valid approval exists:
+
+```bash
+python -m oscilloscope.plot_approved_ch1_panels \
+  --run-dir "$MTB4_RUN" --record 1
+
+python -u oscilloscope/analyze_integrated_matrix32.py \
+  --run-dir "$MTB4_RUN"
+```
+
+The integrated analyzer fails closed when approval is missing or stale. It uses
+source-locked, operator-approved **negative CH1 onsets** for pulse counts,
+within-record intervals and inverse-period frequency. The approved overview
+uses red x markers. The configured tactile taxel is selected from the recording;
+`--taxel 11` is an explicit optional override and `--show` prints figure paths.
+
+The report includes continuous tactile telemetry, requested/ACK-indicated SF,
+muted/STOP protocol states, and diagnostic comparisons where a clock map exists.
+MCU/BLE overlays remain provisional; ACKs are not electrical application
+timestamps. Missing mapping makes cross-device overlap unknown, not zero.
+Separate records retain real gaps and no physical intervals are synthesized
+across them. Positive-edge detector, sliding-window and zoom-tuning CLI options
+from the former analyzer are no longer supported.
+
+### Clock warnings do not replace the electrical review
+
+At the default 100 microsecond scope-fit threshold, a larger residual sets the
+clock record to `unqualified`. An exploratory label is only possible under an
+explicitly relaxed threshold; zero provisional/exploratory records is therefore
+expected when the strict default fails. Inspect `epoch_clock_analysis.json`
+`records[].warnings` for all reasons. Do not change thresholds simply to alter
+the label. Direct approved CH1 intervals use the common scope time axis and do
+not depend on Nano-to-PC qualification. Fitted drift in ppm describes a clock
+rate difference, not BLE latency or physical pulse jitter.
+
+To share a complete run for independent offline review, archive it after review
+generation. The archive is a sibling of the run directory, so it does not include
+itself or change original samples:
+
+```bash
+tar -czf "${MTB4_RUN}.tar.gz" "$MTB4_RUN"
+```
+
+Include the original `waveforms/`, Nano/clock metadata and logs, `mcu_matrix32/`,
+and `analysis/record_00001/pulse_review/`. A plots-only bundle cannot support
+independent verification against the original waveform samples.
 
 ## Interpretation and troubleshooting
 
 - **No Matrix32 START before arming:** check fresh nonzero selected tactile rate, MCU ACK handshake, BLE readiness, 45 s startup timeout and `matrix32_runner.log`.
 - **Flat CH1:** check the actual load/probe/attenuation/clipping, selected taxel, ACK trace and any stale-input STOP. Never infer correct electrical state from command logs alone.
 - **Gray fit >100 µs RMS:** retain real raw data and quality warnings; RMS residual is not proof of absolute offset calibration.
-- **0 comparable one-second windows:** expected for rapid SF transitions (tens of milliseconds). Use per-cycle dynamic results; absence of stable windows is **not** evidence of failed stimulation.
+- **Missing/stale onset approval:** generate and complete the source-locked review before running the integrated analyzer; preserve previous review versions.
 - **Multiple records:** analyze individually and report gaps; no artificial continuous scope stream or interpolated physical output.
 - **Further frequency-accuracy experiments:** fixed-SF plateaus for several seconds on the verified load can assess steady-state accuracy more robustly than a rapidly changing live input.
 

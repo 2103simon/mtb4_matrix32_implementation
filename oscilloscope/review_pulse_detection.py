@@ -1,9 +1,9 @@
 """Offline Matrix32 CH1 onset audit; no hardware access, no automatic validation.
 
 Uses the source-identical S02-v5 negative-onset detector from the sibling
-matrix32_nerve_stimulation repository. The current integrated analyzer's
-positive-edge detector is retained separately for comparison, NOT replaced
-until a human verifies the negative onset inventory on real waveforms.
+matrix32_nerve_stimulation repository. The integrated analyzer requires this
+source-locked negative-onset inventory to be reviewed and approved before
+physical pulse-frequency analysis; there is no automatic positive-edge fallback.
 
 Usage:
   python oscilloscope/review_pulse_detection.py --run-dir data/recordings/RUN
