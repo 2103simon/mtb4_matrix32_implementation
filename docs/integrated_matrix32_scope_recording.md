@@ -483,3 +483,41 @@ boundaries and cropped overlap are **provisional**, based on the existing
 scope/Nano/PC clock mapping (which may be unqualified), not independently
 calibrated physical onset times or proof of exact simultaneity. No raw files,
 approved onsets or synchronization fits are changed.
+
+
+### Biphasic pulse confirmation for current recordings
+
+The offline pulse-review generator still uses the original source-locked S02
+**negative-onset timestamps** as its timing reference. For *new or regenerated
+unapproved reviews*, it additionally requires a sustained positive phase in
+the following 550 us before placing a candidate into the automatic pulse and
+interval inventory. The positive voltage must exceed the robust baseline by
+at least 8 V (or the larger negative-drop/noise guard), for at least three
+consecutive CH1 samples. The short 550 us search does not associate a later
+stimulation cycle with a negative-only dip. The gate is a morphological
+confirmation, **not** a second physical onset timestamp.
+
+Negative-only crossings remain visible in `rejected_onsets.csv` with
+`REJECTED_MISSING_POSITIVE_PHASE`; they also appear in the report's
+diagnostic figures and must receive explicit human review decisions, normally
+`EXCLUDE`. Any human override is an explicit decision, never an automatic
+promotion. The downstream frequency/ACK analyses continue to use only
+source-locked, operator-approved negative timestamps.
+
+To replace an existing **unapproved and unedited** review from one record,
+without changing raw CH1 or earlier approved evidence:
+
+```bash
+MTB4_RUN="data/recordings/20261124T114542660847Z_integrated_hw_10M_20s_resume_check"
+python -u oscilloscope/review_pulse_detection.py \
+  --run-dir "$MTB4_RUN" --record 1 --overwrite-unapproved
+```
+
+The old review directory is renamed
+`pulse_review_unapproved_backup_<UTC timestamp>` before a new
+`pulse_review/report.md` is generated. If approval files, edited decisions,
+manual additions, or ambiguous partial review evidence already exist, the
+script refuses to replace them. The earlier, separately approved baseline
+is deliberately unchanged. Use the existing operator approval procedure after
+inspecting the new report. No firmware upload or new scope acquisition is
+needed.
