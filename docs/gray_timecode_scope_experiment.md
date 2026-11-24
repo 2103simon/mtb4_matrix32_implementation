@@ -392,3 +392,109 @@ relative timing map is not established unless the actual fits qualify.
   scope window.
 - A firmware upload or runtime failure is not a medical-device
   safety interlock. The experiment is strictly Nano/scope-only.
+
+
+---
+
+## New hardware-driven TCA0 Gray baseline (experimental)
+
+**Single-click VS Code target.** The Nano Every `arduino_nano/platformio.ini`
+now sets `[platformio] default_envs = nano_every_10hz_hardware_timer`.
+After pulling this branch, **VS Code PlatformIO → Upload** builds and
+uploads **only this profile**, not every previous environment.
+Other four sources/build profiles are preserved, and explicit
+**Project Tasks → arduino_nano → nano_every_10hz_buffered → Upload**
+restores the proven software-timed baseline without editing source.
+
+**What is genuinely hardware timed:** Nano Every D7 corresponds to
+ATmega4809 PA1. By routing **TCA0-WO1 to PORTA**, the TCA0 single-slope
+PWM hardware drives the HIGH/LOW output. The CPU never calls
+`digitalWrite(D7)` to time transitions during this profile. A TCA0
+overflow interrupt prepares the **next** millisecond's double-buffered
+duty value. All physical transitions then occur at timer-period
+boundaries even if the CPU services interrupts late (unless it misses
+the full 1ms look-ahead deadline; diagnostic overrun increments).
+
+**Clock detail (critical):** PlatformIO's `nano_every` board build
+defaults to **16 MHz**, not 20 MHz. We preserve the Arduino core's
+existing TCA prescaler **÷64**, so TCA receives exactly **250,000
+ticks/s**. Each PWM cell is precisely **250 ticks = 1ms**, giving
+100 cells per 100ms Gray frame. With an explicitly configured 20MHz
+Nano clock, the software alternates 312/313 timer ticks per cell to
+preserve the exact aggregate 2ms period. No changes to the normal
+PlatformIO board clock are needed or recommended.
+
+**What remains software timestamped:** A `TCA0_OVF_vect` ISR calls
+`micros()` shortly **after** hardware raises START on D7, then stores
+the returned `EDGE_US` together with the frame counter and diagnostic
+overrun count. This is NOT a true input-captured electrical edge time.
+The physical waveform is hardware-timed, but ISR-entry latency can
+remain visible in Nano↔scope comparisons. We do **not** claim to have
+implemented fully hardware-latched timestamps. If the electrical pulse
+geometry improves but edge fits remain poor, hardware timestamp
+capture is the next distinct engineering task.
+
+The code preserves the original **4ms START, 3ms low guard,
+16×5ms bit slots with 1ms HIGH for one, 3ms guard, 7ms END,
+3ms idle** frame layout. Only D7 and the Nano's timer resources
+are used. Arduino's TCA PWM outputs/analogWrite are not available
+simultaneously; no other TCA output is used in this sketch.
+The Arduino core's `micros()` timebase uses a separate TCB peripheral;
+the TCA prescaler is not changed, because its divided clock is also
+routed to core TCB peripheral clocks.
+
+**RAM buffer:** Identical `BUFFER_BEGIN` / `BUFFER_END` /
+`BUFFER_DUMP` protocol, fixed 256-frame capacity, 12 bytes per frame,
+zero per-frame USB transmission during each 20s acquisition. The host
+checks `FRAME_MODE 10HZ_HW_TCA_BUFFERED` to prevent accidentally
+recording with an older 10Hz software profile. NO Matrix32 commands,
+Feather interaction or CH1 recording occur.
+
+### Build/flash with a single VS Code click
+
+1. Pull `feature/live-oscilloscope-recording` into VS Code.
+2. Open `arduino_nano/platformio.ini` and verify the **one**
+   default environment is `nano_every_10hz_hardware_timer`.
+3. Close the serial monitor; connect the Nano USB cable.
+4. Click **PlatformIO Upload** once in the bottom VS Code toolbar.
+   This uploads only `nano_every_10hz_hardware_timer`.
+5. Read the **Build/Upload** log and confirm that compilation and
+   flashing succeeded. The firmware has not been physically tested
+   at development time.
+
+### Scope-only test after successful upload
+
+With Nano D7 on scope CH2, an independently verified safe low-voltage
+ground connection, and **Matrix32 disconnected**:
+
+```bash
+python -m unittest discover -s tests -p 'test_gray_hardware_timer.py' -v
+python oscilloscope/test_gray_10hz_hardware_timer.py
+# Confirm dry-run says expected_frame_mode 10HZ_HW_TCA_BUFFERED.
+timeout --signal=INT --kill-after=20s 360s \
+  python -u oscilloscope/test_gray_10hz_hardware_timer.py --run
+```
+
+The recorder uses exactly three 20s CH2 captures, each with 30
+pre-arm and 30 post-arm binary sync exchanges and a 60s gap between.
+Output directories end in `gray_10hz_hardware_timer_epoch_20s`.
+
+Afterward, run physical timing analysis:
+
+```bash
+RUN=data/recordings/<your_10hz_hardware_timer_epoch_run>
+python -m oscilloscope.audit_gray_pulse_timing --run-dir "$RUN"
+```
+
+Compare with the previous successful `gray_10hz_buffered_epoch_20s`
+run using the **same 10Hz rate, buffer protocol, and scope settings**.
+Evaluate START/DATA/END physical width and frame-spacing variation,
+Nano-vs-CH2 residuals, and Nano-to-PC fit separately. The original
+scope/Nano 100us RMS criterion remains unchanged. No raw CH1 waveform,
+operator approval or existing clock-alignment file is modified.
+
+**Safety and resource note:** This profile repurposes Arduino's TCA0
+hardware and introduces a 1kHz overflow ISR. A bench oscilloscope-only
+validation is mandatory before using the reference in integrated
+sessions. If the firmware unexpectedly stalls, restore the previous
+`nano_every_10hz_buffered` profile through its explicit Project Task.
