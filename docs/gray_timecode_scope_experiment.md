@@ -2,7 +2,7 @@
 
 > **Historical timing-study notebook, not a list of current flashable
 > Nano builds.** The canonical firmware is now the single
-> `arduino_nano/platformio.ini` environment `nano_every`, with
+> `arduino_nano/platformio.ini` environment `nano_every_10hz_hardware_timer`, with
 > TCA0-driven 10Hz Gray D7 output and buffered frame timestamps.
 > Older build names below are preserved solely to interpret archived
 > experimental measurements; their firmware profiles were removed from
