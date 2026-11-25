@@ -207,7 +207,7 @@ class SeparateRecordingAndReportsTests(unittest.TestCase):
                            for p in published.rglob('*') if p.is_file())
             with patch('experiment_analysis.audit_layout.REPO_ROOT', self.home), \
                  patch('experiment_analysis.audit_layout.subprocess.run',
-                       return_value=SimpleNamespace(stdout='\\n'.join(files))):
+                       return_value=SimpleNamespace(stdout='\n'.join(files))):
                 pending = audit(self.raw)
                 self.assertEqual(pending['status'], 'FAIL')
                 self.assertTrue(pending['raw_recording_has_analysis_dir'])
