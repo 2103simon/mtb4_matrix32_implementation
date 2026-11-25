@@ -146,13 +146,8 @@ def verify_migration(run_dir, *, results_root=None):
         if '/pulse_review/' not in '/' + rel:
             continue
         filename = Path(rel).name
-        if filename not in (
-            'review_approval.json', 'review_manifest.json',
-            'review_decisions.csv', 'manual_additions.csv',
-            'approved_onsets.csv', 'approved_intervals.csv',
-            'accepted_onsets.csv', 'rejected_onsets.csv',
-            'suppressed_onsets.csv', 'candidate_intervals.csv',
-        ):
+        if not (filename.endswith('.csv') or
+                filename in ('review_approval.json', 'review_manifest.json')):
             continue
         target = dest / 'analysis' / rel
         _verify_file_copy(None, target, expected)
