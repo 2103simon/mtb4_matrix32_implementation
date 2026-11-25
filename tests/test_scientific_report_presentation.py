@@ -97,7 +97,8 @@ class ScientificReportPresentationTests(unittest.TestCase):
                 p.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source/rel,p)
             original = (a/'final_experiment_report_legacy.md').read_bytes()
-            (a/'final_experiment_report.md').write_bytes(original)
+            (a/'final_experiment_report.md').write_bytes(
+                original + b'\n<!-- regenerated technical index; preserve existing legacy -->\n')
             copy_hash = hashlib.sha256((a/'frequency_robustness_all_intervals.csv').read_bytes()).hexdigest()
             result = present(a)
             self.assertEqual(result['figure_count'], 6)
