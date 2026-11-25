@@ -138,6 +138,25 @@ class SeparateRecordingAndReportsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'migrate'):
             register(self.raw, results_root=self.resultroot)
 
+    def test_registered_results_cannot_masquerade_as_signed_migration(self):
+        # A pre-created results directory may have a registration manifest
+        # but lack the signed review copied from raw/analysis.
+        legacy = self.raw / 'analysis'
+        holding = self.home / 'held_analysis'
+        legacy.rename(holding)
+        try:
+            register(self.raw, results_root=self.resultroot)
+        finally:
+            holding.rename(legacy)
+        with self.assertRaisesRegex(ValueError, 'not a completed'):
+            verify_migration(self.raw, results_root=self.resultroot)
+        with self.assertRaisesRegex(ValueError, 'has not been migrated'):
+            register(self.raw, results_root=self.resultroot)
+        with use_results_root(self.resultroot):
+            with self.assertRaisesRegex(ValueError, 'does not record a completed'):
+                analysis_root(self.raw)
+        self.assertTrue((legacy / 'pulse_review/review_approval.json').exists())
+
     def test_legacy_science_module_imports_alias_canonical_modules(self):
         import importlib
         for name in ('analyze_command_timing', 'analyze_frequency_transitions',
