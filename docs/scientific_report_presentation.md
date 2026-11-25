@@ -20,9 +20,12 @@ python -u -m oscilloscope.run_extended_analysis --run-dir "$MTB4_RUN"
 python -u -m oscilloscope.build_final_experiment_report --run-dir "$MTB4_RUN"
 ```
 
-The consolidated builder first performs its existing source-hash, approval,
-per-ACK count, and clock-provenance checks, then writes the technical report to
-`final_experiment_report_legacy.md`, and finally writes the new scientific
+The consolidated builder first verifies signed source evidence and
+compatibility across analyses. If the pre-revision `final_experiment_report.md`
+exists, it is copied **byte-for-byte** into
+`final_experiment_report_legacy.md` on the first rebuild and is never
+overwritten thereafter. If the prior report is absent, the builder generates
+its old technical index before archiving it. It then writes the new scientific
 report to `final_experiment_report.md`. It creates three presentation-only
 figures under `analysis/presentation_figures/`, while reusing exactly three
 figures from the approved detailed analyses. Supporting CSV and detailed
