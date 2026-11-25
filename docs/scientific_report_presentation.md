@@ -1,6 +1,6 @@
 # Matrix32 scientific report (authoritative presentation)
 
-The single main entry point is `analysis/final_experiment_report.md`.
+The main generated report is `results/<RUN_ID>/analysis/final_experiment_report.md`.
 It is intentionally concise (~six figures) and emphasizes the executive
 research-question scorecard, measurement windows, physical frequency accuracy,
 rapid-transition timing sensitivity, protocol cadence, current-off diagnostics,
@@ -8,7 +8,9 @@ and evidence limitations. The full earlier technical consolidation is preserved 
 `analysis/extended_analysis_technical_report.md`; the historical
 `analysis/final_integrated_report.md` remains untouched if present.
 
-Read [the separation/migration guide](recording_results_separation.md) first. After migration the reports live in `results/<RUN_ID>/analysis/`, not the raw recording folder. For versioned reference copies, publish them to Git via `experiment_analysis.publish_reports`.\n\n## Rebuild from the signed recording
+Read [the separation/migration guide](recording_results_separation.md) first. After migration the reports live in `results/<RUN_ID>/analysis/`, not the raw recording folder. For versioned reference copies, publish them to Git via `experiment_analysis.publish_reports`.
+
+## Rebuild from the signed recording
 
 ```bash
 MTB4_RUN="data/recordings/20261124T114542660847Z_integrated_hw_10M_20s_resume_check"
