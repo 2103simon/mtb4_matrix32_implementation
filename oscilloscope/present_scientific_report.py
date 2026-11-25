@@ -11,6 +11,32 @@ import csv
 import json
 from pathlib import Path
 
+TECHNICAL_REPORT_FILENAME = 'extended_analysis_technical_report.md'
+OLD_ARCHIVE_FILENAME = 'final_experiment_report_legacy.md'
+
+
+def migrate_archived_technical_report(analysis_dir):
+    """Safely rename a prior technical report without changing its bytes.
+
+    If both names exist, remove the obsolete duplicate only when identical.
+    Conflicting archives are left untouched and reported as an error.
+    """
+    analysis = Path(analysis_dir).expanduser().resolve()
+    previous = analysis / OLD_ARCHIVE_FILENAME
+    technical = analysis / TECHNICAL_REPORT_FILENAME
+    if previous.is_file():
+        if technical.exists():
+            if not technical.is_file() or previous.read_bytes() != technical.read_bytes():
+                raise FileExistsError(
+                    f'Conflicting archived reports: {previous} and {technical}; '
+                    'resolve manually to avoid losing historical evidence'
+                )
+            previous.unlink()
+        else:
+            previous.rename(technical)
+    return technical
+
+
 
 def _read(path):
     path = Path(path)
@@ -136,8 +162,9 @@ def _check_figures(analysis, markdown):
 
 
 def present(analysis_dir):
-    """Preserve the just-built legacy report, then write the new main report."""
+    """Preserve the original technical consolidation, then write the main report."""
     analysis = Path(analysis_dir).expanduser().resolve()
+    migrate_archived_technical_report(analysis)
     old_path = analysis / 'final_experiment_report.md'
     if not old_path.is_file():
         raise FileNotFoundError('First generate the validated legacy report using build_final_experiment_report')
@@ -397,7 +424,7 @@ def present(analysis_dir):
         '| [Frequency transitions](frequency_transitions/report.md) | Full interval classifications and offset sensitivity |',
         '| [Shutdown and restart](stimulation_shutdown/report.md) | All signed negative-only source events |',
         '| [Command timing](command_timing/report.md) | Cadence distributions, active/muted comparisons and BLE timing |',
-        '| [Legacy consolidated report](final_experiment_report_legacy.md) | Previous 12-figure technical index, retained in full |',
+        '| [Legacy consolidated report](extended_analysis_technical_report.md) | Previous 12-figure technical index, retained in full |',
         '',
         'The experiment used one 20-second scope record and a longer continuous host/controller log; '
         'a Nano Gray-timecode mapping was analyzed but **not qualified**. '
@@ -419,8 +446,8 @@ def present(analysis_dir):
         lines[idx:idx] = [note, '']
     text = '\n'.join(lines)
     figures = _check_figures(analysis, text)
-    legacy = analysis / 'final_experiment_report_legacy.md'
-    temp_legacy = analysis / 'final_experiment_report_legacy.md.tmp'
+    legacy = analysis / TECHNICAL_REPORT_FILENAME
+    temp_legacy = analysis / (TECHNICAL_REPORT_FILENAME + '.tmp')
     temp_report = analysis / 'final_experiment_report.md.tmp'
     temp_report.write_text(text, encoding='utf-8')
     # Keep the first archived technical report immutable on subsequent rebuilds.
@@ -433,12 +460,12 @@ def present(analysis_dir):
         index.write_text(
             '# Matrix32 analysis report entry points\n\n'
             '**Authoritative:** [Scientific experiment report](final_experiment_report.md)\n\n'
-            '**Legacy technical index:** [Previous consolidated report](final_experiment_report_legacy.md)\n\n'
+            '**Detailed technical analysis:** [Full original technical consolidation](extended_analysis_technical_report.md)\n\n'
             'The older `final_integrated_report.md`, if present, remains an historical index. '
             'All detailed analyses and source-locked approvals remain under their existing paths.\n',
             encoding='utf-8')
     return {'primary_report': 'final_experiment_report.md',
-            'legacy_report': 'final_experiment_report_legacy.md',
+            'technical_report': TECHNICAL_REPORT_FILENAME,
             'primary_figures': figures, 'figure_count': len(figures),
             'presentation_schema': 'matrix32_scientific_report_v1',
             'controller_settings_sha256_if_available': settings_sha256}
