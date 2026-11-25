@@ -74,7 +74,7 @@ and **proved unexecuted** as **not determinable**. A BLE OK indicates protocol
 acknowledgment only, an electrical period matching one ACK is not unique proof
 of its execution, and the host–scope time offset remains unqualified.
 
-Additional outputs under the recording's `analysis/` folder:
+Additional outputs under `results/<RUN_ID>/analysis/`:
 `command_delivery_scorecard.json` and `command_delivery_scorecard.png`.
 These outputs never modify source waveforms, clock fits, operator decisions,
 or existing signed approvals.

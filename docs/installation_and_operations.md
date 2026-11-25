@@ -151,7 +151,7 @@ python -u oscilloscope/analyze_integrated_matrix32.py \
   --run-dir data/recordings/<INTEGRATED_RUN>
 ```
 
-Raw CSV, Nano USB JSONL and BLE JSONL files are preserved under each run. Derived plots and Markdown/JSON reports live in `<run>/analysis/`. The session report links to **independent per-scope-record** reports, not one artificial continuous waveform.
+Raw CSV, Nano USB JSONL and BLE JSONL files are preserved under each run. Signed reviews and derived plots and Markdown/JSON reports live in `results/<RUN_ID>/analysis/`. Curated publications and their embedded figures live in Git-tracked `reports/<RUN_ID>/<TAG>/`. The session report links to **independent per-scope-record** reports, not one artificial continuous waveform.
 
 ## 8. Failure cases
 
