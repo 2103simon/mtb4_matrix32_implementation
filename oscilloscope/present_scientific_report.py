@@ -1,7 +1,7 @@
 """Present verified Matrix32 audit summaries as one scientific results report.
 
 This is a presentation-only layer. The existing final-report builder first
-validates source hashes, signs no reviews, and produces the legacy report.
+validates source hashes, signs no reviews, and produces the technical report.
 This module does not detect pulses, alter source evidence, or qualify clocks.
 """
 from __future__ import annotations
@@ -167,12 +167,12 @@ def present(analysis_dir):
     migrate_archived_technical_report(analysis)
     old_path = analysis / 'final_experiment_report.md'
     if not old_path.is_file():
-        raise FileNotFoundError('First generate the validated legacy report using build_final_experiment_report')
-    current_legacy = old_path.read_bytes()
-    if (not current_legacy.startswith(b'# Matrix32') or
-            not any(section in current_legacy for section in
+        raise FileNotFoundError('First generate the validated technical report using build_final_experiment_report')
+    current_technical = old_path.read_bytes()
+    if (not current_technical.startswith(b'# Matrix32') or
+            not any(section in current_technical for section in
                     (b'## Requested ', b'## Main measurements'))):
-        raise ValueError('Refusing to replace the legacy report with the presentation report')
+        raise ValueError('Refusing to replace the technical report with the presentation report')
 
     root = analysis.parent
     metadata = _read(root/'metadata.json')
@@ -446,14 +446,14 @@ def present(analysis_dir):
         lines[idx:idx] = [note, '']
     text = '\n'.join(lines)
     figures = _check_figures(analysis, text)
-    legacy = analysis / TECHNICAL_REPORT_FILENAME
-    temp_legacy = analysis / (TECHNICAL_REPORT_FILENAME + '.tmp')
+    technical_archive = analysis / TECHNICAL_REPORT_FILENAME
+    temp_technical = analysis / (TECHNICAL_REPORT_FILENAME + '.tmp')
     temp_report = analysis / 'final_experiment_report.md.tmp'
     temp_report.write_text(text, encoding='utf-8')
     # Keep the first archived technical report immutable on subsequent rebuilds.
-    if not legacy.is_file():
-        temp_legacy.write_bytes(current_legacy)
-        temp_legacy.replace(legacy)
+    if not technical_archive.is_file():
+        temp_technical.write_bytes(current_technical)
+        temp_technical.replace(technical_archive)
     temp_report.replace(old_path)
     index = analysis / 'README.md'
     if not index.exists() or index.read_text(encoding='utf-8').startswith('# Matrix32 analysis report entry points'):
