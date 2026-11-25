@@ -45,8 +45,8 @@ class ReviewEvidencePreservationTests(unittest.TestCase):
                      "approved_intervals.csv"):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp) / "raw"
-            root.mkdir()
-            (root / "metadata.json").write_text('{"status": "complete", "records": []}')
+                root.mkdir()
+                (root / "metadata.json").write_text('{"status": "complete", "records": []}')
                 output = Path(tmp) / "results" / "raw" / "analysis/record_00001/pulse_review"
                 output.mkdir(parents=True)
                 file = output / name
