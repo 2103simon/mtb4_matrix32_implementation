@@ -1,6 +1,6 @@
 """Offline report-presentation tests; source-locked evidence never changes."""
 from __future__ import annotations
-from experiment_analysis.paths import analysis_root
+from experiment_analysis.paths import analysis_root, use_results_root
 
 import csv
 import hashlib
@@ -13,7 +13,7 @@ import tempfile
 import unittest
 
 from oscilloscope.present_scientific_report import (
-    _check_figures, _frequency_pairs, _image, present,
+    _check_figures, _frequency_pairs, _image, present, _recording_root,
     migrate_archived_technical_report, TECHNICAL_REPORT_FILENAME, OLD_ARCHIVE_FILENAME,
 )
 
@@ -97,6 +97,25 @@ class ScientificReportPresentationTests(unittest.TestCase):
             self.assertEqual(old.read_bytes(), b'different original')
             self.assertEqual(new.read_bytes(), b'same technical archive')
 
+    def test_separated_report_uses_original_recording_root(self):
+        """No metadata or controller settings should be copied into results/."""
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            raw = base / 'data' / 'recordings' / 'run_1'
+            raw.mkdir(parents=True)
+            (raw / 'metadata.json').write_text('{"status":"complete"}')
+            result_root = base / 'results'
+            analysis = result_root / 'run_1' / 'analysis'
+            analysis.mkdir(parents=True)
+            with use_results_root(result_root):
+                self.assertEqual(_recording_root(analysis, recording_dir=raw), raw)
+                with self.assertRaisesRegex(FileNotFoundError, 'recording are separate'):
+                    _recording_root(analysis)
+                different = result_root / 'wrong_run' / 'analysis'
+                with self.assertRaisesRegex(ValueError, 'not the registered results'):
+                    _recording_root(different, recording_dir=raw)
+            self.assertFalse((analysis.parent / 'metadata.json').exists())
+
     def test_signed_recording_report_and_legacy(self):
         sample = os.environ.get('MTB4_SCI_REPORT_RUN')
         if not sample:
@@ -123,8 +142,10 @@ class ScientificReportPresentationTests(unittest.TestCase):
             self.skipTest('Sample must contain completed extended/per-ACK audit outputs')
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp)
-            shutil.copy2(root/'metadata.json',dest/'metadata.json')
-            a = dest/'analysis'
+            raw = dest/'data'/'recordings'/root.name
+            raw.mkdir(parents=True)
+            shutil.copy2(root/'metadata.json',raw/'metadata.json')
+            a = dest/'results'/root.name/'analysis'
             for rel in required:
                 p = a/rel
                 p.parent.mkdir(parents=True, exist_ok=True)
@@ -133,7 +154,8 @@ class ScientificReportPresentationTests(unittest.TestCase):
             (a/'final_experiment_report.md').write_bytes(
                 original + b'\n<!-- regenerated technical index; preserve existing legacy -->\n')
             copy_hash = hashlib.sha256((a/'frequency_robustness_all_intervals.csv').read_bytes()).hexdigest()
-            result = present(a)
+            with use_results_root(dest/'results'):
+                result = present(a, recording_dir=raw)
             self.assertEqual(result['figure_count'], 6)
             text = (a/'final_experiment_report.md').read_text()
             self.assertEqual(len(re.findall(r'\*Figure \d+ -', text)),6)
