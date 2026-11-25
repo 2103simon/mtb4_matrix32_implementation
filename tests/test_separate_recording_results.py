@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from experiment_analysis.paths import analysis_root, results_dir, use_results_root, sha256
-from experiment_analysis.migrate_layout import migrate, inventory
+from experiment_analysis.migrate_layout import migrate, inventory, verify_migration
 from experiment_analysis.publish_reports import publish, _safe_relative
 
 
@@ -54,8 +54,17 @@ class SeparateRecordingAndReportsTests(unittest.TestCase):
         target = self.resultroot/'sample_run'
         self.assertEqual(result['status'], 'VERIFIED_COPY')
         self.assertEqual(inventory(target/'analysis'), source)
+        self.assertEqual(verify_migration(self.raw, results_root=self.resultroot)['status'], 'VERIFIED')
         self.assertEqual(sha256(self.raw/'waveforms/ch1.csv'), raw_hash)
         self.assertTrue((self.raw/'analysis/pulse_review/review_approval.json').exists())
+        (target/'analysis/pulse_review/review_decisions.csv').write_text('tamper')
+        # A newly added CSV does not rewrite historical hashes, but a signed
+        # source file must never change unnoticed.
+        (target/'analysis/pulse_review/review_approval.json').write_text('tamper')
+        with self.assertRaisesRegex(ValueError, 'hash mismatch|size mismatch'):
+            verify_migration(self.raw, results_root=self.resultroot)
+        (target/'analysis/pulse_review/review_approval.json').write_bytes(
+            (self.raw/'analysis/pulse_review/review_approval.json').read_bytes())
         with use_results_root(self.resultroot):
             self.assertEqual(analysis_root(self.raw), target/'analysis')
         manifest = json.loads((target/'recording_manifest.json').read_text())
