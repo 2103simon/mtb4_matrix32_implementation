@@ -156,12 +156,12 @@ def build(run_dir):
     # replaces its old path with the new authoritative scientific report.
     # This preserves the user's original technical index byte-for-byte.
     old_report=analysis/'final_experiment_report.md'
-    original_legacy=analysis/TECHNICAL_REPORT_FILENAME
-    if old_report.is_file() and not original_legacy.exists():
+    technical_archive=analysis/TECHNICAL_REPORT_FILENAME
+    if old_report.is_file() and not technical_archive.exists():
         prior_text=old_report.read_text(encoding='utf-8')
         if ('## Requested ' in prior_text or
                 '## Main measurements' in prior_text):
-            original_legacy.write_bytes(old_report.read_bytes())
+            technical_archive.write_bytes(old_report.read_bytes())
     summaries={}
     for name,title in REQUIRED:
         folder=analysis/name
