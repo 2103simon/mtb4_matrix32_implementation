@@ -252,31 +252,31 @@ before removing any old files; publication never copies raw waveforms into Git.
 ### Output and provenance
 
 ```text
-data/
-  recordings/
-    <UTC>_integrated_matrix32_scope/
-      metadata.json                  # acquisition sequence, channel settings
-      nano_serial.jsonl              # FRAME stream + CRC32 SYNC exchanges
-      gray_alignment.json            # scope↔Nano per-record fit
-      epoch_clock_analysis.json      # Nano↔PC per-record local fits
-      matrix32_runner.log
-      waveforms/
-        record_00001_ch1.csv         # physical CH1 samples
-        record_00001_ch2.csv         # Nano D7 marker samples
-      mcu_matrix32/
-        *_tactile_rates.csv          # MCU snapshots / requested RA+SA rates
-        *_matrix32_commands.jsonl    # requested and ACKed BLE commands
-        *_settings.json              # frozen configuration
-      analysis/
-        integrated_report.md         # whole-session report
-        integrated_summary.json
-        mcu_full_stream.png          # entire MCU stream, independent time axis
-        record_00001/
-          report.md                  # this scope record only
-          summary.json
-          *.png                      # pulse, frequency and overlay figures
-```
+data/recordings/<RUN_ID>/                # original acquisition evidence
+    metadata.json
+    nano_serial.jsonl
+    gray_alignment.json
+    epoch_clock_analysis.json           # capture-time clock mapping evidence
+    waveforms/record_00001_ch1.csv      # original physical output
+    waveforms/record_00001_ch2.csv      # original Nano Gray marker
+    mcu_matrix32/                       # unmodified MCU/BLE/settings logs
 
+results/<RUN_ID>/                       # ignored, independent of raw
+    recording_manifest.json             # signed source hash inventory
+    analysis/
+        record_00001/pulse_review/       # signed source-locked review
+        command_timing/                 # derived statistics and plots
+        frequency_transitions/
+        stimulation_shutdown/
+        final_experiment_report.md
+        extended_analysis_technical_report.md
+
+reports/<RUN_ID>/<TAG>/                  # committed to Git
+    final_experiment_report.md
+    extended_analysis_technical_report.md
+    publication_manifest.json
+    ... embedded report figures ...
+```
 **Important time-domain rule:** each scope acquisition has its **own** sample time axis and Nano/PC fit. Continuous MCU/BLE logs start earlier and may extend beyond scope capture. The analysis associates only the provisionally mapped portion of those logs with each scope record; it **does not concatenate scope captures, fill pauses, or infer unobserved pulses across gaps**.
 
 Analyze the latest *completed integrated* session:
@@ -332,14 +332,16 @@ Read the fully worked [clock-mapping and uncertainty guide](docs/clock_mapping_a
 | [`arduino_nano/`](arduino_nano/README.md) | Nano Every D7 framed Gray counter and text/binary clock SYNC firmware |
 | [`communication/`](docs/pipeline_and_components.md) | Serial parser, USB device discovery, MCU config handshake, MCU drift/compensation, Nano sync |
 | [`matrix32/`](docs/pipeline_and_components.md) | BLE link/device API, configuration, ACK checking, timing marker |
-| [`oscilloscope/`](oscilloscope/README.md) | Tektronix USBTMC, finite capture, Gray decoding, local alignment, integrated recordings and analysis |
+| [`oscilloscope/`](oscilloscope/README.md) | Scope acquisition, hardware drivers, Gray decoding and scope-specific review |
 | [`recording/`](docs/pipeline_and_components.md) | Timestamped MCU CSV/manifest recording and Matrix32 command JSONL |
 | [`processing/`](docs/pipeline_and_components.md) | Taxel/event processing and lightweight host analysis helpers |
 | [`nerve_stimulation/`](docs/pipeline_and_components.md) | Optional interactive/debug Matrix32 controllers and BLE stress tests |
 | [`config/`](config/config.json) | Runtime experiment and output configuration |
 | [`tests/`](tests/) | Host-side deterministic regression tests; no substitute for live bench validation |
 | [`docs/`](docs/) | Experiment procedures, timing evidence, firmware, serial discovery, design notes |
-| [`analysis/`](analysis/) | Committed standalone MCU analysis plots; new integrated reports are under each run's `analysis/` |
+| [`experiment_analysis/`](experiment_analysis/README.md) | Cross-device signed scientific audits, migration, report generation and publication |
+| `results/` (Git-ignored) | Working analyses and signed approvals, outside raw recordings |
+| [`reports/`](reports/README.md) | Git-versioned scientific publications and archived historical MCU plots |
 
 ### Experimental pulse-detection audit
 
