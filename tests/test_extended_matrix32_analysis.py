@@ -1,5 +1,6 @@
 """Hardware-free invariants and optional signed-recording regression."""
 from pathlib import Path
+from experiment_analysis.paths import analysis_root
 import csv
 import json
 import os
@@ -219,7 +220,7 @@ class ExtendedAnalysisTests(unittest.TestCase):
         manifest=run_all(run_dir)
         self.assertEqual(approval.read_bytes(),previous)
         self.assertEqual(manifest['approved_onsets'],418)
-        root=run_dir/'analysis'
+        root=analysis_root(run_dir)
         trans=json.loads((root/'frequency_transitions/summary.json').read_text())
         shut=json.loads((root/'stimulation_shutdown/summary.json').read_text())
         timing=json.loads((root/'command_timing/summary.json').read_text())

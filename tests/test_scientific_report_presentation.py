@@ -1,5 +1,6 @@
 """Offline report-presentation tests; source-locked evidence never changes."""
 from __future__ import annotations
+from experiment_analysis.paths import analysis_root
 
 import csv
 import hashlib
@@ -101,7 +102,7 @@ class ScientificReportPresentationTests(unittest.TestCase):
         if not sample:
             self.skipTest('Set MTB4_SCI_REPORT_RUN to run source-locked recording regression')
         root = Path(sample)
-        source = root/'analysis'
+        source = analysis_root(root)
         archive_name = (TECHNICAL_REPORT_FILENAME if
             (source/TECHNICAL_REPORT_FILENAME).is_file() else OLD_ARCHIVE_FILENAME)
         required = [
