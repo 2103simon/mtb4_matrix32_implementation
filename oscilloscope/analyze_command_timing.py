@@ -357,6 +357,8 @@ def run(run_dir):
              [dict(distribution=key,delta_ms=float(v))
               for key,values in distributions.items() for v in values],
              ['distribution','delta_ms'])
+    from oscilloscope.host_timing_views import generate_state_timing_outputs
+    state_outputs=generate_state_timing_outputs(ctx,out,sf)
     sf_times=quantiles([r['request_to_ack_ms'] for r in sf])
     sc_times=quantiles([r['request_to_ack_ms'] for r in sc])
     active=[r for r in sf if r['ack_spacing_divided_by_prior_period'] is not None]
@@ -365,6 +367,7 @@ def run(run_dir):
        sf_request_ack_pairs=len(sf),sc_request_ack_pairs=len(sc),
        sf_request_ack_ms=sf_times,sc_request_ack_ms=sc_times,
        pipeline_timing_stats=distribution_stats,
+       host_state_timing=state_outputs,
        sf_ack_with_previous_active_cycle_reference=len(active),
        sf_acks_faster_than_previous_cycle=faster,
        sf400_muted_scheduler_count=sum(r['is_sf400_muted_scheduler'] for r in sf),
@@ -374,7 +377,7 @@ def run(run_dir):
            r['regular_period'] and r['more_than_one_sf_ack_during_period_provisional']
            for r in density),
        figures=['figures/latency_distribution.png','figures/command_burst_analysis.png',
-                'figures/command_timeline.png'] + boxplot_files,
+                'figures/command_timeline.png'] + boxplot_files + state_outputs['figures'],
        host_request_to_ack_is_physical_latency=False,
        provenance=ctx['provenance'])
     write_json(out/'summary.json',summary)
@@ -410,6 +413,23 @@ def run(run_dir):
       '![Host protocol request-to-ACK latency](figures/latency_distribution.png)','',
       '![Inter-ACK spacing relative to preceding period](figures/command_burst_analysis.png)','',
       '![Full SF ACK timing](figures/command_timeline.png)','',
+      '## Per-second throughput and ACK-indicated active/muted timing','',
+      'Host-monotonic counts below cover the **complete controller session**. '
+      'Bars show the fractional time in each one-second bin after an acknowledged '
+      'SC0 (muted), a nonzero SC command (active), or before the first known '
+      'SC ACK (unknown). The shaded state is the last *acknowledged command*, '
+      '**not a measurement of electrical output current**.','',
+      '![Full-session MCU, SF and SC host traffic](figures/throughput_per_second.png)','',
+      'Each duration in the state comparison is included only when **both endpoints** '
+      'lie within a single acknowledged SC state and there is **no SC ACK '
+      'between them**. Durations that cross an SC ACK and intervals before '
+      'the first known SC ACK are omitted from the active/muted plots but '
+      'retained with their state labels in the exported sample CSV. '
+      'Long genuine command gaps are not automatically trimmed.','',
+      '![Active versus muted timing by ACK-indicated SC state](figures/active_muted_timing_boxplots.png)','',
+      '[Per-second throughput data](throughput_per_second.csv) · '
+      '[State-separated statistics](state_timing_statistics.csv) · '
+      '[All state-labeled timing spans](state_timing_samples.csv).','',
       '## Interpretation','',
       '- Request/ACK pairing is verified by command type, order, monotonic time, and value.',
       '- BLE write-to-ACK timings are stored separately where the trace provides '
@@ -423,7 +443,8 @@ def run(run_dir):
       '[SC event table](sc_command_latency.csv) · '
       '[per-approved-cycle command pressure](command_rate_vs_cycle.csv) · '
       '[provenance](summary.json).']
-    (out/'report.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
+    from oscilloscope.report_figure_captions import add_figure_captions
+    (out/'report.md').write_text(add_figure_captions('\n'.join(lines)+'\n'),encoding='utf-8')
     print(f"[TIMING] {len(sf)} SF and {len(sc)} SC ACK pairs; SF median {sf_times['median']:.3f} ms; {faster}/{len(active)} faster than preceding cycle")
     return summary
 
