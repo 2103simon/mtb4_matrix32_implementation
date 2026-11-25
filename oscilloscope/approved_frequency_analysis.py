@@ -5,6 +5,7 @@ pulse evidence. Host/MCU/ACK time overlays are PROVISIONAL; no exact electrical
 latency, state application time, or per-command success is inferred.
 """
 from __future__ import annotations
+from experiment_analysis.paths import analysis_root
 
 from bisect import bisect_right
 from collections import Counter
@@ -595,7 +596,7 @@ def analyze_approved_record(root, record, mcu, ack_states, mapping, taxel,
                             encoding, scope_start, scope_end):
     root = Path(root)
     index = int(record["index"])
-    output = root / "analysis" / f"record_{index:05d}"
+    output = analysis_root(root) / f"record_{index:05d}"
     approval_dir = output / "pulse_review"
     source_ch1 = root / record["channels"]["CH1"]["path"]
     # Fail closed on present but stale, changed, or incomplete approval.

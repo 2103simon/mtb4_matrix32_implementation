@@ -14,6 +14,7 @@ sensitivity/rejection audit. Do not interpret intervals as verified output
 rate until the operator signs off detection completeness per record.
 """
 from __future__ import annotations
+from experiment_analysis.paths import analysis_root
 
 import argparse
 import csv
@@ -277,7 +278,7 @@ def analyze_record(root, record, *, overwrite_unapproved=False):
     if record.get("status") != "captured":
         raise ValueError(f"Record {idx} was not completely captured")
     path = root / record["channels"]["CH1"]["path"]
-    output = root / "analysis" / f"record_{idx:05d}" / "pulse_review"
+    output = analysis_root(root) / f"record_{idx:05d}" / "pulse_review"
     # Refuse before writing detector tables or figures: make_scaffold() can
     # detect a stale review only AFTER those source-hashed tables exist.
     # A rerun must not invalidate prior evidence or replace approved markers

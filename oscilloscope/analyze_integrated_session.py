@@ -5,6 +5,7 @@ and BLE traces are never concatenated with scope samples. Host-time mapping
 is accepted only for matching per-record clock fits, and remains provisional.
 """
 from __future__ import annotations
+from experiment_analysis.paths import analysis_root
 
 from collections import Counter
 import json
@@ -182,7 +183,7 @@ def analyze_one(root, record, mcu, events, ack_states, *, taxel=None):
     """
     from oscilloscope.approved_frequency_analysis import analyze_approved_record
     idx = int(record["index"])
-    output = root / "analysis" / f"record_{idx:05d}"
+    output = analysis_root(root) / f"record_{idx:05d}"
     output.mkdir(parents=True, exist_ok=True)
     approval_path = output / "pulse_review" / "review_approval.json"
     if not approval_path.exists():
@@ -376,7 +377,7 @@ def session_markdown(root, session):
         "- [Per-record approved interval tables and plots]"
         "(record_00001/approved_frequency_report.md)",
     ])
-    out = root / "analysis" / "integrated_report.md"
+    out = analysis_root(root) / "integrated_report.md"
     out.write_text("\n".join(lines)+"\n", encoding="utf-8")
     return str(out)
 
@@ -401,7 +402,7 @@ def analyze_session(root, meta, *, taxel=None, show=False):
         raise ValueError("Ambiguous multiple MCU Matrix32 command traces")
     events = read_events(trace_files[0]) if trace_files else []
     ack_states = acknowledged_frequency_states(events)
-    output = root / "analysis"
+    output = analysis_root(root)
     output.mkdir(exist_ok=True)
     full_plot = output / "mcu_full_stream.png"
     plot_traces(mcu, full_plot, selected_taxel=taxel, x_axis="pc")

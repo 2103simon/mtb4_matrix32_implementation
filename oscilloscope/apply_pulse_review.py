@@ -6,6 +6,7 @@ all flagged candidates have explicit decisions, and the operator signs off
 complete review. This is a pulse-onset inventory, not a safety calibration.
 """
 from __future__ import annotations
+from experiment_analysis.paths import analysis_root
 
 import argparse
 from datetime import datetime, timezone
@@ -273,7 +274,7 @@ def main(argv=None):
                if int(row["index"]) == args.record]
     if len(matches) != 1:
         parser.error("Exactly one matching record is required")
-    output = root / "analysis" / f"record_{args.record:05d}" / "pulse_review"
+    output = analysis_root(root) / f"record_{args.record:05d}" / "pulse_review"
     result = apply(
         output, root / matches[0]["channels"]["CH1"]["path"],
         reviewer=args.reviewer, confirm_accepted=args.confirm_accepted,

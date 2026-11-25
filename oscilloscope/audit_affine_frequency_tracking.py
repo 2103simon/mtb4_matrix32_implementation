@@ -5,6 +5,7 @@ No pulse-aligned clock fitting, threshold changes, source-file changes,
 or new approvals are performed. Run from the repository root, or supply
 --repo-dir when this script is stored outside the repository.
 """
+from experiment_analysis.paths import analysis_root
 from pathlib import Path
 import argparse
 import csv
@@ -82,7 +83,7 @@ def audit(run_dir, output_dir, *, record_index=1, repo_dir=None):
     if len(records) != 1:
         raise ValueError('Expected exactly one selected record')
     record = records[0]
-    record_dir = RUN / 'analysis' / f'record_{record_index:05d}'
+    record_dir = analysis_root(RUN) / f'record_{record_index:05d}'
     review = record_dir / 'pulse_review'
     ch1 = RUN / record['channels']['CH1']['path']
     approval, onsets = load_approved_onsets(review, ch1)
