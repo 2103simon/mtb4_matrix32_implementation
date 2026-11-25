@@ -177,6 +177,71 @@ python -u -m experiment_analysis.build_final_experiment_report --run-dir "$MTB4_
 There is no need to migrate a second time, redetect pulses, or re-sign the
 operator approval. The signed-review and raw-evidence hashes remain unchanged.
 
+## Final clean separation: archive the ORIGINAL analysis outside raw
+
+Once migration, the scientific report and its Git snapshot are verified,
+you may clear the redundant old `data/recordings/<RUN_ID>/analysis/` tree
+**without deleting a single file**. The original stays under
+`results/<RUN_ID>/_legacy_source_analysis/` as a reversible,
+Git-ignored archive. This is an **atomic move** on one filesystem, not another
+full copy; the preserved archive should remain until an independent backup
+has been confirmed. The working signed reviews continue to live under
+`results/<RUN_ID>/analysis/`.
+
+From the repository root:
+
+```bash
+# First update the refactoring branch. Do not rerun --apply migration.
+git pull --ff-only origin refactor/separate-recordings-results
+
+# Dry run: verifies source raw hashes and both signed-review inventories.
+python -m experiment_analysis.finalize_layout --run-dir "$MTB4_RUN"
+
+# Archive the duplicate ORIGINAL analysis, preserving everything.
+python -m experiment_analysis.finalize_layout --run-dir "$MTB4_RUN" --apply
+
+# Confirm the immutable raw inputs and migrated signed review are intact:
+python -m experiment_analysis.migrate_layout --run-dir "$MTB4_RUN" --verify
+
+# Verify published Git snapshots, file hashes, paths and residual locations.
+python -m experiment_analysis.audit_layout \
+  --run-dir "$MTB4_RUN" --strict --scan-all
+```
+
+The final auditor reports `PASS` when the selected recording is clean.
+`PASS_WITH_HISTORICAL_RESIDUALS` means the selected recording and its
+published reports pass, but **other older experiment directories** still
+contain `analysis/` trees. These are reported by name, never altered
+without deliberate migration. Review the list before describing the entire
+recordings collection as clean.
+
+Do not run `rm -rf` or `git clean -fdx` against recording data. The
+ignored `results/` archive is deliberate evidence preservation, not
+a new analysis output or an input for later calculation.
+
+The original `gray_alignment.json` and `epoch_clock_analysis.json`
+recorded at acquisition time remain under raw evidence and are hashed.
+Running the **standalone** Gray epoch analysis after acquisition now
+writes diagnostics to `results/<RUN_ID>/analysis/gray_epoch_diagnostics/`
+instead of overwriting these capture-time files. Standalone MCU plots
+are saved to `results/mcu_recordings/`; historical November plots were
+archived unmodified under `reports/legacy_mcu_plots/`.
+
+## Full-suite regression before merging to main
+
+```bash
+python -m compileall -q experiment_analysis oscilloscope tests
+python -m unittest discover -s tests -v 2>&1 | tee /tmp/matrix32_full_suite.log
+```
+
+A full suite may take longer than the focused regression and should be
+inspected for failures and unexpected hardware-dependent test execution.
+Keep the experimental branch unmerged until these tests and the auditor
+have passed and the report snapshot is visibly readable on GitHub.
+The branch has a separate history from `main` because `main` includes a
+prior merge commit. Merge through a reviewed pull request, rather than
+assuming `git merge --ff-only` can reconcile it.
+
 ## Regression tests
 
 ```bash
