@@ -10,6 +10,7 @@ period errors, and Gray frame-spacing diagnostics. All agreement claims are
 conditional on the models and offset scenarios described in the report.
 """
 from __future__ import annotations
+from experiment_analysis.paths import analysis_root
 
 import argparse
 from collections import Counter
@@ -426,7 +427,7 @@ def run(run_dir, *, taxel=None):
     root = Path(run_dir).expanduser().resolve()
     meta = json.loads((root/"metadata.json").read_text())
     original = json.loads((root/"epoch_clock_analysis.json").read_text())
-    cv_path = root / "analysis" / "clock_model_cv_summary.json"
+    cv_path = analysis_root(root) / "clock_model_cv_summary.json"
     if not cv_path.exists():
         raise FileNotFoundError(
             "Clock-model cross-validation is required before the frequency "
@@ -466,7 +467,7 @@ def run(run_dir, *, taxel=None):
     ack_pc = np.asarray([int(a["pc_monotonic_ns"]) for a in ack],
                         dtype=np.int64)
 
-    analysis = root/"analysis"
+    analysis = analysis_root(root)
     analysis.mkdir(exist_ok=True)
     all_intervals, all_sweeps, all_outliers, gray_stats = [], [], [], []
     by_record = []

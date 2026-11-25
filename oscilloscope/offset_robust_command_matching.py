@@ -10,6 +10,7 @@ both endpoints and midpoint of that interval, widened by a reported
 held-out prediction-error scale. That widening is NOT a guaranteed bound.
 """
 from __future__ import annotations
+from experiment_analysis.paths import analysis_root
 
 import argparse
 from collections import Counter, defaultdict
@@ -266,7 +267,7 @@ def analyze_record(*, root, record, epoch, cv, mcu, states,
     model, model_status = select_clock_model(cv)
     report["clock_model"] = model
     report["clock_candidate_status"] = model_status
-    folder = root/"analysis"/f"record_{idx:05d}"
+    folder = analysis_root(root)/f"record_{idx:05d}"
     folder.mkdir(parents=True, exist_ok=True)
     ch1 = root/record["channels"]["CH1"]["path"]
     _, onsets = load_approved_onsets(folder/"pulse_review", ch1)
@@ -496,7 +497,7 @@ def record4_diagnostics(root, metadata, serial, *, block_s=2.):
                 "end_scope_s": max(v["scope_s"] for v in values),
                 "model": model, **_metrics(error),
             })
-    folder = root/"analysis"/"record_00004"
+    folder = analysis_root(root)/"record_00004"
     folder.mkdir(parents=True, exist_ok=True)
     _csv(folder/"record4_clock_block_errors.csv", block_rows, [
         "block_width_s", "block_id", "start_scope_s", "end_scope_s",
@@ -538,7 +539,7 @@ def run(root, *, extra_scale=1., block_s=2., taxel=None):
     root = Path(root).expanduser().resolve()
     meta = json.loads((root/"metadata.json").read_text())
     epoch = json.loads((root/"epoch_clock_analysis.json").read_text())
-    cv = json.loads((root/"analysis"/"clock_model_cv_summary.json").read_text())
+    cv = json.loads((analysis_root(root)/"clock_model_cv_summary.json").read_text())
     if abs(float(cv["block_s"])-block_s) > 1e-9:
         raise ValueError(
             f"Clock CV result uses {cv['block_s']}s blocks; "
@@ -573,7 +574,7 @@ def run(root, *, extra_scale=1., block_s=2., taxel=None):
         )
         summaries.append(summary)
         all_rows.extend(rows)
-        folder = root/"analysis"/f"record_{idx:05d}"
+        folder = analysis_root(root)/f"record_{idx:05d}"
         _csv(folder/"offset_robust_intervals.csv", rows, INTERVAL_COLUMNS)
         plot_tracking(folder/"offset_robust_tracking.png", rows, index=idx)
         plot_command_agreement(folder/"offset_robust_command_agreement.png",
@@ -582,7 +583,7 @@ def run(root, *, extra_scale=1., block_s=2., taxel=None):
               f"status={summary['clock_candidate_status']}; "
               f"stable both={summary.get('both_stable_across_tested_offsets', 0)} "
               f"/{summary['approved_intervals']}")
-    output = root/"analysis"
+    output = analysis_root(root)
     _csv(output/"offset_robust_all_intervals.csv", all_rows, INTERVAL_COLUMNS)
     detail4 = record4_diagnostics(root, meta, serial, block_s=block_s)
     report = {
