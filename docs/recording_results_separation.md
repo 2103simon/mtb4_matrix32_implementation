@@ -67,6 +67,28 @@ SHA-256 hashes. The source-locked pulse review is copied byte-for-byte; no
 redetection or manual reapproval is required. Current raw acquisition files
 stay at their original paths.
 
+## If migration reports "destination already exists"
+
+This is a **fail-closed condition**, not permission to delete the destination.
+The results tree may contain an earlier complete migration, recorder-generated
+figures, or a separate raw-recording registration manifest.
+
+1. Inspect `results/<RUN_ID>/recording_manifest.json` and
+   `results/<RUN_ID>/analysis/` without modifying them.
+2. If the manifest says `signed_review_was_copied_not_regenerated: true`
+   and the signed files are in the new tree, run `migrate_layout --verify`.
+   A successful verification means the migration need not be repeated.
+3. If the manifest is absent or represents registration only, **preserve**
+   the existing results directory by renaming it to a unique
+   `results/<RUN_ID>.pre_migration_<timestamp>/`, then rerun `--apply`
+   and `--verify`. This archives existing files without duplicating
+   large raw waveforms or deleting signed reviews.
+4. If verification raises an integrity or source-hash error, stop and
+   investigate; do not overwrite either directory or regenerate approvals.
+
+A registration-only manifest cannot substitute for a copied signed pulse
+review; both the resolver and verification command now reject that case.
+
 ## Future clean recordings
 
 New sessions written by `oscilloscope.record_integrated_matrix32` contain
