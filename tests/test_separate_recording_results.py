@@ -1,0 +1,117 @@
+"""Hardware-free checks for separate evidence/results/Git report publication."""
+from __future__ import annotations
+
+from pathlib import Path
+import hashlib
+import json
+import os
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from experiment_analysis.paths import analysis_root, results_dir, use_results_root, sha256
+from experiment_analysis.migrate_layout import migrate, inventory
+from experiment_analysis.publish_reports import publish, _safe_relative
+
+
+class SeparateRecordingAndReportsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name)
+        self.raw = self.home/'data'/'recordings'/'sample_run'
+        self.raw.mkdir(parents=True)
+        (self.raw/'metadata.json').write_text(
+            '{"run_id":"sample_run","status":"complete"}\n')
+        (self.raw/'waveforms').mkdir()
+        (self.raw/'waveforms'/'ch1.csv').write_bytes(b'time,v\n0.0,0\n')
+        a = self.raw/'analysis'
+        a.mkdir()
+        (a/'figures').mkdir()
+        (a/'figures'/'plot.png').write_bytes(b'fake-png-fixture')
+        (a/'final_experiment_report.md').write_text(
+            '# Final report\n\n![Figure 1](figures/plot.png)\n\n'
+            '[Detailed evidence](command_timing/report.md)\n', encoding='utf-8')
+        (a/'extended_analysis_technical_report.md').write_text(
+            '# Technical report\n\n![Figure X](figures/plot.png)\n', encoding='utf-8')
+        (a/'pulse_review').mkdir()
+        (a/'pulse_review'/'review_approval.json').write_bytes(
+            b'{"human_signed_off": true, "source_ch1_sha256":"test"}\n')
+        self.resultroot = self.home/'results'
+
+    def test_dry_run_does_not_create_results(self):
+        original = inventory(self.raw/'analysis')
+        info = migrate(self.raw, results_root=self.resultroot)
+        self.assertEqual(info['status'], 'DRY_RUN')
+        self.assertEqual(info['analysis_file_count'], len(original))
+        self.assertFalse(self.resultroot.exists())
+        self.assertEqual(inventory(self.raw/'analysis'), original)
+
+    def test_copy_verification_and_binding_keep_raw_unchanged(self):
+        raw_hash = sha256(self.raw/'waveforms/ch1.csv')
+        source = inventory(self.raw/'analysis')
+        result = migrate(self.raw, results_root=self.resultroot, apply=True)
+        target = self.resultroot/'sample_run'
+        self.assertEqual(result['status'], 'VERIFIED_COPY')
+        self.assertEqual(inventory(target/'analysis'), source)
+        self.assertEqual(sha256(self.raw/'waveforms/ch1.csv'), raw_hash)
+        self.assertTrue((self.raw/'analysis/pulse_review/review_approval.json').exists())
+        with use_results_root(self.resultroot):
+            self.assertEqual(analysis_root(self.raw), target/'analysis')
+        manifest = json.loads((target/'recording_manifest.json').read_text())
+        self.assertEqual(manifest['metadata_sha256'], sha256(self.raw/'metadata.json'))
+        with self.assertRaises(FileExistsError):
+            migrate(self.raw, results_root=self.resultroot, apply=True)
+
+    def test_split_resolver_never_points_to_raw_folder_after_migration(self):
+        migrate(self.raw, results_root=self.resultroot, apply=True)
+        with use_results_root(self.resultroot):
+            derived = analysis_root(self.raw)
+            self.assertFalse(self.raw in derived.parents)
+            (self.raw/'metadata.json').write_text('{"modified": true}\n')
+            with self.assertRaisesRegex(ValueError, 'metadata differs'):
+                analysis_root(self.raw)
+
+    def test_publish_curated_reports_only_and_preserve_source(self):
+        migrate(self.raw, results_root=self.resultroot, apply=True)
+        before = sha256(self.raw/'waveforms/ch1.csv')
+        publish_root = self.home/'reports'
+        with use_results_root(self.resultroot):
+            target = publish(self.raw, reports_root=publish_root, tag='review-v1')
+        self.assertTrue((target/'figures/plot.png').exists())
+        self.assertTrue((target/'final_experiment_report.md').exists())
+        self.assertTrue((target/'extended_analysis_technical_report.md').exists())
+        text = (target/'final_experiment_report.md').read_text()
+        self.assertIn('![Figure 1](figures/plot.png)', text)
+        self.assertIn('local supporting evidence:', text)
+        self.assertNotIn('[Detailed evidence](', text)
+        self.assertFalse((target/'waveforms').exists())
+        self.assertFalse((target/'pulse_review').exists())
+        self.assertFalse((target/'command_timing').exists())
+        self.assertEqual(before, sha256(self.raw/'waveforms/ch1.csv'))
+        pub = json.loads((target/'publication_manifest.json').read_text())
+        self.assertFalse(pub['raw_data_included'])
+        self.assertFalse(pub['signed_review_included'])
+        with self.assertRaises(FileExistsError):
+            publish(self.raw, reports_root=publish_root, tag='review-v1',
+                    analysis_path=self.resultroot/'sample_run'/'analysis')
+
+    def test_traversal_and_symlink_escapes_are_rejected(self):
+        folder = self.raw/'analysis'
+        with self.assertRaisesRegex(ValueError, 'leaves analysis root'):
+            _safe_relative(folder, '../metadata.json')
+        with self.assertRaisesRegex(ValueError, 'Absolute local'):
+            _safe_relative(folder, '/tmp/x.png')
+        (folder/'symlink').symlink_to(self.raw/'metadata.json')
+        with self.assertRaisesRegex(ValueError, 'symlink'):
+            migrate(self.raw, results_root=self.resultroot)
+
+    def test_root_override_context_is_restored(self):
+        prior = os.environ.get('MTB4_RESULTS_ROOT')
+        with use_results_root(self.resultroot):
+            self.assertEqual(Path(os.environ['MTB4_RESULTS_ROOT']),self.resultroot)
+        self.assertEqual(os.environ.get('MTB4_RESULTS_ROOT'),prior)
+
+
+if __name__ == '__main__':
+    unittest.main()
