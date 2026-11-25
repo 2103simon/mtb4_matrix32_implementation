@@ -13,7 +13,10 @@ from oscilloscope.extended_analysis_common import (
 )
 from oscilloscope.analyze_frequency_transitions import evaluate
 from oscilloscope.analyze_stimulation_shutdown import compute_events
-from oscilloscope.analyze_command_timing import pair_commands, analyze_host_events
+from oscilloscope.analyze_command_timing import (
+    pair_commands, analyze_host_events, compute_timing_distributions,
+    timing_distribution_stats, timing_stats_markdown, _positive_differences_ns,
+)
 from oscilloscope.run_extended_analysis import run as run_all
 from oscilloscope.build_final_experiment_report import (
     build_command_delivery_scorecard, plot_command_delivery_scorecard,
@@ -158,6 +161,41 @@ class ExtendedAnalysisTests(unittest.TestCase):
         self.assertTrue(sf[0]['rounded_source_hz_equals_sf'])
         self.assertEqual(sc,[])
 
+    def test_pipeline_cadence_and_tail_statistics(self):
+        ctx=synthetic_context([
+            event('sf_requested',.010,frequency_hz=15,source_sample_ns=1_000_000),
+            event('sf_ack',.025,frequency_hz=15,status='OK',
+                evidence={'ack': {'write_begin_monotonic_s':.012,
+                                  'ack_monotonic_s':.023}}),
+            event('sf_requested',.030,frequency_hz=25,source_sample_ns=20_000_000),
+            event('sf_ack',.046,frequency_hz=25,status='OK',
+                evidence={'ack': {'write_begin_monotonic_s':.032,
+                                  'ack_monotonic_s':.045}}),
+            event('sc_requested',.050,current_command=50),
+            event('sc_ack',.112,current_command=50,status='OK'),
+        ])
+        sf,sc=analyze_host_events(ctx)
+        timing=compute_timing_distributions(ctx,sf,sc)
+        self.assertEqual(timing['mcu_arrival_dt_ms'].tolist(),[19.])
+        self.assertEqual(timing['sf_request_dt_ms'].tolist(),[20.])
+        self.assertEqual(timing['sf_ack_dt_ms'].tolist(),[21.])
+        self.assertEqual(timing['sf_ble_write_dt_ms'].tolist(),[20.])
+        self.assertEqual(timing['sf_request_to_ack_ms'].tolist(),[15.,16.])
+        self.assertEqual(timing['sc_request_to_ack_ms'].tolist(),[62.])
+        stats=timing_distribution_stats(timing)
+        self.assertAlmostEqual(stats['sf_request_to_ack_ms']['median_ms'],15.5)
+        self.assertAlmostEqual(stats['sf_request_to_ack_ms']['mean_ms'],15.5)
+        self.assertAlmostEqual(stats['sf_request_to_ack_ms']['std_ms'],2**-.5)
+        self.assertAlmostEqual(stats['sf_request_to_ack_ms']['p99_ms'],15.99)
+        self.assertIn('MCU arrivals', '\n'.join(timing_stats_markdown(stats)))
+        self.assertEqual(stats['sf_ble_write_dt_ms']['n'],1)
+
+    def test_invalid_timestamp_order_is_not_silently_discarded(self):
+        with self.assertRaisesRegex(ValueError,'Non-increasing'):
+            _positive_differences_ns([10,10],'synthetic')
+        with self.assertRaisesRegex(ValueError,'Non-increasing'):
+            _positive_differences_ns([20,10],'synthetic')
+
     def test_raw_sparse_windows_keep_original_values_and_timestamps(self):
         with tempfile.TemporaryDirectory() as td:
             ch=Path(td)/'raw.csv'
@@ -188,6 +226,11 @@ class ExtendedAnalysisTests(unittest.TestCase):
         self.assertEqual(trans['classification_counts']['IN_INTERVAL_ACK_COMPATIBLE_ONLY'],67)
         self.assertEqual(shut['operator_excluded_negative_only'],11)
         self.assertEqual(timing['sf_request_ack_pairs'],266)
+        self.assertEqual(timing['pipeline_timing_stats']['mcu_arrival_dt_ms']['n'],9418)
+        self.assertEqual(timing['pipeline_timing_stats']['sf_ack_dt_ms']['n'],265)
+        self.assertAlmostEqual(timing['pipeline_timing_stats']['mcu_arrival_dt_ms']['median_ms'],14.501,delta=.002)
+        self.assertTrue((root/'command_timing/timing_distribution_statistics.csv').exists())
+        self.assertTrue((root/'command_timing/timing_distribution_samples.csv').exists())
         self.assertTrue((root/'final_experiment_report.md').exists())
         report=(root/'final_experiment_report.md').read_text()
         self.assertIn('SF changes acknowledged OK | **266 / 266**',report)
