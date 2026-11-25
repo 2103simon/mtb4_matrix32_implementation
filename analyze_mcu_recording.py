@@ -19,7 +19,7 @@ import numpy as np
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config" / "config.json"
-OUTPUT_FOLDER = BASE_DIR / "analysis"
+OUTPUT_FOLDER = BASE_DIR / "results" / "mcu_recordings"
 CHANNEL_COUNT = 12
 
 
@@ -359,6 +359,8 @@ def main():
                         metavar="0-11", help="Show only this taxel across all three panels")
     parser.add_argument("--zoom-sec", type=float, default=0.5,
                         help="Duration of most-active zoom plot in seconds (default 0.5)")
+    parser.add_argument("--output-root", type=Path, default=OUTPUT_FOLDER,
+                        help="Separate output folder for MCU-only plots (default: results/mcu_recordings)")
     parser.add_argument("--pc-time", action="store_true",
                         help="Use PC arrival timestamps instead of corrected MCU time")
     args = parser.parse_args()
@@ -377,11 +379,14 @@ def main():
         print(_experiment_label(data))
     else:
         print("No settings manifest found; plotting legacy recording metadata.")
-    OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
+    destination = args.output_root.expanduser().resolve()
+    if destination == data_dir.resolve() or data_dir.resolve() in destination.parents:
+        raise ValueError("Refusing to write generated plots into the MCU recording directory")
+    destination.mkdir(parents=True, exist_ok=True)
 
     axis = "pc" if args.pc_time else "mcu"
     suffix = f"_taxel{args.taxel}" if args.taxel is not None else ""
-    full_path = OUTPUT_FOLDER / f"{recording_id}_traces{suffix}.png"
+    full_path = destination / f"{recording_id}_traces{suffix}.png"
     plot_traces(data, full_path, selected_taxel=args.taxel, x_axis=axis)
     print(f"Saved {full_path} ({len(data['taxel_data'])} samples, {data['mode']} mode)")
 
@@ -393,12 +398,12 @@ def main():
         pc_t = (data["taxel_pc_ns"] - data["taxel_pc_ns"][0]) / 1e6
         start_ms = float(np.interp(start_ms, mcu_t, pc_t))
         end_ms = float(np.interp(end_ms, mcu_t, pc_t))
-    zoom_path = OUTPUT_FOLDER / f"{recording_id}_traces_zoom{suffix}.png"
+    zoom_path = destination / f"{recording_id}_traces_zoom{suffix}.png"
     plot_traces(data, zoom_path, interval=(start_ms, end_ms),
                 selected_taxel=args.taxel, x_axis=axis)
     print(f"Saved {zoom_path}")
 
-    combined_path = OUTPUT_FOLDER / f"{recording_id}_traces_combined{suffix}.png"
+    combined_path = destination / f"{recording_id}_traces_combined{suffix}.png"
     if plot_combined(data, combined_path, selected_taxel=args.taxel):
         print(f"Saved {combined_path}")
 
