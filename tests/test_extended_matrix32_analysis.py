@@ -241,7 +241,7 @@ class ExtendedAnalysisTests(unittest.TestCase):
                    'state_timing_samples.csv'):
             self.assertTrue((root/'command_timing'/fn).exists())
         import re
-        for name in ('final_experiment_report.md',
+        for name in ('final_experiment_report_legacy.md',
                      'frequency_transitions/report.md',
                      'stimulation_shutdown/report.md',
                      'command_timing/report.md'):
@@ -252,14 +252,22 @@ class ExtendedAnalysisTests(unittest.TestCase):
             self.assertEqual(len(imgs),len(captions),name)
             for fig in imgs:
                 self.assertTrue((root/name).parent.joinpath(fig).exists(),fig)
-        self.assertIn('throughput_per_second.png',
-                      (root/'final_experiment_report.md').read_text())
-
-        self.assertTrue((root/'final_experiment_report.md').exists())
+        legacy=(root/'final_experiment_report_legacy.md').read_text()
+        self.assertIn('throughput_per_second.png', legacy)
+        self.assertIn('SF changes acknowledged OK | **266 / 266**',legacy)
+        self.assertIn('SC current changes acknowledged OK | **41 / 41**',legacy)
+        self.assertIn('Not determinable',legacy)
         report=(root/'final_experiment_report.md').read_text()
-        self.assertIn('SF changes acknowledged OK | **266 / 266**',report)
-        self.assertIn('SC current changes acknowledged OK | **41 / 41**',report)
-        self.assertIn('Not determinable',report)
+        self.assertIn('266/266 SF OK ACKs', report)
+        self.assertIn('41/41 SC OK ACKs', report)
+        self.assertIn('## Conclusions and remaining questions', report)
+        self.assertIn('## Experiment and measurement windows', report)
+        self.assertIn('final_experiment_report_legacy.md', report)
+        self.assertEqual(len(re.findall(r'(?m)^!\\[Figure \\d+\\]', report)), 6)
+        self.assertEqual(len(re.findall(r'(?m)^\\*Figure \\d+ -', report)), 6)
+        for path in re.findall(r'(?m)^!\\[Figure \\d+\\]\\(([^)]+)\\)', report):
+            self.assertTrue((root/path).is_file(), path)
+        self.assertEqual(len(list((root/'presentation_figures').glob('*.png'))),3)
         card=json.loads((root/'command_delivery_scorecard.json').read_text())
         self.assertEqual(card['physical_ack_observability']['matching_settled_period_evidence'],59)
         self.assertEqual(card['physical_ack_observability']['in_scope_no_individually_attributable_evidence'],187)
