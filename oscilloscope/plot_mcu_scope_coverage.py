@@ -55,7 +55,7 @@ def render(root: Path, *, taxel: int | None = None) -> list[Path]:
         print("[MCU PLOT] No usable estimated scope windows; plots skipped")
         return []
     out = analysis_root(root)
-    out.mkdir(exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
     origin = int(host_ns[0])
     ms_windows = [((begin - origin) / 1e6, (end - origin) / 1e6)
                   for _, begin, end in windows]
