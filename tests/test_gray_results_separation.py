@@ -10,6 +10,7 @@ from unittest.mock import patch
 from experiment_analysis.paths import use_results_root
 from oscilloscope import compare_gray_schedules
 from oscilloscope import analyze_gray_epoch_experiment
+from oscilloscope import align_gray_records, analyze_nano_clock, decode_gray_timecode
 
 
 class GrayOutputSeparationTests(unittest.TestCase):
@@ -64,6 +65,52 @@ class GrayOutputSeparationTests(unittest.TestCase):
                     compare_gray_schedules.run(
                         self.baseline, self.candidate,
                         output=self.candidate/'analysis')
+
+    def test_offline_alignment_defaults_to_results_not_recording(self):
+        original = (self.candidate/'epoch_clock_analysis.json').read_bytes()
+        with use_results_root(self.results):
+            with patch.object(align_gray_records, 'read_nano_frames',
+                              return_value=[]), patch.object(
+                    align_gray_records, 'build_alignment',
+                    return_value={'decoded_frames_total':0,
+                                  'source_record_count':0, 'records':[]}):
+                align_gray_records.main([str(self.candidate)])
+                target = (self.results/'candidate/analysis'/
+                          'gray_alignment_diagnostics.json')
+                self.assertTrue(target.is_file())
+                self.assertFalse((self.candidate/'gray_alignment.json').exists())
+                with self.assertRaisesRegex(ValueError, 'raw recordings'):
+                    align_gray_records.main([
+                        str(self.candidate), '--output',
+                        str(self.candidate/'gray_alignment.json')])
+        self.assertEqual((self.candidate/'epoch_clock_analysis.json').read_bytes(),
+                         original)
+
+    def test_offline_nano_clock_defaults_to_results(self):
+        report = {'status':'passive_drift_only',
+                  'passive':{'sample_count':0,
+                             'drift_ppm_nano_to_host':0},
+                  'active':None, 'scope_records':[]}
+        with use_results_root(self.results):
+            with patch.object(analyze_nano_clock, 'analyze_run',
+                              return_value=report):
+                analyze_nano_clock.main([str(self.candidate)])
+                self.assertTrue((self.results/'candidate/analysis'/
+                                 'nano_host_clock_diagnostics.json').is_file())
+                self.assertFalse((self.candidate/'nano_host_clock.json').exists())
+                with self.assertRaisesRegex(ValueError, 'raw recordings'):
+                    analyze_nano_clock.main([
+                        str(self.candidate), '--output',
+                        str(self.candidate/'nano_host_clock.json')])
+
+    def test_offline_gray_decoder_rejects_explicit_raw_output(self):
+        csv = self.candidate/'waveforms/ch2.csv'
+        csv.parent.mkdir()
+        csv.write_text('time_s,voltage_v\\n')
+        with patch.object(decode_gray_timecode, 'decode_csv', return_value={}):
+            with self.assertRaisesRegex(ValueError, 'raw recordings'):
+                decode_gray_timecode.main([
+                    str(csv), '--output', str(self.candidate/'decoded.json')])
 
     def test_standalone_epoch_reanalysis_does_not_overwrite_capture_time_map(self):
         original = (self.candidate/'epoch_clock_analysis.json').read_bytes()
