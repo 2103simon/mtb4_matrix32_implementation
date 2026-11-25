@@ -5,6 +5,7 @@ smooth signal for analysis, or alter timestamps. Display uses raw per-bin
 minimum and maximum voltage to preserve visible pulse extrema.
 """
 from __future__ import annotations
+from experiment_analysis.paths import analysis_root
 
 import argparse
 import csv
@@ -105,7 +106,7 @@ def run(run_dir, *, record=None):
         if record is not None and index != record:
             continue
         ch1 = root/item["channels"]["CH1"]["path"]
-        directory = root/"analysis"/f"record_{index:05d}"
+        directory = analysis_root(root)/f"record_{index:05d}"
         review = directory/"pulse_review"
         _, onsets = load_approved_onsets(review, ch1)
         t, v = load_waveform(ch1)

@@ -8,6 +8,7 @@ Usage:
     python -m oscilloscope.plot_mcu_scope_coverage --run-dir data/recordings/<run>
 """
 from __future__ import annotations
+from experiment_analysis.paths import analysis_root
 
 import argparse
 from pathlib import Path
@@ -50,7 +51,7 @@ def render(root: Path, *, taxel: int | None = None) -> list[Path]:
     if not windows:
         print("[MCU PLOT] No usable estimated scope windows; plots skipped")
         return []
-    out = root / "analysis"
+    out = analysis_root(root)
     out.mkdir(exist_ok=True)
     origin = int(host_ns[0])
     ms_windows = [((begin - origin) / 1e6, (end - origin) / 1e6)

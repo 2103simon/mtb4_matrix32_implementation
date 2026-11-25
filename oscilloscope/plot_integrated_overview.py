@@ -8,6 +8,7 @@ Usage (from repository root):
     python -m oscilloscope.plot_integrated_overview --run-dir data/recordings/RUN
 """
 from __future__ import annotations
+from experiment_analysis.paths import analysis_root
 
 import argparse
 import csv
@@ -234,7 +235,7 @@ def generate(root, *, record_index=1, taxel=None, bins=2400):
     if len(records) != 1 or records[0].get("status") != "captured":
         raise ValueError("Expected one fully captured scope record")
     record = records[0]
-    review_dir = root / "analysis" / f"record_{record_index:05d}" / "pulse_review"
+    review_dir = analysis_root(root) / f"record_{record_index:05d}" / "pulse_review"
     approval, onsets = verified_onsets(review_dir)
     ch1 = record["channels"]["CH1"]
     wave = root / ch1["path"]
@@ -277,7 +278,7 @@ def generate(root, *, record_index=1, taxel=None, bins=2400):
     # Long pauses represent unobserved stimulation, not a slow running rate.
     periodic = (dt >= 1/400) & (dt <= .5)
     physical_mid = (onsets[:-1] + onsets[1:])/2
-    output = root / "analysis" / f"record_{record_index:05d}" / "integrated_overview.png"
+    output = analysis_root(root) / f"record_{record_index:05d}" / "integrated_overview.png"
     plot_overview(
         output, x=x, lo=lo, hi=hi, first_s=first_s, last_s=last_s,
         onsets=onsets, scope_x=t[inside], pressure=pressure[inside],
