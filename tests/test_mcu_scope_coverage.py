@@ -8,12 +8,15 @@ from unittest.mock import patch
 import numpy as np
 
 from oscilloscope.plot_mcu_scope_coverage import render
+from experiment_analysis.paths import use_results_root
 
 
 class McuScopePlotTests(unittest.TestCase):
     def test_missing_clock_map_returns_no_plots(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory) / "raw"
+            root.mkdir()
+            (root / "metadata.json").write_text('{"status":"complete"}')
             (root / "mcu_matrix32").mkdir()
             (root / "mcu_matrix32" / "test_tactile_rates.csv").write_text("")
             with patch("oscilloscope.plot_mcu_scope_coverage.load_recordings",
@@ -23,7 +26,9 @@ class McuScopePlotTests(unittest.TestCase):
 
     def test_full_window_and_cropped_plot_use_same_pc_axis(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory) / "raw"
+            root.mkdir()
+            (root / "metadata.json").write_text('{"status":"complete"}')
             (root / "mcu_matrix32").mkdir()
             (root / "mcu_matrix32" / "test_tactile_rates.csv").write_text("")
             (root / "epoch_clock_analysis.json").write_text(json.dumps(
@@ -37,8 +42,12 @@ class McuScopePlotTests(unittest.TestCase):
                   patch("oscilloscope.plot_mcu_scope_coverage.tentative_host_map",
                         return_value=mapping),
                   patch("oscilloscope.plot_mcu_scope_coverage.plot_traces") as plot):
-                paths = render(root, taxel=11)
+                with use_results_root(Path(directory) / "results"):
+                    paths = render(root, taxel=11)
             self.assertEqual(len(paths), 2)
+            self.assertEqual(paths[0].parent,
+                             Path(directory) / "results/raw/analysis")
+            self.assertFalse((root / "analysis").exists())
             self.assertEqual(plot.call_count, 2)
             full, crop = plot.call_args_list
             self.assertEqual(full.kwargs["x_axis"], "pc")
