@@ -78,11 +78,19 @@ def analysis_root(run_dir, *, results_root_override=None, legacy_ok=True):
     if legacy.exists():
         if legacy.is_symlink():
             raise ValueError("Refusing a linked analysis directory inside raw data")
-        allowed = os.environ.get(ENV_ALLOW_LEGACY, "1") != "0" and legacy_ok
+        # In the managed repo recordings tree the migration is mandatory,
+        # rather than silently continuing to overwrite raw/analysis.
+        managed = (REPO_ROOT / "data" / "recordings").resolve()
+        is_managed = (root == managed or managed in root.parents)
+        override = os.environ.get(ENV_ALLOW_LEGACY)
+        allowed = legacy_ok and (
+            override == "1" or (not is_managed and override != "0"))
         if not allowed:
             raise FileNotFoundError(
                 f"Analysis is still embedded in raw recording: {legacy}. "
-                "Run experiment_analysis.migrate_layout --apply first.")
+                "Run python -m experiment_analysis.migrate_layout --run-dir "
+                "RAW_RUN --apply first. Only synthetic/legacy test fixtures "
+                "may use MTB4_ALLOW_LEGACY_LAYOUT=1 to opt in.")
         warnings.warn(
             f"Legacy analysis path in raw recording: {legacy}; "
             "migrate it to the separate results tree before further analysis.",
