@@ -260,7 +260,8 @@ def run(run_dir):
       '', '[Excluded event inventory](incomplete_events.csv) · '
       '[Every SC ACK](shutdown_restart_events.csv) · '
       '[SC0 offset scenarios](sc0_offset_sensitivity.json) · [provenance](summary.json).']
-    (out/'report.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
+    from oscilloscope.report_figure_captions import add_figure_captions
+    (out/'report.md').write_text(add_figure_captions('\n'.join(lines)+'\n'),encoding='utf-8')
     print(f"[SHUTDOWN] {len(incomplete)} negative-only events excluded; {after_sc0} after latest SC0 (provisional); {len(sc)} SC ACKs")
     return summary
 
