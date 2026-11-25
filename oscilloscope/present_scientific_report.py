@@ -422,9 +422,11 @@ def present(analysis_dir):
     legacy = analysis / 'final_experiment_report_legacy.md'
     temp_legacy = analysis / 'final_experiment_report_legacy.md.tmp'
     temp_report = analysis / 'final_experiment_report.md.tmp'
-    temp_legacy.write_bytes(current_legacy)
     temp_report.write_text(text, encoding='utf-8')
-    temp_legacy.replace(legacy)
+    # Keep the first archived technical report immutable on subsequent rebuilds.
+    if not legacy.is_file():
+        temp_legacy.write_bytes(current_legacy)
+        temp_legacy.replace(legacy)
     temp_report.replace(old_path)
     index = analysis / 'README.md'
     if not index.exists() or index.read_text(encoding='utf-8').startswith('# Matrix32 analysis report entry points'):
