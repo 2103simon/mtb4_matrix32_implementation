@@ -62,6 +62,23 @@ def migrate(run_dir, *, results_root=None, apply=False):
         } for p in sorted(_files(raw))
         if p != old and old not in p.parents
     }
+    # Validate every signed review against the actual raw CH1 file before
+    # moving the analysis evidence. A hash-correct copy of a stale review is
+    # still scientifically unusable and must fail closed.
+    record_meta = json.loads((raw / 'metadata.json').read_text(encoding='utf-8'))
+    for approval_path in sorted(old.glob('record_*/pulse_review/review_approval.json')):
+        signed = json.loads(approval_path.read_text(encoding='utf-8'))
+        if signed.get('human_signed_off') is not True:
+            raise ValueError(f'Existing review is not human-signed: {approval_path}')
+        index = int(signed['record_index'])
+        records = [x for x in record_meta.get('records', [])
+                   if int(x.get('index', -1)) == index]
+        if len(records) != 1:
+            raise ValueError(f'Could not source-lock approval for record {index}')
+        ch1 = records[0]['channels']['CH1']['path']
+        expected = signed['source_ch1_sha256']
+        if raw_files.get(ch1, {}).get('sha256') != expected:
+            raise ValueError(f'Signed approval CH1 hash differs from raw source: {ch1}')
     preview = {
         "run_id": raw.name, "raw_dir": str(raw), "results_dir": str(dest),
         "analysis_file_count": len(old_files),
