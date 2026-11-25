@@ -4,8 +4,8 @@ The single main entry point is `analysis/final_experiment_report.md`.
 It is intentionally concise (~six figures) and emphasizes the executive
 research-question scorecard, measurement windows, physical frequency accuracy,
 rapid-transition timing sensitivity, protocol cadence, current-off diagnostics,
-and evidence limitations. The full prior consolidated report is retained as
-`analysis/final_experiment_report_legacy.md`; the historical
+and evidence limitations. The full earlier technical consolidation is preserved as
+`analysis/extended_analysis_technical_report.md`; the historical
 `analysis/final_integrated_report.md` remains untouched if present.
 
 ## Rebuild from the signed recording
@@ -21,11 +21,15 @@ python -u -m oscilloscope.build_final_experiment_report --run-dir "$MTB4_RUN"
 ```
 
 The consolidated builder first verifies signed source evidence and
-compatibility across analyses. If the pre-revision `final_experiment_report.md`
-exists, it is copied **byte-for-byte** into
-`final_experiment_report_legacy.md` on the first rebuild and is never
-overwritten thereafter. If the prior report is absent, the builder generates
-its old technical index before archiving it. It then writes the new scientific
+compatibility across analyses. If the pre-revision `final_experiment_report.md` exists, its technical
+consolidation is copied **byte-for-byte** into
+`extended_analysis_technical_report.md` on the first rebuild and never
+overwritten thereafter. Existing archives named
+`final_experiment_report_legacy.md` are **renamed automatically** on the
+next rebuild, preserving every byte. If both filenames exist with different
+contents, the build stops rather than overwriting either file. If the
+prior technical report is absent, the builder generates the original
+technical index before archiving it. It then writes the new scientific
 report to `final_experiment_report.md`. It creates three presentation-only
 figures under `analysis/presentation_figures/`, while reusing exactly three
 figures from the approved detailed analyses. Supporting CSV and detailed
@@ -36,8 +40,8 @@ fits remain unchanged. No new electrical classification is performed.
 
 The new six-figure narrative requires the pre-existing per-ACK observability
 and frequency robustness audits. If either independent report is absent, the
-builder retains the older technical report as the main output and a legacy
-copy, and records `SKIPPED_MISSING_OPTIONAL_PRIOR_AUDITS` in the manifest
+builder retains the older technical report as the main output and a separate
+technical archive, and records `SKIPPED_MISSING_OPTIONAL_PRIOR_AUDITS` in the manifest
 rather than inventing evidence. Run the missing prior audit, then rebuild.
 
 ## Evidence qualifications
