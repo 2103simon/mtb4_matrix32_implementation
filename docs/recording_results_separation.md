@@ -67,6 +67,24 @@ SHA-256 hashes. The source-locked pulse review is copied byte-for-byte; no
 redetection or manual reapproval is required. Current raw acquisition files
 stay at their original paths.
 
+## Future clean recordings
+
+New sessions written by `oscilloscope.record_integrated_matrix32` contain
+only raw data and metadata in the recording directory. Their optional quick
+plot is written into the external `results/` tree. The normal
+`experiment_analysis.run_extended_analysis` command automatically registers
+their raw SHA-256 inventory before analyzing them. A stand-alone setup command
+is also available:
+
+```bash
+python -m experiment_analysis.register_recording --run-dir "$MTB4_RUN"
+```
+
+Registration never bypasses legacy human reviews: if the recording still has
+an embedded `analysis/` directory, use the verified migration instead.
+Signed pulse review happens separately and its approval must exist in the
+external results directory before the extended scientific analyses can run.
+
 ## Analyze and publish
 
 ```bash
