@@ -475,7 +475,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-dir', required=True, type=Path)
     args = parser.parse_args(argv)
-    return present(args.run_dir / 'analysis')
+    from experiment_analysis.paths import analysis_root
+    return present(analysis_root(args.run_dir))
 
 
 if __name__ == '__main__':
