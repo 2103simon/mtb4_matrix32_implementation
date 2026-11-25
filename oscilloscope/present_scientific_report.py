@@ -215,9 +215,24 @@ def present(analysis_dir):
     _accuracy_plot(analysis, eligible)
     _timing_figure(analysis)
 
+    transition_figure = next((candidate for candidate in (
+        'ack_physical_observability/restart_02_detail.png',
+        'ack_physical_observability/restart_01_detail.png',
+        'frequency_transitions/figures/transition_overview.png',
+    ) if (analysis / candidate).is_file()), None)
+    if transition_figure is None:
+        raise FileNotFoundError('No verified restart or transition figure available')
+    has_restart_detail = 'restart_' in transition_figure
+    transition_caption = (
+        'Top: physical CH1 inverse-period frequencies between approved biphasic pulses near a restart. '
+        'Bottom: SF ACK frequencies provisionally mapped to the scope clock. The dashed line marks the first pulse '
+        'following a long pause; no continuous stimulation is inferred inside that gap.'
+        if has_restart_detail else
+        'Approved physical inverse-period frequencies and provisionally mapped SF ACK events across the capture; '
+        'their cross-clock ordering is not independently qualified.'
+    )
     for relative in (
         'command_delivery_scorecard.png',
-        'ack_physical_observability/restart_02_detail.png',
         'stimulation_shutdown/figures/incomplete_pulse_morphology.png',
     ):
         if not (analysis / relative).is_file():
@@ -302,13 +317,11 @@ def present(analysis_dir):
         f"In the nominal provisional map, **{transitions['prior_ack_mismatches_regular']}** regular intervals "
         'do not match the preceding SF ACK; **'
         f"{transitions['active_transition_in_interval_ack_match_count']}** active intervals are compatible with an SF ACK inside "
-        'the same physical cycle. A detailed restart illustrates several rapid SF changes around the first returning pulses. '
-        'The plotted cross-clock event order depends on the assumed mapping; it cannot prove a cycle-boundary firmware policy.',
+        'the same physical cycle. The selected transition example displays the relationship between ACKs '
+        'and observed physical periods, without establishing firmware scheduling causation. '
+        'Cross-clock event order depends on the assumed mapping.',
         '',
-        _image('ack_physical_observability/restart_02_detail.png',
-               'Top: physical CH1 inverse-period frequencies between approved biphasic pulses near a restart. '
-               'Bottom: SF ACK frequencies provisionally mapped to the scope clock. The dashed line marks the first pulse '
-               'following a long pause; no continuous stimulation is inferred inside that gap.', 4),
+        _image(transition_figure, transition_caption, 4),
         '',
         '**Timing sensitivity (not a confidence interval).** Moving the assumed host-to-scope offset changes '
         'which SF ACKs appear inside each electrical interval:', '',
