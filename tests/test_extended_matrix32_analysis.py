@@ -263,9 +263,9 @@ class ExtendedAnalysisTests(unittest.TestCase):
         self.assertIn('## Conclusions and remaining questions', report)
         self.assertIn('## Experiment and measurement windows', report)
         self.assertIn('final_experiment_report_legacy.md', report)
-        self.assertEqual(len(re.findall(r'(?m)^!\\[Figure \\d+\\]', report)), 6)
-        self.assertEqual(len(re.findall(r'(?m)^\\*Figure \\d+ -', report)), 6)
-        for path in re.findall(r'(?m)^!\\[Figure \\d+\\]\\(([^)]+)\\)', report):
+        self.assertEqual(len(re.findall(r'(?m)^!\[Figure \d+\]', report)), 6)
+        self.assertEqual(len(re.findall(r'(?m)^\*Figure \d+ -', report)), 6)
+        for path in re.findall(r'(?m)^!\[Figure \d+\]\(([^)]+)\)', report):
             self.assertTrue((root/path).is_file(), path)
         self.assertEqual(len(list((root/'presentation_figures').glob('*.png'))),3)
         card=json.loads((root/'command_delivery_scorecard.json').read_text())
