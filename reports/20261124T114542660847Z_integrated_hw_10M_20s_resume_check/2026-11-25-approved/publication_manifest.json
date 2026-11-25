@@ -1,0 +1,102 @@
+{
+  "binding_manifest_sha256": "6af79dea416f7082672282e38594bde489af83198dce298c4d545a542e291d87",
+  "files": {
+    "ack_physical_observability/command_physical_timeline.png": {
+      "bytes": 285723,
+      "published_sha256": "295f33488b79ebf2e446a1aa959d5053395fbdf56a2174afabd66b76d00faae7",
+      "source_sha256": "295f33488b79ebf2e446a1aa959d5053395fbdf56a2174afabd66b76d00faae7"
+    },
+    "ack_physical_observability/restart_02_detail.png": {
+      "bytes": 103162,
+      "published_sha256": "4ea73022a80f50d5b9758957087ca86d6c7a66e939654daf4195ab890dcd20ab",
+      "source_sha256": "4ea73022a80f50d5b9758957087ca86d6c7a66e939654daf4195ab890dcd20ab"
+    },
+    "command_delivery_scorecard.png": {
+      "bytes": 111410,
+      "published_sha256": "7b79db4994cf342a3c917b7e61693310dd95f35164e01b421c52c5024351bb3a",
+      "source_sha256": "7b79db4994cf342a3c917b7e61693310dd95f35164e01b421c52c5024351bb3a"
+    },
+    "command_timing/figures/active_muted_timing_boxplots.png": {
+      "bytes": 121125,
+      "published_sha256": "8b1956d2905811d3e0301d6d6b8fd8dd3ba14ee367184cdbe40e8f5afcc3d7eb",
+      "source_sha256": "8b1956d2905811d3e0301d6d6b8fd8dd3ba14ee367184cdbe40e8f5afcc3d7eb"
+    },
+    "command_timing/figures/command_burst_analysis.png": {
+      "bytes": 84135,
+      "published_sha256": "4321cf029d959dcb365649d1dac9acec2b280028bad7f3f40517b45dc15f2a53",
+      "source_sha256": "4321cf029d959dcb365649d1dac9acec2b280028bad7f3f40517b45dc15f2a53"
+    },
+    "command_timing/figures/command_latency_boxplots.png": {
+      "bytes": 74538,
+      "published_sha256": "b1c7a3cef2691fd45fb0282fd3f604c3d476a558cde9bc133f8ea567d1d3c184",
+      "source_sha256": "b1c7a3cef2691fd45fb0282fd3f604c3d476a558cde9bc133f8ea567d1d3c184"
+    },
+    "command_timing/figures/latency_distribution.png": {
+      "bytes": 52460,
+      "published_sha256": "b9b070f311530912128b385afeedc42bd1c1796f019f89b3bbce6cd13bff0790",
+      "source_sha256": "b9b070f311530912128b385afeedc42bd1c1796f019f89b3bbce6cd13bff0790"
+    },
+    "command_timing/figures/message_cadence_boxplots.png": {
+      "bytes": 88486,
+      "published_sha256": "dbaf300e78fd612a8c6707fb5924a54bb5a9a1fa5d4c7f1db19591431289f27a",
+      "source_sha256": "dbaf300e78fd612a8c6707fb5924a54bb5a9a1fa5d4c7f1db19591431289f27a"
+    },
+    "command_timing/figures/throughput_per_second.png": {
+      "bytes": 103389,
+      "published_sha256": "45e34897e0bc12d7c5093d3a46e66ed4abe025bd52e5543cd35bb8fe94a8447e",
+      "source_sha256": "45e34897e0bc12d7c5093d3a46e66ed4abe025bd52e5543cd35bb8fe94a8447e"
+    },
+    "extended_analysis_technical_report.md": {
+      "bytes": 11110,
+      "published_sha256": "ddc44213a8cc0c768bf18a28c5805d743718856cc93b51fed0094907827386e3",
+      "source_sha256": "c4c77eb1e219783cc2d761fe000a64b77130cf83088c581ab02af11e063a7c60"
+    },
+    "final_experiment_report.md": {
+      "bytes": 12782,
+      "published_sha256": "44085cab80550f58c797d75af5a6f19a0bc59d88502c0f856071e90d7d82ddba",
+      "source_sha256": "8d59c9c2f1f030de3f6b655ca83cbd8356c4b60240d877fd8b96886abe49cc42"
+    },
+    "frequency_transitions/figures/transition_overview.png": {
+      "bytes": 163129,
+      "published_sha256": "f02bbecb3ea36d1fef400342e5d76fd294646289fd08dc23ed3c62a26b3c27c5",
+      "source_sha256": "f02bbecb3ea36d1fef400342e5d76fd294646289fd08dc23ed3c62a26b3c27c5"
+    },
+    "frequency_transitions/figures/transition_timing_sensitivity.png": {
+      "bytes": 81723,
+      "published_sha256": "d3d60881103945714eebdb2f3bd6d8a08b3c11404ec1621ec48a42eae5c963ff",
+      "source_sha256": "d3d60881103945714eebdb2f3bd6d8a08b3c11404ec1621ec48a42eae5c963ff"
+    },
+    "presentation_figures/host_timing_overview.png": {
+      "bytes": 198291,
+      "published_sha256": "e0ed8719b74b7dc97beb8e9bfa8c4ff1858118076b27dc8341640fa55d3ee070",
+      "source_sha256": "e0ed8719b74b7dc97beb8e9bfa8c4ff1858118076b27dc8341640fa55d3ee070"
+    },
+    "presentation_figures/observation_windows.png": {
+      "bytes": 41809,
+      "published_sha256": "400dbf8ecd307f17165659dd66d62e4248361af9913809705a4aa19b0e8ff30f",
+      "source_sha256": "400dbf8ecd307f17165659dd66d62e4248361af9913809705a4aa19b0e8ff30f"
+    },
+    "presentation_figures/settled_frequency_accuracy.png": {
+      "bytes": 129782,
+      "published_sha256": "92a58b3c7072b0410e75186a544b33b3977d807773b7af31bb466efbc55fd73c",
+      "source_sha256": "92a58b3c7072b0410e75186a544b33b3977d807773b7af31bb466efbc55fd73c"
+    },
+    "stimulation_shutdown/figures/incomplete_pulse_morphology.png": {
+      "bytes": 418828,
+      "published_sha256": "3e076dc99aae2feac4f5a7af5d4f5c08f01eb917a55c5f4981382155458d7d33",
+      "source_sha256": "3e076dc99aae2feac4f5a7af5d4f5c08f01eb917a55c5f4981382155458d7d33"
+    },
+    "stimulation_shutdown/figures/shutdown_overview.png": {
+      "bytes": 96754,
+      "published_sha256": "d98cde83cbeeaff3c7921449c14507bf61ee7e0199532c4867cd9aa6a9e3fe00",
+      "source_sha256": "d98cde83cbeeaff3c7921449c14507bf61ee7e0199532c4867cd9aa6a9e3fe00"
+    }
+  },
+  "metadata_sha256": "4ed468385fe6284d2cbd036d537487621e5b866864baf8a42fd5593e1bce955a",
+  "raw_data_included": false,
+  "run_id": "20261124T114542660847Z_integrated_hw_10M_20s_resume_check",
+  "schema": "matrix32_publication_snapshot_v1",
+  "signed_review_included": false,
+  "source_analysis_at_publication": "results/20261124T114542660847Z_integrated_hw_10M_20s_resume_check/analysis",
+  "tag": "2026-11-25-approved"
+}
