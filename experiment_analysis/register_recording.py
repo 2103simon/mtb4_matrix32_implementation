@@ -28,6 +28,11 @@ def register(run_dir, *, results_root=None):
         if (data.get('run_id') != raw.name or
                 data.get('metadata_sha256') != sha256(raw / 'metadata.json')):
             raise ValueError('Existing results manifest does not match raw recording')
+        if (raw / 'analysis').is_dir() and (
+                not data.get('signed_review_was_copied_not_regenerated') or
+                not data.get('analysis_files_at_migration')):
+            raise ValueError('Existing results manifest only registers raw files; '
+                             'legacy signed analysis has not been migrated')
         return manifest
     if (raw / 'analysis').exists():
         raise ValueError('This recording has legacy analysis evidence; migrate it instead')
