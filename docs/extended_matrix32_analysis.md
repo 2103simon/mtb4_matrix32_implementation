@@ -100,8 +100,44 @@ analysis/
     figures/latency_distribution.png
     figures/command_burst_analysis.png
     figures/command_timeline.png
+    figures/message_cadence_boxplots.png
+    figures/command_latency_boxplots.png
+    timing_distribution_statistics.csv
+    timing_distribution_samples.csv
   final_experiment_report.md
   extended_analysis_manifest.json
+```
+
+## Incoming MCU and Matrix32 communication cadence
+
+The command-timing module additionally reports **two box plots**, with a
+machine-readable table of n, mean, sample standard deviation, median,
+5th/25th/75th/95th/99th percentiles and maximum:
+
+- **Cadence:** PC arrival-to-arrival MCU Δt; native MCU source-timestamp Δt
+  (1-ms quantized); SF request-to-request, BLE write-begin-to-write-begin,
+  and SF ACK-to-ACK Δt.
+- **Exchange delays:** MCU PC arrival to SF request, SF request to BLE write
+  begin, BLE write begin to SF ACK, SF request to SF ACK, and SC request to
+  SC ACK.
+
+Whiskers show P05–P95; a diamond shows the mean, triangles show P99,
+and the table preserves the full maximum and standard deviation. The
+vertical axes are logarithmic because some host inter-command gaps are
+much longer than normal MCU arrival intervals.
+
+All statistics describe the **entire recorded MCU/controller session**,
+which may extend beyond the 20-second oscilloscope trace. Long
+inter-command gaps can reflect muted or idle periods and must not
+automatically be counted as radio jitter. Host-monotonic write/ACK
+durations are **not electrical application latency**. No MCU-to-scope
+clock synchronization is claimed by these host-local statistics.
+
+Regenerate the plots and table without rerunning other analyses:
+
+```bash
+python -u -m oscilloscope.analyze_command_timing --run-dir "$MTB4_RUN"
+python -u -m oscilloscope.build_final_experiment_report --run-dir "$MTB4_RUN"
 ```
 
 ## Interpretation
