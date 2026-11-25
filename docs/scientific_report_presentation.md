@@ -8,16 +8,16 @@ and evidence limitations. The full earlier technical consolidation is preserved 
 `analysis/extended_analysis_technical_report.md`; the historical
 `analysis/final_integrated_report.md` remains untouched if present.
 
-## Rebuild from the signed recording
+Read [the separation/migration guide](recording_results_separation.md) first. After migration the reports live in `results/<RUN_ID>/analysis/`, not the raw recording folder. For versioned reference copies, publish them to Git via `experiment_analysis.publish_reports`.\n\n## Rebuild from the signed recording
 
 ```bash
 MTB4_RUN="data/recordings/20261124T114542660847Z_integrated_hw_10M_20s_resume_check"
 
 # Regenerates all detailed analyses and the single authoritative report:
-python -u -m oscilloscope.run_extended_analysis --run-dir "$MTB4_RUN"
+python -u -m experiment_analysis.run_extended_analysis --run-dir "$MTB4_RUN"
 
 # Or regenerate the two consolidated reports without repeating detailed audits:
-python -u -m oscilloscope.build_final_experiment_report --run-dir "$MTB4_RUN"
+python -u -m experiment_analysis.build_final_experiment_report --run-dir "$MTB4_RUN"
 ```
 
 The consolidated builder first verifies signed source evidence and

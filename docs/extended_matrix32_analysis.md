@@ -4,7 +4,7 @@
 > `analysis/final_experiment_report.md` is now the concise six-figure scientific report
 > with research-question conclusions, measured frequency errors, timing sensitivity,
 > protocol timing, and limitations. The previous longer report is automatically
-> preserved as `analysis/final_experiment_report_legacy.md`, and the older
+> preserved as `analysis/extended_analysis_technical_report.md`, and the older
 > `final_integrated_report.md` is a historical index only. The detailed
 > frequency-transition, shutdown, timing, robustness, and per-ACK reports remain
 > unchanged. See [scientific report documentation](scientific_report_presentation.md).
@@ -15,29 +15,29 @@ MCU samples, BLE command trace and provisional clock mapping. It does not
 change the recording, create new electrical pulse candidates, edit approvals,
 command hardware or infer physical application time from BLE acknowledgments.
 
-## Run everything (one command)
+Before analyzing an existing recording, perform the [verified migration](recording_results_separation.md); files remain in the original raw recording until then.\n\n## Run everything (one command)
 
-From the repository root (on `feature/live-oscilloscope-recording`):
+From the repository root (on `refactor/separate-recordings-results`):
 
 ```bash
 MTB4_RUN="data/recordings/20261124T114542660847Z_integrated_hw_10M_20s_resume_check"
-python -u -m oscilloscope.run_extended_analysis --run-dir "$MTB4_RUN"
+python -u -m experiment_analysis.run_extended_analysis --run-dir "$MTB4_RUN"
 ```
 
 The entry point generates independent module outputs then combines them into:
 
 ```text
-$MTB4_RUN/analysis/final_experiment_report.md
-$MTB4_RUN/analysis/extended_analysis_manifest.json
+results/<RUN_ID>/analysis/final_experiment_report.md
+results/<RUN_ID>/analysis/extended_analysis_manifest.json
 ```
 
 Each module may also be run on its own:
 
 ```bash
-python -u -m oscilloscope.analyze_frequency_transitions --run-dir "$MTB4_RUN"
-python -u -m oscilloscope.analyze_stimulation_shutdown --run-dir "$MTB4_RUN"
-python -u -m oscilloscope.analyze_command_timing --run-dir "$MTB4_RUN"
-python -u -m oscilloscope.build_final_experiment_report --run-dir "$MTB4_RUN"
+python -u -m experiment_analysis.analyze_frequency_transitions --run-dir "$MTB4_RUN"
+python -u -m experiment_analysis.analyze_stimulation_shutdown --run-dir "$MTB4_RUN"
+python -u -m experiment_analysis.analyze_command_timing --run-dir "$MTB4_RUN"
+python -u -m experiment_analysis.build_final_experiment_report --run-dir "$MTB4_RUN"
 ```
 
 The last command requires all three module summaries. It refuses to combine
@@ -50,7 +50,7 @@ The consolidated report begins with a **Requested → ACKed → physically obser
 scorecard. It is regenerated automatically by the runner, or independently:
 
 ```bash
-python -u -m oscilloscope.build_final_experiment_report --run-dir "$MTB4_RUN"
+python -u -m experiment_analysis.build_final_experiment_report --run-dir "$MTB4_RUN"
 ```
 
 The scorecard uses the recorded SF/SC requests and replies, source-linked
@@ -94,14 +94,14 @@ Each Markdown figure in the three extended analysis reports and the newly regene
 Regenerate all figures and captions with the existing runner:
 
 ```bash
-python -u -m oscilloscope.run_extended_analysis --run-dir "$MTB4_RUN"
+python -u -m experiment_analysis.run_extended_analysis --run-dir "$MTB4_RUN"
 ```
 
 Or regenerate only the command-timing data and combined report (if the other two analyses already exist):
 
 ```bash
-python -u -m oscilloscope.analyze_command_timing --run-dir "$MTB4_RUN"
-python -u -m oscilloscope.build_final_experiment_report --run-dir "$MTB4_RUN"
+python -u -m experiment_analysis.analyze_command_timing --run-dir "$MTB4_RUN"
+python -u -m experiment_analysis.build_final_experiment_report --run-dir "$MTB4_RUN"
 ```
 
 Focused hardware-free regression test:
@@ -176,8 +176,8 @@ clock synchronization is claimed by these host-local statistics.
 Regenerate the plots and table without rerunning other analyses:
 
 ```bash
-python -u -m oscilloscope.analyze_command_timing --run-dir "$MTB4_RUN"
-python -u -m oscilloscope.build_final_experiment_report --run-dir "$MTB4_RUN"
+python -u -m experiment_analysis.analyze_command_timing --run-dir "$MTB4_RUN"
+python -u -m experiment_analysis.build_final_experiment_report --run-dir "$MTB4_RUN"
 ```
 
 ## Interpretation

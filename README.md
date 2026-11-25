@@ -223,6 +223,30 @@ python run_tactile_stimulation.py --arm --record
 
 It uses a **250 ms stale-tactile-input supervisor** (overridable with `--stale-ms`), sequential BLE commands/ACKs, and best-effort STOP on shutdown. See [Matrix32/MCU software architecture](docs/pipeline_and_components.md).
 
+## Separate evidence, analysis and published reports
+
+On the recording/results refactor branch, the experiment layout is:
+
+- **Raw inputs**: `data/recordings/<RUN_ID>/` (never overwritten by analysis).
+- **Signed reviews and derived work**: `results/<RUN_ID>/analysis/` (Git-ignored).
+- **Curated final and technical reports with their figures**:
+  `reports/<RUN_ID>/<TAG>/` (intentionally version-controlled).
+- **Scientific code**: `experiment_analysis/`; hardware-specific acquisition
+  stays under `oscilloscope/`.
+
+For the historical approved 20-second run, first run the **verified,
+non-destructive migration** before regenerating anything:
+
+```bash
+python -m experiment_analysis.migrate_layout --run-dir "$MTB4_RUN"
+python -m experiment_analysis.migrate_layout --run-dir "$MTB4_RUN" --apply
+python -m experiment_analysis.run_extended_analysis --run-dir "$MTB4_RUN"
+python -m experiment_analysis.publish_reports --run-dir "$MTB4_RUN" --tag initial
+```
+
+See the [complete migration and publication workflow](docs/recording_results_separation.md)
+before removing any old files; publication never copies raw waveforms into Git.
+
 ## Recording and analysis
 
 ### Output and provenance
