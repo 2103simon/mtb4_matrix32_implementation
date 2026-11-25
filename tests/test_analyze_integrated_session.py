@@ -13,6 +13,7 @@ from oscilloscope.analyze_integrated_session import (
     analyze_one, analyze_session, coverage_overlaps, describe_gaps,
     record_boundaries, select_overlap_mcu, summarize_full_stream,
 )
+from experiment_analysis.paths import analysis_root, use_results_root
 
 
 def synthetic_mcu():
@@ -161,25 +162,31 @@ class PerRecordScopeTests(unittest.TestCase):
 
     def test_unapproved_record_fails_before_waveform_analysis(self):
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            with patch("oscilloscope.analyze_integrated_session.load_wave",
-                       side_effect=AssertionError("unapproved CH1 must not be processed")):
-                with self.assertRaisesRegex(ValueError, "approval missing"):
-                    analyze_one(root, make_scope_record(1), synthetic_mcu(),
-                                [], [], taxel=11)
+            root = Path(td) / "raw"
+            root.mkdir()
+            (root / "metadata.json").write_text('{"status": "complete", "records": []}')
+            with use_results_root(Path(td) / "results"):
+                with patch("oscilloscope.analyze_integrated_session.load_wave",
+                           side_effect=AssertionError("unapproved CH1 must not be processed")):
+                    with self.assertRaisesRegex(ValueError, "approval missing"):
+                        analyze_one(root, make_scope_record(1), synthetic_mcu(),
+                                    [], [], taxel=11)
+            self.assertFalse((root / "analysis").exists())
 
     def test_approved_records_are_only_physical_source_and_gaps_preserved(self):
         mcu = synthetic_mcu()
         events = [{"event": "sf_ack", "pc_monotonic_ns": 101_000_000_000,
                    "frequency_hz": 100, "status": "OK"}]
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
+            root = Path(td) / "raw"
+            root.mkdir()
             (root / "mcu_matrix32").mkdir()
             (root / "mcu_matrix32/synthetic_tactile_rates.csv").write_text(
                 "synthetic fixture: loader is mocked"
             )
             meta = {"run_id": "test_two", "status": "complete",
                     "records": [make_scope_record(1), make_scope_record(2)]}
+            (root / "metadata.json").write_text(json.dumps(meta))
 
             def fake_record(root, record, *args, **kwargs):
                 idx = record["index"]
@@ -196,9 +203,9 @@ class PerRecordScopeTests(unittest.TestCase):
                         (100 if idx == 1 else 110)*1_000_000_000,
                         (102 if idx == 1 else 112)*1_000_000_000),
                     "record_report": str(
-                        root / "analysis" / f"record_{idx:05d}" / "report.md"),
+                        analysis_root(root) / f"record_{idx:05d}" / "report.md"),
                     "record_summary": str(
-                        root / "analysis" / f"record_{idx:05d}" / "summary.json"),
+                        analysis_root(root) / f"record_{idx:05d}" / "summary.json"),
                     "reviewed_negative_onsets": {
                         "status": "OPERATOR_SOURCE_LOCKED_APPROVED",
                         "onset_count": count},
@@ -219,7 +226,8 @@ class PerRecordScopeTests(unittest.TestCase):
                            "oscilloscope.analyze_integrated_session.analyze_one",
                            side_effect=fake_record), patch(
                            "oscilloscope.approved_frequency_analysis.plot_session_summary"):
-                result = analyze_session(root, meta)
+                with use_results_root(Path(td) / "results"):
+                    result = analyze_session(root, meta)
             self.assertEqual(result["total_observed_scope_s"], 4.)
             self.assertEqual(result["approved_negative_onset_count"], 3)
             self.assertEqual(result["approved_within_record_interval_count"], 2)
@@ -229,7 +237,8 @@ class PerRecordScopeTests(unittest.TestCase):
             self.assertEqual(result["mcu_full_stream"]["rate_snapshots"], 5)
             self.assertEqual(len(result["inter_record_gaps"]), 1)
             self.assertEqual(result["inter_record_gaps"][0]["estimated_gap_s"], 8.)
-            markdown = (root / "analysis/integrated_report.md").read_text()
+            markdown = (Path(td) / "results/raw/analysis/integrated_report.md").read_text()
+            self.assertFalse((root / "analysis").exists())
             self.assertIn("operator-approved", markdown)
             self.assertNotIn("total_scope_positive_events", markdown)
             self.assertNotIn("positive_rising_events", markdown)
