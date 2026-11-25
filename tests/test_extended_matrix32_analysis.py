@@ -231,6 +231,64 @@ class ExtendedAnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(timing['pipeline_timing_stats']['mcu_arrival_dt_ms']['median_ms'],14.501,delta=.002)
         self.assertTrue((root/'command_timing/timing_distribution_statistics.csv').exists())
         self.assertTrue((root/'command_timing/timing_distribution_samples.csv').exists())
+        host=timing['host_state_timing']
+        self.assertEqual(host['throughput_event_counts']['mcu_messages'],9419)
+        self.assertEqual(host['throughput_event_counts']['sf_requests'],266)
+        self.assertEqual(host['throughput_event_counts']['sf_acks'],266)
+        self.assertEqual(host['throughput_event_counts']['sc_acks'],41)
+        self.assertTrue(host['duration_crossing_sc_excluded'])
+        for fn in ('throughput_per_second.csv','state_timing_statistics.csv',
+                   'state_timing_samples.csv'):
+            self.assertTrue((root/'command_timing'/fn).exists())
+        for name in ('final_experiment_report.md',
+                     'frequency_transitions/report.md',
+                     'stimulation_shutdown/report.md',
+                     'command_timing/report.md'):
+            text=(root/name).read_text(encoding='utf-8')
+            import re
+            figures=re.findall(r'(?m)^!\\[[^]]*\\]\\(([^)]+)\\)
+        self.assertTrue((root/'final_experiment_report.md').exists())
+        report=(root/'final_experiment_report.md').read_text()
+        self.assertIn('SF changes acknowledged OK | **266 / 266**',report)
+        self.assertIn('SC current changes acknowledged OK | **41 / 41**',report)
+        self.assertIn('Not determinable',report)
+        card=json.loads((root/'command_delivery_scorecard.json').read_text())
+        self.assertEqual(card['physical_ack_observability']['matching_settled_period_evidence'],59)
+        self.assertEqual(card['physical_ack_observability']['in_scope_no_individually_attributable_evidence'],187)
+        self.assertTrue((root/'command_delivery_scorecard.png').exists())
+        for name in ('frequency_transitions','stimulation_shutdown','command_timing'):
+            s=json.loads((root/name/'summary.json').read_text())
+            for pic in s['figures']:
+                self.assertTrue((root/name/pic).exists(),pic)
+
+
+if __name__=='__main__':unittest.main()
+,text)
+            captions=re.findall(r'(?m)^\\*Figure — .*\\*
+        self.assertTrue((root/'final_experiment_report.md').exists())
+        report=(root/'final_experiment_report.md').read_text()
+        self.assertIn('SF changes acknowledged OK | **266 / 266**',report)
+        self.assertIn('SC current changes acknowledged OK | **41 / 41**',report)
+        self.assertIn('Not determinable',report)
+        card=json.loads((root/'command_delivery_scorecard.json').read_text())
+        self.assertEqual(card['physical_ack_observability']['matching_settled_period_evidence'],59)
+        self.assertEqual(card['physical_ack_observability']['in_scope_no_individually_attributable_evidence'],187)
+        self.assertTrue((root/'command_delivery_scorecard.png').exists())
+        for name in ('frequency_transitions','stimulation_shutdown','command_timing'):
+            s=json.loads((root/name/'summary.json').read_text())
+            for pic in s['figures']:
+                self.assertTrue((root/name/pic).exists(),pic)
+
+
+if __name__=='__main__':unittest.main()
+,text)
+            self.assertGreater(len(figures),0)
+            self.assertEqual(len(figures),len(captions),name)
+            for fig in figures:
+                self.assertTrue((root/name).parent.joinpath(fig).exists(),fig)
+        self.assertIn('throughput_per_second.png',
+                      (root/'final_experiment_report.md').read_text())
+
         self.assertTrue((root/'final_experiment_report.md').exists())
         report=(root/'final_experiment_report.md').read_text()
         self.assertIn('SF changes acknowledged OK | **266 / 266**',report)
