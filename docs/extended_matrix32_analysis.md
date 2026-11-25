@@ -70,6 +70,37 @@ Additional outputs under the recording's `analysis/` folder:
 These outputs never modify source waveforms, clock fits, operator decisions,
 or existing signed approvals.
 
+## Full-session throughput and active/muted timing
+
+The command-timing module now additionally generates:
+
+- `figures/throughput_per_second.png` and `throughput_per_second.csv`: one-second host-clock event counts for MCU messages, SF requests, BLE write starts, and SF ACKs, including one-second fractions of the last acknowledged SC current state.
+- `figures/active_muted_timing_boxplots.png`, `state_timing_statistics.csv`, and `state_timing_samples.csv`: MCU arrival spacing, SF request/ACK spacing, request-to-ACK completion and BLE transport-stage latency, grouped by ACK-indicated ACTIVE/MUTED state, with mean, sample SD, median, P05/P25/P75/P95/P99 and maximum.
+- `summary.json` contains `host_state_timing` with conservation checks of raw host event counts and state sample totals.
+
+**State is the most recent successful SC ACK**, not measured electrical current. Before the first SC ACK it is UNKNOWN. A duration is compared as active or muted only if **it does not cross an intervening SC ACK**; unknown and transition-crossing durations remain in the exported samples but are excluded from the box plots. The time-bin state bar can show mixtures within a second. Long SF-inactivity gaps are retained; they must not be called communication jitter without inspecting controller state.
+
+Each Markdown figure in the three extended analysis reports and the newly regenerated consolidated report is followed immediately by a short *italic descriptive caption*. The captions describe plotted quantities and how to read marks, without making an execution claim. Historic signed review reports and the earlier independent per-ACK audit are not retroactively modified.
+
+Regenerate all figures and captions with the existing runner:
+
+```bash
+python -u -m oscilloscope.run_extended_analysis --run-dir "$MTB4_RUN"
+```
+
+Or regenerate only the command-timing data and combined report (if the other two analyses already exist):
+
+```bash
+python -u -m oscilloscope.analyze_command_timing --run-dir "$MTB4_RUN"
+python -u -m oscilloscope.build_final_experiment_report --run-dir "$MTB4_RUN"
+```
+
+Focused hardware-free regression test:
+
+```bash
+python -m unittest discover -s tests -p 'test_host_timing_views.py' -v
+```
+
 ## Output structure
 
 ```text
