@@ -349,9 +349,20 @@ def build(run_dir):
     # The validated former consolidation remains available verbatim as legacy.
     # The scientific main report adds only presentation figures and narrative;
     # all source-locked audit classifications and provenance stay unchanged.
-    from oscilloscope.present_scientific_report import present
-    presentation = present(analysis)
-    manifest.update(presentation)
+    if prior is not None and robust is not None:
+        from oscilloscope.present_scientific_report import present
+        presentation = present(analysis)
+        manifest.update(presentation)
+    else:
+        # Preserve the preexisting partial-audit workflow. A scientific
+        # source-verified presentation requires both independent audits.
+        from shutil import copyfile
+        copyfile(report, analysis/'final_experiment_report_legacy.md')
+        manifest['legacy_report'] = 'final_experiment_report_legacy.md'
+        manifest['presentation_status'] = 'SKIPPED_MISSING_OPTIONAL_PRIOR_AUDITS'
+        print('[EXTENDED REPORT] Per-ACK or robustness audit absent; '
+              'retaining technical consolidation rather than fabricating the '
+              'six-figure scientific report')
     write_json(analysis/'extended_analysis_manifest.json', manifest)
     print(f'[EXTENDED REPORT] {report}')
     return manifest
