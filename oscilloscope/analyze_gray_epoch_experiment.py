@@ -14,6 +14,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from experiment_analysis.paths import analysis_root
 
 from communication.clock_sync import (
     active_clock_fit, nano_us_to_host_ns, read_active_exchanges,
@@ -194,8 +195,13 @@ def main(argv=None):
         args.run_dir, max_scope_rms_us=args.max_scope_rms_us,
         max_host_rms_us=args.max_host_rms_us,
     )
-    atomic_json(args.run_dir / "gray_alignment.json", alignment)
-    output = args.run_dir / "epoch_clock_analysis.json"
+    # Stand-alone re-analysis must not rewrite clock evidence in the raw
+    # acquisition. Capture-time scripts may create the original clock mapping,
+    # but posthoc diagnostics are kept in the external results tree.
+    destination = analysis_root(args.run_dir) / "gray_epoch_diagnostics"
+    destination.mkdir(parents=True, exist_ok=True)
+    atomic_json(destination / "gray_alignment.json", alignment)
+    output = destination / "epoch_clock_analysis.json"
     atomic_json(output, report)
     print(f"[EPOCH] {report['run_id']}: {len(report['records'])} records, "
           f"{report['qualified_provisional_records']} provisional local fits, "
