@@ -133,6 +133,15 @@ class SeparateRecordingAndReportsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'migrate'):
             register(self.raw, results_root=self.resultroot)
 
+    def test_legacy_science_module_imports_alias_canonical_modules(self):
+        import importlib
+        for name in ('analyze_command_timing', 'analyze_frequency_transitions',
+                     'analyze_stimulation_shutdown', 'build_final_experiment_report',
+                     'audit_ack_physical_observability'):
+            canonical = importlib.import_module('experiment_analysis.' + name)
+            compatibility = importlib.import_module('oscilloscope.' + name)
+            self.assertIs(canonical, compatibility, name)
+
     def test_root_override_context_is_restored(self):
         prior = os.environ.get('MTB4_RESULTS_ROOT')
         with use_results_root(self.resultroot):
