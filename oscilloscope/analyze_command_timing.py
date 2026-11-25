@@ -6,6 +6,7 @@ opportunities, not evidence that a command executed electrically.
 """
 from __future__ import annotations
 import argparse
+import csv
 from collections import Counter
 from pathlib import Path
 import math
@@ -123,6 +124,176 @@ def physical_command_density(ctx):
     return rows
 
 
+
+# All PC / BLE timings are intervals on the host monotonic clock.
+# MCU corrected timestamp deltas are separately reported source-clock intervals.
+CADENCE_LABELS = (
+    ('mcu_arrival_dt_ms', 'MCU arrivals'),
+    ('mcu_corrected_dt_ms', 'MCU source timestamps'),
+    ('sf_request_dt_ms', 'SF requests'),
+    ('sf_ble_write_dt_ms', 'SF BLE writes'),
+    ('sf_ack_dt_ms', 'SF ACKs'),
+)
+LATENCY_LABELS = (
+    ('mcu_arrival_to_sf_request_ms', 'MCU arrival → SF request'),
+    ('sf_request_to_ble_write_ms', 'SF request → BLE write'),
+    ('sf_ble_write_to_ack_ms', 'SF BLE write → ACK'),
+    ('sf_request_to_ack_ms', 'SF request → ACK'),
+    ('sc_request_to_ack_ms', 'SC request → ACK'),
+)
+
+
+def _positive_differences_ns(values, name):
+    values=np.asarray(values,dtype=np.int64)
+    gaps=np.diff(values)
+    if np.any(gaps <= 0):
+        raise ValueError(f'Non-increasing {name} timestamps; cannot report cadence')
+    return gaps.astype(float)/1e6
+
+
+def compute_timing_distributions(ctx,sf,sc):
+    """Host-arrival cadence, actual BLE-write cadence and exchange stages.
+
+    MCU corrected timestamps are source-clock differences with 1-ms
+    granularity, not aligned host/BLE timestamps. Missing BLE transport phase
+    evidence is omitted rather than inferred from host ACK times.
+    """
+    data={
+        'mcu_arrival_dt_ms':_positive_differences_ns(
+            ctx['mcu']['pc_ns'],'MCU PC-arrival'),
+        'sf_request_dt_ms':_positive_differences_ns(
+            [r['request_host_ns'] for r in sf],'SF request'),
+        'sf_ack_dt_ms':_positive_differences_ns(
+            [r['ack_host_ns'] for r in sf],'SF ACK'),
+        'sf_request_to_ack_ms':np.asarray(
+            [r['request_to_ack_ms'] for r in sf],dtype=float),
+        'sc_request_to_ack_ms':np.asarray(
+            [r['request_to_ack_ms'] for r in sc],dtype=float),
+        'sf_ble_write_to_ack_ms':np.asarray(
+            [r['ble_write_to_ack_ms'] for r in sf
+             if r['ble_write_to_ack_ms'] is not None],dtype=float),
+    }
+    data['mcu_arrival_to_sf_request_ms']=np.asarray([
+        (r['request_host_ns']-int(r['source_mcu_monotonic_ns']))/1e6
+        for r in sf if r['source_mcu_monotonic_ns'] != ''
+    ],dtype=float)
+    src_path=ctx['mcu'].get('path')
+    if src_path is not None:
+        with open(src_path,newline='',encoding='utf-8') as f:
+            rows=list(csv.DictReader(f))
+        if rows and 'corrected_timestamp_ms' in rows[0]:
+            if len(rows)!=len(ctx['mcu']['pc_ns']):
+                raise ValueError('MCU source timestamp / arrival length mismatch')
+            native=np.asarray(
+                [int(r['corrected_timestamp_ms']) for r in rows],dtype=np.int64)
+            dt=np.diff(native)
+            if np.any(dt <= 0):
+                raise ValueError('MCU corrected timestamps are non-increasing')
+            data['mcu_corrected_dt_ms']=dt.astype(float)
+    sf_ack=[e for e in ctx['events'] if e.get('event')=='sf_ack']
+    if len(sf_ack)!=len(sf):
+        raise ValueError('SF ACK trace and verified request/ACK pairs disagree')
+    write_ns=[]
+    request_to_write=[]
+    for row,e in zip(sf,sf_ack):
+        if int(e['pc_monotonic_ns'])!=int(row['ack_host_ns']):
+            raise ValueError('SF ACK trace order mismatch')
+        nested=(e.get('evidence') or {}).get('ack') or {}
+        write_s=nested.get('write_begin_monotonic_s')
+        if not isinstance(write_s,(int,float)):
+            continue
+        write_ns.append(int(round(write_s*1e9)))
+        dt_ms=(write_s*1e9-int(row['request_host_ns']))/1e6
+        if dt_ms < 0:
+            raise ValueError('BLE write begin precedes logged SF request')
+        request_to_write.append(dt_ms)
+    data['sf_ble_write_dt_ms']=_positive_differences_ns(
+        write_ns,'SF BLE write')
+    data['sf_request_to_ble_write_ms']=np.asarray(
+        request_to_write,dtype=float)
+    for key,arr in data.items():
+        if not np.all(np.isfinite(arr)) or np.any(arr < 0):
+            raise ValueError(f'Invalid {key} timing intervals')
+    return data
+
+
+def timing_distribution_stats(data):
+    """Mean/SD/median and untrimmed tails for reproducible comparison."""
+    stats={}
+    for key,values in data.items():
+        x=np.asarray(values,dtype=float)
+        stats[key]=dict(
+            n=int(x.size),
+            mean_ms=float(np.mean(x)) if len(x) else None,
+            std_ms=float(np.std(x,ddof=1)) if len(x)>1 else (0. if len(x) else None),
+            median_ms=float(np.median(x)) if len(x) else None,
+            p05_ms=float(np.percentile(x,5)) if len(x) else None,
+            p25_ms=float(np.percentile(x,25)) if len(x) else None,
+            p75_ms=float(np.percentile(x,75)) if len(x) else None,
+            p95_ms=float(np.percentile(x,95)) if len(x) else None,
+            p99_ms=float(np.percentile(x,99)) if len(x) else None,
+            max_ms=float(np.max(x)) if len(x) else None)
+    return stats
+
+
+def plot_timing_boxplots(out,data):
+    """Plot full-session inter-event cadence and protocol-stage latencies."""
+    plt=safe_figure_setup()
+    figures=[]
+    for selections,filename,title in (
+        (CADENCE_LABELS,'message_cadence_boxplots.png',
+         'Message arrival / SF dispatch / BLE write / ACK cadence'),
+        (LATENCY_LABELS,'command_latency_boxplots.png',
+         'Host-observed pipeline stages: NOT electrical application latency'),
+    ):
+        keys=[key for key,_ in selections if len(data.get(key,()))]
+        labels=[f'{label}\n(n={len(data[key])})'
+                for key,label in selections if len(data.get(key,()))]
+        fig,ax=plt.subplots(
+            figsize=(max(11,len(keys)*2.0),6.5),layout='constrained')
+        if keys:
+            values=[data[key] for key in keys]
+            bp=ax.boxplot(values,whis=(5,95),showmeans=True,
+                showfliers=False,patch_artist=True,
+                meanprops=dict(marker='D',markerfacecolor='black',
+                               markeredgecolor='white',markersize=6),
+                medianprops=dict(color='black',linewidth=1.8))
+            ax.set_xticks(range(1,len(keys)+1))
+            ax.set_xticklabels(labels)
+            for patch in bp['boxes']:
+                patch.set_facecolor('#7FB6D6')
+                patch.set_alpha(.8)
+            p99=[np.percentile(data[key],99) for key in keys]
+            ax.scatter(range(1,len(keys)+1),p99,marker='^',s=42,
+                color='#BC6239',zorder=5,label='99th percentile')
+            ax.set_yscale('log')
+            ax.legend(loc='upper right')
+        ax.set(ylabel='Elapsed time (ms, log scale)',title=title)
+        ax.grid(axis='y',alpha=.2)
+        ax.set_axisbelow(True)
+        fig.savefig(out/'figures'/filename,dpi=170)
+        plt.close(fig)
+        figures.append('figures/'+filename)
+    return figures
+
+
+def timing_stats_markdown(stats):
+    lines=[
+        '| Distribution | n | Mean ± SD (ms) | Median | P05 | P25 | P75 | P95 | P99 | Max |',
+        '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+    ]
+    for key,label in (*CADENCE_LABELS,*LATENCY_LABELS):
+        entry=stats.get(key)
+        if not entry or not entry['n']:
+            continue
+        lines.append(
+            f"| {label} | {entry['n']} | {entry['mean_ms']:.3f} ± {entry['std_ms']:.3f} | "
+            f"{entry['median_ms']:.3f} | {entry['p05_ms']:.3f} | "
+            f"{entry['p25_ms']:.3f} | {entry['p75_ms']:.3f} | "
+            f"{entry['p95_ms']:.3f} | {entry['p99_ms']:.3f} | {entry['max_ms']:.3f} |")
+    return lines
+
+
 def make_figures(out,sf,sc,density):
     plt=safe_figure_setup()
     fig, ax=plt.subplots(figsize=(12,5),layout='constrained')
@@ -175,6 +346,17 @@ def run(run_dir):
     save_csv(out/'sc_command_latency.csv',sc,list(sc[0]) if sc else ['sc_seq'])
     save_csv(out/'command_rate_vs_cycle.csv',density,list(density[0]) if density else ['start_id'])
     make_figures(out,sf,sc,density)
+    distributions=compute_timing_distributions(ctx,sf,sc)
+    distribution_stats=timing_distribution_stats(distributions)
+    boxplot_files=plot_timing_boxplots(out,distributions)
+    save_csv(out/'timing_distribution_statistics.csv',
+             [dict(distribution=key,**row) for key,row in distribution_stats.items()],
+             ['distribution','n','mean_ms','std_ms','median_ms','p05_ms','p25_ms',
+              'p75_ms','p95_ms','p99_ms','max_ms'])
+    save_csv(out/'timing_distribution_samples.csv',
+             [dict(distribution=key,delta_ms=float(v))
+              for key,values in distributions.items() for v in values],
+             ['distribution','delta_ms'])
     sf_times=quantiles([r['request_to_ack_ms'] for r in sf])
     sc_times=quantiles([r['request_to_ack_ms'] for r in sc])
     active=[r for r in sf if r['ack_spacing_divided_by_prior_period'] is not None]
@@ -182,6 +364,7 @@ def run(run_dir):
     summary=dict(schema='matrix32_host_command_timing_v1',
        sf_request_ack_pairs=len(sf),sc_request_ack_pairs=len(sc),
        sf_request_ack_ms=sf_times,sc_request_ack_ms=sc_times,
+       pipeline_timing_stats=distribution_stats,
        sf_ack_with_previous_active_cycle_reference=len(active),
        sf_acks_faster_than_previous_cycle=faster,
        sf400_muted_scheduler_count=sum(r['is_sf400_muted_scheduler'] for r in sf),
@@ -191,7 +374,7 @@ def run(run_dir):
            r['regular_period'] and r['more_than_one_sf_ack_during_period_provisional']
            for r in density),
        figures=['figures/latency_distribution.png','figures/command_burst_analysis.png',
-                'figures/command_timeline.png'],
+                'figures/command_timeline.png'] + boxplot_files,
        host_request_to_ack_is_physical_latency=False,
        provenance=ctx['provenance'])
     write_json(out/'summary.json',summary)
@@ -208,6 +391,22 @@ def run(run_dir):
       f"| SF400 ACKs during ACK-indicated mute | {summary['sf400_muted_scheduler_count']} |",
       f"| Complete approved cycles with ≥2 SF ACKs (provisional) | "
       f"{summary['physical_intervals_with_multiple_sf_acks_provisional']} |",'',
+      '## Message cadence and pipeline jitter', '',
+      'All distributions cover the **complete recorded MCU/controller session**, '
+      'not just the ~20 s scope capture. The long SF inter-command tails can '
+      'include idle/muted periods; they are not automatically network jitter. '
+      'The host MCU-arrival intervals include USB/OS scheduling. '
+      'MCU source timestamps have 1-ms quantization. '
+      'BLE write begins and ACK timestamps use the recorded host monotonic clock.', '',
+      *timing_stats_markdown(distribution_stats), '',
+      '![Incoming MCU vs SF request / BLE-write / ACK cadence](figures/message_cadence_boxplots.png)', '',
+      '![Request, write and ACK latency stages](figures/command_latency_boxplots.png)', '',
+      '**Plot convention:** central line = median, diamond = mean, box = '
+      '25th–75th percentile, whiskers = 5th–95th percentile, triangle = '
+      '99th percentile. Maxima and standard deviations remain in the table. '
+      'Logarithmic time axis is used solely for readability.', '',
+      '[Distribution statistics](timing_distribution_statistics.csv) · '
+      '[Untrimmed underlying timing samples](timing_distribution_samples.csv).', '',
       '![Host protocol request-to-ACK latency](figures/latency_distribution.png)','',
       '![Inter-ACK spacing relative to preceding period](figures/command_burst_analysis.png)','',
       '![Full SF ACK timing](figures/command_timeline.png)','',
