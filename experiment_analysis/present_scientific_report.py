@@ -161,7 +161,33 @@ def _check_figures(analysis, markdown):
     return paths
 
 
-def present(analysis_dir):
+
+def _recording_root(analysis, recording_dir=None):
+    """Resolve acquisition evidence independently from derived analysis output.
+
+    Old self-contained runs kept metadata beside analysis/. For external
+    results, callers must pass the original raw recording explicitly;
+    silently looking for results/<run>/metadata.json is incorrect.
+    """
+    analysis = Path(analysis).expanduser().resolve()
+    if recording_dir is None:
+        legacy_root = analysis.parent
+        if not (legacy_root / 'metadata.json').is_file():
+            raise FileNotFoundError(
+                'Analysis and recording are separate. Pass recording_dir=RAW_RUN '
+                'to present(), or --run-dir RAW_RUN to the CLI. '
+                'Never copy raw metadata into results/.')
+        return legacy_root
+    from experiment_analysis.paths import raw_run_dir, analysis_root
+    raw = raw_run_dir(recording_dir)
+    expected = analysis_root(raw)
+    if expected != analysis:
+        raise ValueError(
+            f'Analysis directory {analysis} is not the registered results '
+            f'location {expected} for raw recording {raw}')
+    return raw
+
+def present(analysis_dir, *, recording_dir=None):
     """Preserve the original technical consolidation, then write the main report."""
     analysis = Path(analysis_dir).expanduser().resolve()
     migrate_archived_technical_report(analysis)
@@ -174,7 +200,7 @@ def present(analysis_dir):
                     (b'## Requested ', b'## Main measurements'))):
         raise ValueError('Refusing to replace the technical report with the presentation report')
 
-    root = analysis.parent
+    root = _recording_root(analysis, recording_dir=recording_dir)
     metadata = _read(root/'metadata.json')
     # Read-only controller setup detail, when uniquely present in the run.
     # It is supplemental metadata, not a new electrical classification.
@@ -476,7 +502,7 @@ def main(argv=None):
     parser.add_argument('--run-dir', required=True, type=Path)
     args = parser.parse_args(argv)
     from experiment_analysis.paths import analysis_root
-    return present(analysis_root(args.run_dir))
+    return present(analysis_root(args.run_dir), recording_dir=args.run_dir)
 
 
 if __name__ == '__main__':
