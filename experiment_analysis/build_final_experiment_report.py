@@ -366,7 +366,7 @@ def build(run_dir):
     # all source-locked audit classifications and provenance stay unchanged.
     if prior is not None and robust is not None:
         from experiment_analysis.present_scientific_report import present
-        presentation = present(analysis)
+        presentation = present(analysis, recording_dir=ctx['root'])
         manifest.update(presentation)
     else:
         # Preserve the preexisting partial-audit workflow. A scientific
