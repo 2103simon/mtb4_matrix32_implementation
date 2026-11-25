@@ -148,6 +148,16 @@ def plot_command_delivery_scorecard(path, card):
 def build(run_dir):
     ctx=read_context(run_dir)
     analysis=ctx['root']/'analysis'
+    # Snapshot the existing long-form report exactly once before this builder
+    # replaces its old path with the new authoritative scientific report.
+    # This preserves the user's original technical index byte-for-byte.
+    old_report=analysis/'final_experiment_report.md'
+    original_legacy=analysis/'final_experiment_report_legacy.md'
+    if old_report.is_file() and not original_legacy.exists():
+        prior_text=old_report.read_text(encoding='utf-8')
+        if ('## Requested ' in prior_text or
+                '## Main measurements' in prior_text):
+            original_legacy.write_bytes(old_report.read_bytes())
     summaries={}
     for name,title in REQUIRED:
         folder=analysis/name
@@ -357,7 +367,8 @@ def build(run_dir):
         # Preserve the preexisting partial-audit workflow. A scientific
         # source-verified presentation requires both independent audits.
         from shutil import copyfile
-        copyfile(report, analysis/'final_experiment_report_legacy.md')
+        if not (analysis/'final_experiment_report_legacy.md').is_file():
+            copyfile(report, analysis/'final_experiment_report_legacy.md')
         manifest['legacy_report'] = 'final_experiment_report_legacy.md'
         manifest['presentation_status'] = 'SKIPPED_MISSING_OPTIONAL_PRIOR_AUDITS'
         print('[EXTENDED REPORT] Per-ACK or robustness audit absent; '
