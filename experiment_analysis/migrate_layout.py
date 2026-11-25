@@ -118,15 +118,66 @@ def migrate(run_dir, *, results_root=None, apply=False):
     return preview
 
 
+
+def verify_migration(run_dir, *, results_root=None):
+    """Check raw-source hashes and copied signed review without touching files."""
+    raw = raw_run_dir(run_dir)
+    dest = results_dir(raw, results_root)
+    manifest_path = dest / 'recording_manifest.json'
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f'No verified migration manifest: {manifest_path}')
+    meta = json.loads(manifest_path.read_text(encoding='utf-8'))
+    if meta.get('run_id') != raw.name or meta.get('schema') != 'matrix32_recording_results_binding_v1':
+        raise ValueError('Wrong or unsupported recording migration manifest')
+    original = raw / 'analysis'
+    files = {
+        p.relative_to(raw).as_posix(): {
+            'bytes': p.stat().st_size, 'sha256': sha256(p)
+        } for p in sorted(_files(raw)) if original not in p.parents
+    }
+    if files != meta['raw_files']:
+        raise ValueError('Raw recording has changed since migration')
+    if sha256(raw / 'metadata.json') != meta['metadata_sha256']:
+        raise ValueError('Recording metadata changed since migration')
+    approved = {}
+    for rel, expected in meta['analysis_files_at_migration'].items():
+        # Reports and plots may be legitimately regenerated. Signed review
+        # decisions and all underlying review CSV source tables may not.
+        if '/pulse_review/' not in '/' + rel:
+            continue
+        filename = Path(rel).name
+        if filename not in (
+            'review_approval.json', 'review_manifest.json',
+            'review_decisions.csv', 'manual_additions.csv',
+            'approved_onsets.csv', 'approved_intervals.csv',
+            'accepted_onsets.csv', 'rejected_onsets.csv',
+            'suppressed_onsets.csv', 'candidate_intervals.csv',
+        ):
+            continue
+        target = dest / 'analysis' / rel
+        _verify_file_copy(None, target, expected)
+        approved[rel] = expected['sha256']
+    return {
+        'status': 'VERIFIED', 'run_id': raw.name,
+        'raw_files_unchanged': len(files),
+        'signed_review_source_files_unchanged': len(approved),
+        'results_dir': str(dest),
+    }
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", required=True, type=Path)
     parser.add_argument("--results-root", type=Path)
-    parser.add_argument("--apply", action="store_true",
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument("--apply", action="store_true",
                         help="Copy and verify analysis; NEVER delete raw data")
+    actions.add_argument("--verify", action="store_true",
+                        help="Recheck raw files and signed approval against migration hashes")
     args = parser.parse_args(argv)
-    result = migrate(args.run_dir, results_root=args.results_root,
-                     apply=args.apply)
+    result = (verify_migration(args.run_dir, results_root=args.results_root)
+              if args.verify else migrate(args.run_dir, results_root=args.results_root,
+                                           apply=args.apply))
     print(json.dumps(result, indent=2))
     if args.apply:
         print("Source analysis was intentionally LEFT IN PLACE. "
