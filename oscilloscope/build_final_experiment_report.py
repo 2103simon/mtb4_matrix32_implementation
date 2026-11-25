@@ -148,11 +148,15 @@ def plot_command_delivery_scorecard(path, card):
 def build(run_dir):
     ctx=read_context(run_dir)
     analysis=ctx['root']/'analysis'
+    from oscilloscope.present_scientific_report import (
+        migrate_archived_technical_report, TECHNICAL_REPORT_FILENAME,
+    )
+    migrate_archived_technical_report(analysis)
     # Snapshot the existing long-form report exactly once before this builder
     # replaces its old path with the new authoritative scientific report.
     # This preserves the user's original technical index byte-for-byte.
     old_report=analysis/'final_experiment_report.md'
-    original_legacy=analysis/'final_experiment_report_legacy.md'
+    original_legacy=analysis/TECHNICAL_REPORT_FILENAME
     if old_report.is_file() and not original_legacy.exists():
         prior_text=old_report.read_text(encoding='utf-8')
         if ('## Requested ' in prior_text or
@@ -356,7 +360,7 @@ def build(run_dir):
          delivery_scorecard_figure='command_delivery_scorecard.png',
          consolidated_report='final_experiment_report.md')
     write_json(analysis/'extended_analysis_manifest.json',manifest)
-    # The validated former consolidation remains available verbatim as legacy.
+    # The validated former consolidation remains available verbatim as the detailed technical archive.
     # The scientific main report adds only presentation figures and narrative;
     # all source-locked audit classifications and provenance stay unchanged.
     if prior is not None and robust is not None:
@@ -367,9 +371,9 @@ def build(run_dir):
         # Preserve the preexisting partial-audit workflow. A scientific
         # source-verified presentation requires both independent audits.
         from shutil import copyfile
-        if not (analysis/'final_experiment_report_legacy.md').is_file():
-            copyfile(report, analysis/'final_experiment_report_legacy.md')
-        manifest['legacy_report'] = 'final_experiment_report_legacy.md'
+        if not (analysis/TECHNICAL_REPORT_FILENAME).is_file():
+            copyfile(report, analysis/TECHNICAL_REPORT_FILENAME)
+        manifest['technical_report'] = TECHNICAL_REPORT_FILENAME
         manifest['presentation_status'] = 'SKIPPED_MISSING_OPTIONAL_PRIOR_AUDITS'
         print('[EXTENDED REPORT] Per-ACK or robustness audit absent; '
               'retaining technical consolidation rather than fabricating the '
