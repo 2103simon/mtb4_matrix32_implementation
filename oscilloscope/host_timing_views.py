@@ -206,8 +206,7 @@ def plot_state_boxplots(out, samples):
                 box['boxes'][0].set_facecolor('#5c91bc' if state=='ACTIVE' else '#d6a04b')
                 box['boxes'][0].set_alpha(.75)
                 ax.scatter(x,np.percentile(vals,99),marker='^',s=35,color='black',zorder=5)
-                ax.text(x,.975,f'n={len(vals)}',transform=ax.get_xaxis_transform(),
-                        ha='center',va='top',fontsize=8)
+                # Group sample counts are reported in state_timing_statistics.csv.
         ax.set_xticks([3*i+1.5 for i in range(len(selections))])
         ax.set_xticklabels([label for _,label in selections])
         ax.set_yscale('log')
