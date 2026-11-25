@@ -22,8 +22,8 @@ from communication.clock_sync import (
 from communication.clock_estimator_diagnostics import (
     _clock_intersection, diagnose_active_clock,
 )
-from align_gray_records import build_alignment, read_nano_frames
-from record_scope import atomic_json
+from oscilloscope.align_gray_records import build_alignment, read_nano_frames
+from oscilloscope.record_scope import atomic_json
 
 
 def analyze(run_dir, *, max_scope_rms_us=100.0, max_host_rms_us=1000.0):
