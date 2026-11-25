@@ -1,5 +1,12 @@
 # Approved Matrix32 SF-ACK vs. physical pulse observability
 
+> **Results-layout note:** Saved captures remain under `data/recordings/`.
+> Run derived diagnostics against `results/<RUN_ID>/analysis/`, not inside
+> the raw recording. The paths described below may include historical
+> pre-refactor examples; use the
+> [verified migration and cleanup guide](recording_results_separation.md)
+> before reprocessing older data.
+
 Use `oscilloscope/audit_ack_physical_observability.py` to produce a repeatable,
 **offline-only** report relating Matrix32 successful SF acknowledgments to
 operator-approved biphasic CH1 pulse intervals.
@@ -134,7 +141,7 @@ python -u -m oscilloscope.plot_integrated_overview \
 
 The resulting figure is:
 
-`$MTB4_RUN/analysis/record_00001/integrated_overview.png`
+`results/<RUN_ID>/analysis/record_00001/integrated_overview.png`
 
 It restores the link in both historical reports without rewriting those
 reports or any signed evidence. The figure includes the full original CH1

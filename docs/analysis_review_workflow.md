@@ -1,5 +1,12 @@
 # Analysis design and manual pulse-review gate (experimental branch)
 
+> **Results-layout note:** Saved captures remain under `data/recordings/`.
+> Run derived diagnostics against `results/<RUN_ID>/analysis/`, not inside
+> the raw recording. The paths described below may include historical
+> pre-refactor examples; use the
+> [verified migration and cleanup guide](recording_results_separation.md)
+> before reprocessing older data.
+
 This is the implementation starting point for reviewing N separate 20-second
 CH1+CH2 scope records and one continuous MCU/Matrix32 host session. No
 experimental result is automatically promoted to physically verified status.

@@ -1,5 +1,12 @@
 # Nano Every Gray timecode: separate oscilloscope acquisitions and local clock fits
 
+> **Results-layout note:** Saved captures remain under `data/recordings/`.
+> Run derived diagnostics against `results/<RUN_ID>/analysis/`, not inside
+> the raw recording. The paths described below may include historical
+> pre-refactor examples; use the
+> [verified migration and cleanup guide](recording_results_separation.md)
+> before reprocessing older data.
+
 > **Historical timing-study notebook, not a list of current flashable
 > Nano builds.** The canonical firmware is now the single
 > `arduino_nano/platformio.ini` environment `nano_every_10hz_hardware_timer`, with
@@ -262,7 +269,7 @@ python -m oscilloscope.audit_gray_pulse_timing --run-dir "$BASE"
 python -m oscilloscope.audit_gray_pulse_timing --run-dir "$TEST"
 python -m oscilloscope.compare_gray_schedules \
   --baseline "$BASE" --candidate "$TEST"
-code "$TEST/analysis/gray_schedule_comparison.md"
+code "results/$(basename "$TEST")/analysis/gray_schedule_comparison.md"
 ```
 
 The physical pulse audit extracts ALL thresholded, complete CH2 Gray
@@ -374,7 +381,7 @@ dump receipt times. The files preserve separate scope acquisition gaps.
 ```bash
 RUN=data/recordings/<your_10hz_buffered_epoch_run>
 python -m oscilloscope.audit_gray_pulse_timing --run-dir "$RUN"
-code "$RUN/analysis/gray_pulse_geometry_report.md"
+code "results/$(basename "$RUN")/analysis/gray_pulse_geometry_report.md"
 code "$RUN/epoch_clock_analysis.json"
 ```
 
