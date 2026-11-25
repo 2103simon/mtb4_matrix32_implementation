@@ -22,10 +22,14 @@ class SeparateRecordingAndReportsTests(unittest.TestCase):
         self.home = Path(self.temp.name)
         self.raw = self.home/'data'/'recordings'/'sample_run'
         self.raw.mkdir(parents=True)
-        (self.raw/'metadata.json').write_text(
-            '{"run_id":"sample_run","status":"complete"}\n')
         (self.raw/'waveforms').mkdir()
-        (self.raw/'waveforms'/'ch1.csv').write_bytes(b'time,v\n0.0,0\n')
+        ch1 = self.raw/'waveforms'/'ch1.csv'
+        ch1.write_bytes(b'time,v\\n0.0,0\\n')
+        (self.raw/'metadata.json').write_text(json.dumps({
+            'run_id':'sample_run', 'status':'complete',
+            'records':[{'index':1,'channels':{
+                'CH1':{'path':'waveforms/ch1.csv'}}}]
+        })+'\\n')
         a = self.raw/'analysis'
         a.mkdir()
         (a/'figures').mkdir()
@@ -36,8 +40,9 @@ class SeparateRecordingAndReportsTests(unittest.TestCase):
         (a/'extended_analysis_technical_report.md').write_text(
             '# Technical report\n\n![Figure X](figures/plot.png)\n', encoding='utf-8')
         (a/'pulse_review').mkdir()
-        (a/'pulse_review'/'review_approval.json').write_bytes(
-            b'{"human_signed_off": true, "source_ch1_sha256":"test"}\n')
+        (a/'pulse_review'/'review_approval.json').write_text(
+            json.dumps({'human_signed_off': True, 'record_index':1,
+                        'source_ch1_sha256':sha256(ch1)}) + '\\n')
         self.resultroot = self.home/'results'
 
     def test_dry_run_does_not_create_results(self):
