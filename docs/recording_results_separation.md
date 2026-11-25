@@ -231,7 +231,9 @@ archived unmodified under `reports/legacy_mcu_plots/`.
 
 ```bash
 python -m compileall -q experiment_analysis oscilloscope tests
-python -m unittest discover -s tests -v 2>&1 | tee /tmp/matrix32_full_suite.log
+set -o pipefail
+MTB4_EXTENDED_RUN="$MTB4_RUN" MTB4_SCI_REPORT_RUN="$MTB4_RUN" \
+  python -m unittest discover -s tests -v 2>&1 | tee /tmp/matrix32_full_suite.log
 ```
 
 A full suite may take longer than the focused regression and should be
