@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from experiment_analysis.paths import analysis_root, results_dir, use_results_root, sha256
 from experiment_analysis.migrate_layout import migrate, inventory, verify_migration
+from experiment_analysis.register_recording import register
 from experiment_analysis.publish_reports import publish, _safe_relative
 
 
@@ -114,6 +115,23 @@ class SeparateRecordingAndReportsTests(unittest.TestCase):
         (folder/'symlink').symlink_to(self.raw/'metadata.json')
         with self.assertRaisesRegex(ValueError, 'symlink'):
             migrate(self.raw, results_root=self.resultroot)
+
+    def test_new_clean_recording_is_registered_without_raw_writes(self):
+        import shutil
+        shutil.rmtree(self.raw/'analysis')
+        original = sha256(self.raw/'waveforms/ch1.csv')
+        result = register(self.raw, results_root=self.resultroot)
+        self.assertTrue(result.exists())
+        self.assertEqual(original, sha256(self.raw/'waveforms/ch1.csv'))
+        self.assertFalse((self.raw/'analysis').exists())
+        self.assertEqual(register(self.raw, results_root=self.resultroot),result)
+        with use_results_root(self.resultroot):
+            self.assertEqual(analysis_root(self.raw),
+                             self.resultroot/'sample_run'/'analysis')
+
+    def test_legacy_run_requires_migration_before_register(self):
+        with self.assertRaisesRegex(ValueError, 'migrate'):
+            register(self.raw, results_root=self.resultroot)
 
     def test_root_override_context_is_restored(self):
         prior = os.environ.get('MTB4_RESULTS_ROOT')
