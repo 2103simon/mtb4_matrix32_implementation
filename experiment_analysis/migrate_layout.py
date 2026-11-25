@@ -89,9 +89,15 @@ def migrate(run_dir, *, results_root=None, apply=False):
     }
     if not apply:
         return preview
-    if new.exists() or (dest / "recording_manifest.json").exists():
+    existing_manifest = dest / "recording_manifest.json"
+    if new.exists() or existing_manifest.exists():
         raise FileExistsError(
-            f"Migration destination already exists; no files overwritten: {dest}")
+            f"Migration destination already contains results: {dest}. "
+            f"analysis_exists={new.exists()}, manifest_exists={existing_manifest.exists()}. "
+            "No files were overwritten. If this is an already migrated run, "
+            "use --verify and check its signed-review migration status. "
+            "Otherwise inspect and preserve the existing results directory "
+            "before retrying --apply; do not delete approvals.")
     dest.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".{raw.name}.migrating-",
                                    dir=dest.parent))
@@ -147,6 +153,14 @@ def verify_migration(run_dir, *, results_root=None):
     if meta.get('run_id') != raw.name or meta.get('schema') != 'matrix32_recording_results_binding_v1':
         raise ValueError('Wrong or unsupported recording migration manifest')
     original = raw / 'analysis'
+    # A registration-only manifest is not proof that an existing signed
+    # analysis tree was copied. Never report a false "VERIFIED" migration.
+    if original.is_dir() and (not meta.get('signed_review_was_copied_not_regenerated')
+                              or not meta.get('analysis_files_at_migration')):
+        raise ValueError(
+            'Results manifest is not a completed legacy-analysis migration; '
+            'original analysis still exists. Preserve the current results '
+            'directory and use the lossless migration workflow.')
     files = {
         p.relative_to(raw).as_posix(): {
             'bytes': p.stat().st_size, 'sha256': sha256(p)
