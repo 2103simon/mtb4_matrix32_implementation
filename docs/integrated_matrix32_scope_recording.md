@@ -3,8 +3,8 @@
 > **November 2026 results-layout refactor:** New analyses and signed pulse
 > reviews are written under `results/<RUN_ID>/analysis/`, separate from
 > immutable inputs under `data/recordings/<RUN_ID>/`. Existing recording
-> directories with `analysis/` must be [migrated without deletion](
-> recording_results_separation.md) before reanalysis. Use
+> directories with `analysis/` must follow the
+> [non-destructive migration guide](recording_results_separation.md) before reanalysis. Use
 > `python -m experiment_analysis.run_extended_analysis --run-dir RAW_RUN`
 > for cross-device analyses and `python -m experiment_analysis.publish_reports`
 > to create Git-tracked reports with their figures. Any older output paths
