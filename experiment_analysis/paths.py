@@ -56,6 +56,13 @@ def _validate_binding(root, dest):
     item = json.loads(manifest.read_text(encoding="utf-8"))
     if item.get("run_id") != root.name:
         raise ValueError(f"Results manifest does not identify run {root.name}")
+    if (root / "analysis").is_dir() and (
+            not item.get("signed_review_was_copied_not_regenerated") or
+            not item.get("analysis_files_at_migration")):
+        raise ValueError(
+            "Original legacy analysis still exists but results manifest "
+            "does not record a completed migration; keep all source files, "
+            "inspect existing results and migrate safely.")
     recorded_meta = item.get("metadata_sha256")
     if recorded_meta and sha256(root / "metadata.json") != recorded_meta:
         raise ValueError("Raw metadata differs from the results recording manifest")
