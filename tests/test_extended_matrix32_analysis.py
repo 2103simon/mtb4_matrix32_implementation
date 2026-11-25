@@ -19,6 +19,7 @@ from oscilloscope.analyze_command_timing import (
     timing_distribution_stats, timing_stats_markdown, _positive_differences_ns,
 )
 from oscilloscope.run_extended_analysis import run as run_all
+from experiment_analysis.present_scientific_report import TECHNICAL_REPORT_FILENAME
 from oscilloscope.build_final_experiment_report import (
     build_command_delivery_scorecard, plot_command_delivery_scorecard,
 )
@@ -215,7 +216,7 @@ class ExtendedAnalysisTests(unittest.TestCase):
                          'Set MTB4_EXTENDED_RUN for signed real-data regression')
     def test_signed_recording_end_to_end(self):
         run_dir=Path(os.environ['MTB4_EXTENDED_RUN'])
-        approval=run_dir/'analysis/record_00001/pulse_review/review_approval.json'
+        approval=analysis_root(run_dir)/'record_00001/pulse_review/review_approval.json'
         previous=approval.read_bytes()
         manifest=run_all(run_dir)
         self.assertEqual(approval.read_bytes(),previous)
@@ -242,7 +243,7 @@ class ExtendedAnalysisTests(unittest.TestCase):
                    'state_timing_samples.csv'):
             self.assertTrue((root/'command_timing'/fn).exists())
         import re
-        for name in ('final_experiment_report_legacy.md',
+        for name in (TECHNICAL_REPORT_FILENAME,
                      'frequency_transitions/report.md',
                      'stimulation_shutdown/report.md',
                      'command_timing/report.md'):
@@ -253,17 +254,17 @@ class ExtendedAnalysisTests(unittest.TestCase):
             self.assertEqual(len(imgs),len(captions),name)
             for fig in imgs:
                 self.assertTrue((root/name).parent.joinpath(fig).exists(),fig)
-        legacy=(root/'final_experiment_report_legacy.md').read_text()
-        self.assertIn('throughput_per_second.png', legacy)
-        self.assertIn('SF changes acknowledged OK | **266 / 266**',legacy)
-        self.assertIn('SC current changes acknowledged OK | **41 / 41**',legacy)
-        self.assertIn('Not determinable',legacy)
+        technical=(root/TECHNICAL_REPORT_FILENAME).read_text()
+        self.assertIn('throughput_per_second.png', technical)
+        self.assertIn('SF changes acknowledged OK | **266 / 266**',technical)
+        self.assertIn('SC current changes acknowledged OK | **41 / 41**',technical)
+        self.assertIn('Not determinable',technical)
         report=(root/'final_experiment_report.md').read_text()
         self.assertIn('266/266 SF OK ACKs', report)
         self.assertIn('41/41 SC OK ACKs', report)
         self.assertIn('## Conclusions and remaining questions', report)
         self.assertIn('## Experiment and measurement windows', report)
-        self.assertIn('final_experiment_report_legacy.md', report)
+        self.assertIn(TECHNICAL_REPORT_FILENAME, report)
         self.assertEqual(len(re.findall(r'(?m)^!\[Figure \d+\]', report)), 6)
         self.assertEqual(len(re.findall(r'(?m)^\*Figure \d+ -', report)), 6)
         for path in re.findall(r'(?m)^!\[Figure \d+\]\(([^)]+)\)', report):
