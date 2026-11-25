@@ -131,6 +131,17 @@ def audit(run_dir, *, scan_all=False):
     unexpected = [p for p in tracked if p.startswith(('data/', 'results/', 'analysis/'))]
     if unexpected:
         errors.append(f'Generated/raw files tracked by Git: {unexpected[:12]}')
+    legacy_repository_analysis = repo_root / 'analysis'
+    if legacy_repository_analysis.is_dir():
+        leftovers = sorted(p.relative_to(repo_root).as_posix()
+                           for p in legacy_repository_analysis.rglob('*')
+                           if p.is_file() or p.is_symlink())
+        if leftovers:
+            errors.append('Untracked old top-level analysis outputs still exist: '
+                          + str(leftovers[:12]))
+        else:
+            warnings.append('Empty top-level analysis/ directory remains; '
+                            'you may remove it with rmdir after inspection')
     expected_publications = {
         p.relative_to(repo_root).as_posix()
         for package in packages for p in package.rglob('*') if p.is_file()
