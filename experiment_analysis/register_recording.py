@@ -21,8 +21,6 @@ def register(run_dir, *, results_root=None):
     metadata = json.loads((raw / 'metadata.json').read_text(encoding='utf-8'))
     if metadata.get('status') != 'complete':
         raise ValueError('Only complete recordings can be registered for final analysis')
-    if (raw / 'analysis').exists():
-        raise ValueError('This recording has legacy analysis evidence; migrate it instead')
     dest = results_dir(raw, results_root)
     manifest = dest / 'recording_manifest.json'
     if manifest.exists():
@@ -31,6 +29,8 @@ def register(run_dir, *, results_root=None):
                 data.get('metadata_sha256') != sha256(raw / 'metadata.json')):
             raise ValueError('Existing results manifest does not match raw recording')
         return manifest
+    if (raw / 'analysis').exists():
+        raise ValueError('This recording has legacy analysis evidence; migrate it instead')
     files = {p.relative_to(raw).as_posix(): {
         'bytes': p.stat().st_size, 'sha256': sha256(p),
     } for p in sorted(_files(raw))}
