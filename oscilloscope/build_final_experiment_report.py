@@ -296,6 +296,19 @@ def build(run_dir):
       f"Host-observed SF request-to-ACK latency median: "
       f"**{timing['sf_request_ack_ms']['median']:.3f} ms**. This is protocol "
       'completion time, NOT physical application latency.','',
+      *( [
+         f"MCU message arrival median: "
+         f"**{timing['pipeline_timing_stats']['mcu_arrival_dt_ms']['median_ms']:.3f} ms**, "
+         f"SD **{timing['pipeline_timing_stats']['mcu_arrival_dt_ms']['std_ms']:.3f} ms**. "
+         f"SF request median spacing: "
+         f"**{timing['pipeline_timing_stats']['sf_request_dt_ms']['median_ms']:.3f} ms**. "
+         "These describe the full logged session; long SF gaps can be "
+         "deliberate idle/muted intervals, not radio jitter.", '',
+         '![MCU ingress and SF request, BLE write and ACK cadence](command_timing/figures/message_cadence_boxplots.png)','',
+         '![MCU-to-SF scheduling and BLE protocol latency](command_timing/figures/command_latency_boxplots.png)','',
+         '[Full timing statistics and tails](command_timing/timing_distribution_statistics.csv) · '
+         '[Original timing samples](command_timing/timing_distribution_samples.csv).', ''
+        ] if timing.get('pipeline_timing_stats') else []),
       '![Host protocol latency](command_timing/figures/latency_distribution.png)','',
       '![ACK spacing vs requested cycle time](command_timing/figures/command_burst_analysis.png)','',
       '[Full host timing report](command_timing/report.md) · '
