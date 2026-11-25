@@ -346,6 +346,13 @@ def build(run_dir):
          delivery_scorecard_figure='command_delivery_scorecard.png',
          consolidated_report='final_experiment_report.md')
     write_json(analysis/'extended_analysis_manifest.json',manifest)
+    # The validated former consolidation remains available verbatim as legacy.
+    # The scientific main report adds only presentation figures and narrative;
+    # all source-locked audit classifications and provenance stay unchanged.
+    from oscilloscope.present_scientific_report import present
+    presentation = present(analysis)
+    manifest.update(presentation)
+    write_json(analysis/'extended_analysis_manifest.json', manifest)
     print(f'[EXTENDED REPORT] {report}')
     return manifest
 
