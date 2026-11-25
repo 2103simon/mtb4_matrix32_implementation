@@ -54,6 +54,9 @@ python -m experiment_analysis.migrate_layout --run-dir "$MTB4_RUN"
 # Verify hashes and record the raw-source hash manifest.
 python -m experiment_analysis.migrate_layout --run-dir "$MTB4_RUN" --apply
 
+# Read-only integrity recheck, including all raw files and signed review CSVs:
+python -m experiment_analysis.migrate_layout --run-dir "$MTB4_RUN" --verify
+
 # Do not delete any original content yet.
 ls "results/$RUN_ID/analysis/record_00001/pulse_review/review_approval.json"
 ```
