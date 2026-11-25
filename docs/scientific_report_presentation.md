@@ -31,6 +31,12 @@ reports are never removed.
 The signed waveform review, raw CH1/CH2 data, MCU and BLE logs, and clock
 fits remain unchanged. No new electrical classification is performed.
 
+The new six-figure narrative requires the pre-existing per-ACK observability
+and frequency robustness audits. If either independent report is absent, the
+builder retains the older technical report as the main output and a legacy
+copy, and records `SKIPPED_MISSING_OPTIONAL_PRIOR_AUDITS` in the manifest
+rather than inventing evidence. Run the missing prior audit, then rebuild.
+
 ## Evidence qualifications
 
 - Frequency accuracy is calculated only from the rows already identified as
