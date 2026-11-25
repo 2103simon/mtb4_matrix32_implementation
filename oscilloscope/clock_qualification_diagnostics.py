@@ -4,6 +4,10 @@ Offline only. Candidate robust fits are DIAGNOSTIC; never replace the
 original time mapping or reclassify unqualified as qualified automatically.
 """
 from __future__ import annotations
+import sys as _bootstrap_sys
+from pathlib import Path as _bootstrap_path
+_bootstrap_sys.path.insert(0, str(_bootstrap_path(__file__).resolve().parents[1]))
+from experiment_analysis.paths import analysis_root
 
 import json
 from pathlib import Path
@@ -128,7 +132,7 @@ def diagnose(root):
             x = np.asarray([p[0] for p in pairs])
             y = np.asarray([p[1] for p in pairs])
             baseline, robust, robustness = _robust_candidate(x, y)
-        output = root / "analysis" / f"record_{idx:05d}"
+        output = analysis_root(root) / f"record_{idx:05d}"
         output.mkdir(parents=True, exist_ok=True)
         plot = output / "clock_residual_diagnostics.png"
         if baseline is not None:
@@ -179,7 +183,7 @@ def diagnose(root):
             "plot": str(plot) if baseline else None,
         }
         results.append(result)
-    output = root / "analysis"
+    output = analysis_root(root)
     atomic_json(output / "clock_qualification_diagnostics.json", {
         "schema": "matrix32_clock_qualification_diagnostic_v1",
         "records": results,

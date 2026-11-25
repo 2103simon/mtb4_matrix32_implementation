@@ -5,3 +5,5 @@ venv/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
+/results/
+# reports/ is intentionally version controlled (curated publication snapshots).

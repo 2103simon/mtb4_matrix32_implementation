@@ -117,48 +117,76 @@ Inspect the latest MCU-only recording:
 python analyze_mcu_recording.py
 ```
 
-### 5. First integrated scope recording (safe progression)
+### 5. Integrated 10M-per-channel / 20-second baseline
 
-**Canonical Nano firmware:** `arduino_nano/platformio.ini` now has only
-`[env:nano_every]`, which produces 10Hz TCA0 hardware-driven Gray on D7
-with 256-entry RAM-buffered timestamps. The integrated recorder checks the
-exact firmware mode and uses BUFFER_BEGIN / BUFFER_END / BUFFER_DUMP
-around every finite scope acquisition. The 100µs Gray fit threshold remains
-a mapping diagnostic, not a rejection condition for direct approved CH1
-electrical-onset measurements.
-
-**Next experimental baseline:** one simultaneous CH1+CH2 20-second
-capture with `--count 1 --points 10000000` (10M samples **per
-channel**). Review [the safety-gated integrated procedure]
-(docs/integrated_matrix32_scope_recording.md) before enabling Matrix32.
-The following older one-million-point commands remain useful as quick
-hardware checks.
-
-
-Show the integrated plan without opening any device:
+**Canonical Nano project:** open `arduino_nano/` as a PlatformIO project.
+`arduino_nano/platformio.ini` has **one** environment,
+`nano_every_10hz_hardware_timer`, which is also its default Upload target.
+The complete Arduino build inputs remain `platformio.ini` and
+`src/main.cpp`; historical alternative firmware implementations are
+not selectable. From the repo root:
 
 ```bash
-python oscilloscope/record_integrated_matrix32.py
+cd arduino_nano
+pio run -e nano_every_10hz_hardware_timer
+pio run -e nano_every_10hz_hardware_timer -t upload
+cd ..
 ```
 
-Non-stimulating hardware baseline — initializes MCU/BLE/Nano/scope but **does not send Matrix32 output commands**:
+The Nano produces a **10 Hz hardware TCA0 PWM Gray waveform on D7**.
+At every START frame boundary, the TCA0 overflow ISR reads `micros()`
+and buffers `{counter, edgeUs, overruns}` in a fixed **256-entry
+(3,072-byte) RAM array**. The ISR timestamp follows the physical
+edge; it is not hardware-latched. The 256 entries cover 25.6 seconds
+at 10 Hz, provided buffering is not opened substantially earlier than
+a 20-second scope acquisition. **No per-frame FRAME messages are sent
+during acquisition.** The integrated runner requires
+`FRAME_MODE 10HZ_HW_TCA_BUFFERED` and performs 30 pre-recording
+binary SYNC exchanges, `BUFFER_BEGIN`, scope capture,
+`BUFFER_END`/`BUFFER_DUMP` (with zero-loss verification), and
+30 post-recording SYNC exchanges.
+
+**Next baseline:** one simultaneous 20-second CH1+CH2 waveform with
+**10,000,000 samples per channel**, 2 s/div (2 µs nominal sampling
+interval). CH1 measures Matrix32 physical output on the verified dummy
+load; CH2 measures Nano D7. The Feather tactile stream and BLE
+command/ACK logs are retained. Simultaneous two-channel 10M acquisition
+has **not yet been bench-verified**, even though a 20M CH2-only test
+worked.
+
+From the repository root, run a **dry-run plan** (no hardware touched):
 
 ```bash
-timeout --signal=INT --kill-after=20s 180s \
-  python -u oscilloscope/record_integrated_matrix32.py --run
+python oscilloscope/record_integrated_matrix32.py \
+  --count 1 --points 10000000 --label integrated_hw_10M_20s_baseline
 ```
 
-**Bench-only, after independent wiring/dummy-load and scope-probing verification**, physically enable CH1 using all three opt-in flags:
+After an independent grounding, probe, 100 kΩ rated dummy-load,
+no-electrodes and physical-disconnect review, an authorized operator
+can initiate the **armed bench-only** trial:
 
 ```bash
-timeout --signal=INT --kill-after=20s 180s \
+timeout --signal=INT --kill-after=20s 1200s \
   python -u oscilloscope/record_integrated_matrix32.py \
-  --run --arm --dummy-load-confirmed
+  --run --arm --dummy-load-confirmed \
+  --count 1 --points 10000000 --label integrated_hw_10M_20s_baseline
 ```
 
-The normal acquisition configures the scope, waits for the MCU configuration ACKs **and Matrix32 START completion**, takes 30 Nano SYNC measurements, arms the scope, records a nominal **20 s / 1,000,000-point** CH1+CH2 window (2 s/div, 0% trigger), takes 30 more SYNC measurements, and downloads the frozen CH1+CH2 waveforms before rearming. **For multiple records the Matrix32 controller remains active during these unobserved transfer gaps** and is stopped only after the final record (or upon a handled failure). **One integrated invocation captures one record by default; use `--count N` for N separate records under one continuous MCU/Matrix32 session.** Output is saved under `data/recordings/<UTC>_integrated_matrix32_scope/`.
+The watchdog covers potentially slow USB transfer but is **not** an
+electrical interlock. A non-stimulating device check uses `--run`
+without `--arm` or `--dummy-load-confirmed`. Observe Matrix32
+physically OFF after the recording.
 
-See the full [integrated recording and electrical precautions](docs/integrated_matrix32_scope_recording.md).
+The legacy **100 µs scope↔Nano affine-fit threshold** remains a
+clock-mapping diagnostic. An unqualified cross-device fit does not
+invalidate source-locked, operator-approved negative CH1 onsets or
+direct within-record CH1 intervals. Cross-device absolute timing and
+BLE actuation latency remain uncalibrated. Never invent scope samples
+during download gaps.
+
+See the [integrated acquisition and electrical precautions]
+(docs/integrated_matrix32_scope_recording.md) and
+[Nano build/firmware reference](arduino_nano/README.md).
 
 ## CH1 electrical dummy-load setup
 
@@ -195,36 +223,60 @@ python run_tactile_stimulation.py --arm --record
 
 It uses a **250 ms stale-tactile-input supervisor** (overridable with `--stale-ms`), sequential BLE commands/ACKs, and best-effort STOP on shutdown. See [Matrix32/MCU software architecture](docs/pipeline_and_components.md).
 
+## Separate evidence, analysis and published reports
+
+On the recording/results refactor branch, the experiment layout is:
+
+- **Raw inputs**: `data/recordings/<RUN_ID>/` (never overwritten by analysis).
+- **Signed reviews and derived work**: `results/<RUN_ID>/analysis/` (Git-ignored).
+- **Curated final and technical reports with their figures**:
+  `reports/<RUN_ID>/<TAG>/` (intentionally version-controlled).
+- **Scientific code**: `experiment_analysis/`; hardware-specific acquisition
+  stays under `oscilloscope/`.
+
+For the historical approved 20-second run, first run the **verified,
+non-destructive migration** before regenerating anything:
+
+```bash
+python -m experiment_analysis.migrate_layout --run-dir "$MTB4_RUN"
+python -m experiment_analysis.migrate_layout --run-dir "$MTB4_RUN" --apply
+python -m experiment_analysis.run_extended_analysis --run-dir "$MTB4_RUN"
+python -m experiment_analysis.publish_reports --run-dir "$MTB4_RUN" --tag initial
+```
+
+See the [complete migration and publication workflow](docs/recording_results_separation.md)
+before removing any old files; publication never copies raw waveforms into Git.
+
 ## Recording and analysis
 
 ### Output and provenance
 
 ```text
-data/
-  recordings/
-    <UTC>_integrated_matrix32_scope/
-      metadata.json                  # acquisition sequence, channel settings
-      nano_serial.jsonl              # FRAME stream + CRC32 SYNC exchanges
-      gray_alignment.json            # scope↔Nano per-record fit
-      epoch_clock_analysis.json      # Nano↔PC per-record local fits
-      matrix32_runner.log
-      waveforms/
-        record_00001_ch1.csv         # physical CH1 samples
-        record_00001_ch2.csv         # Nano D7 marker samples
-      mcu_matrix32/
-        *_tactile_rates.csv          # MCU snapshots / requested RA+SA rates
-        *_matrix32_commands.jsonl    # requested and ACKed BLE commands
-        *_settings.json              # frozen configuration
-      analysis/
-        integrated_report.md         # whole-session report
-        integrated_summary.json
-        mcu_full_stream.png          # entire MCU stream, independent time axis
-        record_00001/
-          report.md                  # this scope record only
-          summary.json
-          *.png                      # pulse, frequency and overlay figures
-```
+data/recordings/<RUN_ID>/                # original acquisition evidence
+    metadata.json
+    nano_serial.jsonl
+    gray_alignment.json
+    epoch_clock_analysis.json           # capture-time clock mapping evidence
+    waveforms/record_00001_ch1.csv      # original physical output
+    waveforms/record_00001_ch2.csv      # original Nano Gray marker
+    mcu_matrix32/                       # unmodified MCU/BLE/settings logs
 
+results/<RUN_ID>/                       # ignored, independent of raw
+    recording_manifest.json             # signed source hash inventory
+    analysis/
+        record_00001/pulse_review/       # signed source-locked review
+        command_timing/                 # derived statistics and plots
+        frequency_transitions/
+        stimulation_shutdown/
+        final_experiment_report.md
+        extended_analysis_technical_report.md
+
+reports/<RUN_ID>/<TAG>/                  # committed to Git
+    final_experiment_report.md
+    extended_analysis_technical_report.md
+    publication_manifest.json
+    ... embedded report figures ...
+```
 **Important time-domain rule:** each scope acquisition has its **own** sample time axis and Nano/PC fit. Continuous MCU/BLE logs start earlier and may extend beyond scope capture. The analysis associates only the provisionally mapped portion of those logs with each scope record; it **does not concatenate scope captures, fill pauses, or infer unobserved pulses across gaps**.
 
 Analyze the latest *completed integrated* session:
@@ -280,14 +332,16 @@ Read the fully worked [clock-mapping and uncertainty guide](docs/clock_mapping_a
 | [`arduino_nano/`](arduino_nano/README.md) | Nano Every D7 framed Gray counter and text/binary clock SYNC firmware |
 | [`communication/`](docs/pipeline_and_components.md) | Serial parser, USB device discovery, MCU config handshake, MCU drift/compensation, Nano sync |
 | [`matrix32/`](docs/pipeline_and_components.md) | BLE link/device API, configuration, ACK checking, timing marker |
-| [`oscilloscope/`](oscilloscope/README.md) | Tektronix USBTMC, finite capture, Gray decoding, local alignment, integrated recordings and analysis |
+| [`oscilloscope/`](oscilloscope/README.md) | Scope acquisition, hardware drivers, Gray decoding and scope-specific review |
 | [`recording/`](docs/pipeline_and_components.md) | Timestamped MCU CSV/manifest recording and Matrix32 command JSONL |
 | [`processing/`](docs/pipeline_and_components.md) | Taxel/event processing and lightweight host analysis helpers |
 | [`nerve_stimulation/`](docs/pipeline_and_components.md) | Optional interactive/debug Matrix32 controllers and BLE stress tests |
 | [`config/`](config/config.json) | Runtime experiment and output configuration |
 | [`tests/`](tests/) | Host-side deterministic regression tests; no substitute for live bench validation |
 | [`docs/`](docs/) | Experiment procedures, timing evidence, firmware, serial discovery, design notes |
-| [`analysis/`](analysis/) | Committed standalone MCU analysis plots; new integrated reports are under each run's `analysis/` |
+| [`experiment_analysis/`](experiment_analysis/README.md) | Cross-device signed scientific audits, migration, report generation and publication |
+| `results/` (Git-ignored) | Working analyses and signed approvals, outside raw recordings |
+| [`reports/`](reports/README.md) | Git-versioned scientific publications and archived historical MCU plots |
 
 ### Experimental pulse-detection audit
 

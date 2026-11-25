@@ -1,9 +1,9 @@
 """Offline Matrix32 CH1 onset audit; no hardware access, no automatic validation.
 
 Uses the source-identical S02-v5 negative-onset detector from the sibling
-matrix32_nerve_stimulation repository. The current integrated analyzer's
-positive-edge detector is retained separately for comparison, NOT replaced
-until a human verifies the negative onset inventory on real waveforms.
+matrix32_nerve_stimulation repository. The integrated analyzer requires this
+source-locked negative-onset inventory to be reviewed and approved before
+physical pulse-frequency analysis; there is no automatic positive-edge fallback.
 
 Usage:
   python oscilloscope/review_pulse_detection.py --run-dir data/recordings/RUN
@@ -14,11 +14,16 @@ sensitivity/rejection audit. Do not interpret intervals as verified output
 rate until the operator signs off detection completeness per record.
 """
 from __future__ import annotations
+import sys as _bootstrap_sys
+from pathlib import Path as _bootstrap_path
+_bootstrap_sys.path.insert(0, str(_bootstrap_path(__file__).resolve().parents[1]))
+from experiment_analysis.paths import analysis_root
 
 import argparse
 import csv
 import json
 import math
+from datetime import datetime, timezone
 from pathlib import Path
 import statistics
 import sys
@@ -37,6 +42,10 @@ from analysis_primitives.suppressed_crossing_association import (
     associate_suppressed_crossings_with_accepted_pulses,
 )
 from oscilloscope.analyze_integrated_matrix32 import load_wave
+from oscilloscope.biphasic_confirmation import (
+    VERSION as BIPHASIC_VERSION, confirm_positive_phase,
+    MAX_POSITIVE_DELAY_US, POSITIVE_MIN_EXCURSION_V,
+)
 from oscilloscope.record_scope import atomic_json
 
 SHORTEST_SUPPORTED_PERIOD_S = 1.0 / 400.0
@@ -130,15 +139,34 @@ def detect_review(t, volts):
     # the provenance, never silently merge detections or add invented onsets.
     for i, row in enumerate(mismatches, 1):
         row["id"] = f"Q{i:05d}"
-    pulses = []
-    for i, row in enumerate(primary["events"], 1):
-        pulses.append({
-            "id": f"P{i:05d}", "time_s": float(row["time_s"]),
+    # Keep the S02 negative-onset candidate timestamps unchanged. An
+    # independent positive-phase gate decides whether a biphasic pulse is
+    # automatically eligible for the frequency inventory. Negative-only
+    # dips remain reviewable R candidates rather than disappearing.
+    pulses, phase_unpaired = [], []
+    for row in primary["events"]:
+        phase = confirm_positive_phase(
+            t, volts, row,
+            baseline_v=float(defaults["baseline_v"]),
+            noise_sigma_v=float(defaults["noise_sigma_v"]),
+            negative_drop_v=float(defaults["threshold_drop_v"]),
+        )
+        event = {
+            "time_s": float(row["time_s"]),
             "voltage_v": float(row["voltage_v"]),
             "sample_index": int(row["sample_index"]),
             "status": row["status"],
-        })
+            **phase,
+        }
+        if phase["phase_status"] == "BIPHASIC_CONFIRMED":
+            event["id"] = f"P{len(pulses) + 1:05d}"
+            pulses.append(event)
+        else:
+            event["original_negative_status"] = event["status"]
+            event["status"] = "REJECTED_MISSING_POSITIVE_PHASE"
+            phase_unpaired.append(event)
     rejected = [dict(row) for row in primary["rejected"]]
+    rejected.extend(phase_unpaired)
     boundary = [
         row for row in rejected
         if classify_record_start_boundary_reject(
@@ -178,10 +206,18 @@ def detect_review(t, volts):
         flags.append("UNASSOCIATED_SUPPRESSED_ONSETS_REVIEW_REQUIRED")
     if any(row["status"] == "RELAXED_QUIET_REVIEW" for row in pulses):
         flags.append("RELAXED_QUIET_ACCEPTED_CANDIDATES_REQUIRE_REVIEW")
+    if phase_unpaired:
+        flags.append("NEGATIVE_ONLY_EVENTS_REQUIRE_EXPLICIT_REVIEW")
     if primary["partial_start"]:
         flags.append("RECORD_START_MAY_CONTAIN_TRUNCATED_PULSE")
     return {
-        "detector": NEGATIVE_EVENT_DETECTOR_VERSION,
+        "detector": NEGATIVE_EVENT_DETECTOR_VERSION + "+" + BIPHASIC_VERSION,
+        "negative_onset_detector": NEGATIVE_EVENT_DETECTOR_VERSION,
+        "positive_phase_detector": BIPHASIC_VERSION,
+        "positive_phase_window_us": MAX_POSITIVE_DELAY_US,
+        "positive_phase_min_excursion_v": POSITIVE_MIN_EXCURSION_V,
+        "negative_onset_candidates_before_phase_gate": len(primary["events"]),
+        "negative_only_rejected_count": len(phase_unpaired),
         "source": "matrix32_nerve_stimulation/experiments/analysis_primitives/negative_events.py",
         "sampling_interval_us": sampling_us,
         "accepted_pulses": pulses,
@@ -197,20 +233,73 @@ def detect_review(t, volts):
         "flags": flags,
         "complete_pulse_detection_approved": False,
         "interpretation": (
-            "Voltage-onset candidates require visual/operator confirmation. "
+            "Automatically eligible pulse candidates require negative onset "
+            "AND sustained positive phase. Negative-only events are rejected "
+            "candidates, not frequency pulses, but remain reviewable. "
             "Inverse periods are provisional unverified interval estimates, "
             "not proof of ACK state application or continuous output."
         ),
     }
 
 
-def analyze_record(root, record):
+def archive_unapproved_report(output):
+    """Preserve an unedited, unsigned review before regenerating a fresh one.
+
+    A signed approval, edited decisions or manual additions are protected
+    even if the explicit replacement option is given.
+    """
+    from oscilloscope.pulse_review_workflow import csv_rows
+    output = Path(output)
+    if not output.exists():
+        return None
+    for name in ("review_approval.json", "approved_onsets.csv",
+                 "approved_intervals.csv"):
+        if (output / name).exists():
+            raise FileExistsError(
+                f"Existing approved evidence ({name}) is protected: {output}")
+    decisions = output / "review_decisions.csv"
+    additions = output / "manual_additions.csv"
+    manifest = output / "review_manifest.json"
+    if not all(path.exists() for path in (decisions, additions, manifest)):
+        raise FileExistsError(
+            f"Existing review is incomplete/ambiguous and cannot be replaced: {output}")
+    if any((row.get("decision", "").strip() or row.get("note", "").strip())
+           for row in csv_rows(decisions)):
+        raise FileExistsError("Operator edits to review_decisions.csv are protected")
+    if csv_rows(additions):
+        raise FileExistsError("Manual onset additions are protected")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    archive = output.with_name(output.name + "_unapproved_backup_" + stamp)
+    output.rename(archive)
+    print(f"[PULSE REVIEW] Archived previous unapproved report: {archive}",
+          flush=True)
+    return archive
+
+
+def analyze_record(root, record, *, overwrite_unapproved=False):
     idx = int(record["index"])
     if record.get("status") != "captured":
         raise ValueError(f"Record {idx} was not completely captured")
     path = root / record["channels"]["CH1"]["path"]
+    output = analysis_root(root) / f"record_{idx:05d}" / "pulse_review"
+    # Refuse before writing detector tables or figures: make_scaffold() can
+    # detect a stale review only AFTER those source-hashed tables exist.
+    # A rerun must not invalidate prior evidence or replace approved markers
+    # with automated candidates, even when the original waveform is unchanged.
+    protected = (
+        "review_manifest.json", "review_decisions.csv", "manual_additions.csv",
+        "review_approval.json", "approved_onsets.csv", "approved_intervals.csv",
+    )
+    if overwrite_unapproved and output.exists():
+        archive_unapproved_report(output)
+    if any((output / name).exists() for name in protected):
+        raise FileExistsError(
+            f"Record {idx}: existing pulse-review evidence at {output}. "
+            "Preserve/archive the entire review before generating a new "
+            "version. To refresh an approved waveform figure, use "
+            "plot_approved_ch1_panels.py without rerunning detection."
+        )
     t, volts = load_wave(path)
-    output = root / "analysis" / f"record_{idx:05d}" / "pulse_review"
     output.mkdir(parents=True, exist_ok=True)
     try:
         result = detect_review(t, volts)
@@ -273,14 +362,19 @@ def analyze_record(root, record):
             result.get("threshold_sensitivity_unmatched_events", [])
         ),
     }))
+    phase_fields = ("phase_status", "positive_time_s", "positive_delay_us",
+                    "positive_threshold_v", "positive_max_v",
+                    "positive_window_us")
     write_csv(output / "accepted_onsets.csv", result["accepted_pulses"],
-              ("id", "time_s", "voltage_v", "sample_index", "status"))
+              ("id", "time_s", "voltage_v", "sample_index", "status")
+              + phase_fields)
     write_csv(output / "periods_unverified.csv", result["periods"],
               ("id", "start_pulse_id", "end_pulse_id", "start_s", "end_s",
                "period_s", "observed_period_ms",
                "provisional_inverse_period_hz", "review_status"))
     write_csv(output / "rejected_onsets.csv", result["rejected"],
-              ("sample_index", "time_s", "voltage_v", "status"))
+              ("sample_index", "time_s", "voltage_v", "status")
+              + phase_fields + ("original_negative_status",))
     write_csv(output / "suppressed_onsets.csv", result["suppressed"],
               ("sample_index", "time_s", "voltage_v", "status"))
     write_csv(output / "threshold_sensitive_onsets.csv",
@@ -311,6 +405,9 @@ def main(argv=None):
     p.add_argument("--run-dir", type=Path, required=True)
     p.add_argument("--record", type=int,
                    help="Specific scope record index; default: every record")
+    p.add_argument("--overwrite-unapproved", action="store_true",
+                   help="Archive and regenerate ONLY an unedited, unsigned "
+                        "review; refuses approved evidence or operator edits")
     args = p.parse_args(argv)
     root = args.run_dir.expanduser().resolve()
     meta = json.loads((root / "metadata.json").read_text(encoding="utf-8"))
@@ -323,11 +420,13 @@ def main(argv=None):
     if not selected:
         p.error("No matching records")
     for record in selected:
-        result = analyze_record(root, record)
+        result = analyze_record(root, record,
+                                overwrite_unapproved=args.overwrite_unapproved)
         print(f"[PULSE REVIEW {result['record_index']}] "
-              f"{len(result['accepted_pulses'])} negative onset candidates, "
+              f"{len(result['accepted_pulses'])} biphasic pulse candidates, "
               f"{len(result['rejected'])} rejected, "
               f"{len(result['suppressed'])} suppressed; "
+          f"{result.get('negative_only_rejected_count', 0)} negative-only; "
               f"flags={result['flags']}")
     print("No event list has been manually approved: frequency claims remain provisional.")
 

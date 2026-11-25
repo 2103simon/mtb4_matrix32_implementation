@@ -6,12 +6,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "oscilloscope"))
+sys.path.append(str(ROOT / "oscilloscope"))
 from decode_gray_timecode import (
     binary_to_gray, gray_to_binary, decode_pulses, decode_csv,
     audit_physical_pulses,
 )
-import test_gray_timecode as experiment
+from oscilloscope import test_gray_timecode as experiment
 
 
 def synthetic_frames(indices, *, start=0.020):

@@ -7,8 +7,8 @@ import tempfile
 import time
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "oscilloscope"))
-from test_gray_timecode import NanoLog
+sys.path.append(str(Path(__file__).resolve().parents[1] / "oscilloscope"))
+from oscilloscope.test_gray_timecode import NanoLog
 from communication.nano_binary_protocol import (
     ACK_SIZE, MAGIC, REQUEST_SIZE, BinaryProtocolError,
     MixedNanoStreamDecoder, crc32, pack_sync_ack, pack_sync_request,

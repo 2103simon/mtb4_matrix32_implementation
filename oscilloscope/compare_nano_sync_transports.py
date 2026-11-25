@@ -6,7 +6,11 @@ Reports are diagnostic; best RTT/fit residual are not absolute clock accuracy.
 import argparse
 import json
 from pathlib import Path
-from analyze_nano_clock import analyze_run
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from experiment_analysis.paths import ensure_derived_destination
+from oscilloscope.analyze_nano_clock import analyze_run
 
 
 def compare(text_run, binary_run):
@@ -104,8 +108,10 @@ def main(argv=None):
               f"{item['offset_intersection_feasible']}; "
               f"window drift range: {item['window_drift_range_ppm']} ppm")
     if args.output:
-        args.output.write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
-        print(f"Saved {args.output}")
+        out = ensure_derived_destination(args.output, args.text_run,
+                                         args.binary_run)
+        out.write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
+        print(f"Saved {out}")
     print("Note: RTT reduction is not proof of sub-millisecond offset accuracy.")
 
 

@@ -68,7 +68,7 @@ Run from the repository root:
 - `python analyze_mcu_recording.py --zoom-sec 1.0` — plot the most active 1-second pressure window.
 - `python analyze_mcu_recording.py --pc-time` — use arrival-time axis instead of corrected MCU time.
 
-Outputs are saved in `analysis/<id>_traces*.png`. If an associated Omega recording exists, a six-panel combined figure is also saved, with rate traces instead of spike rasters. Plot tests: `python -m unittest discover -s tests -v` (includes `tests/test_analyze_rate_recording.py`). **These changes have not been executed in the user's environment yet.**
+Outputs are saved in `results/mcu_recordings/<id>_traces*.png`. If an associated Omega recording exists, a six-panel combined figure is also saved, with rate traces instead of spike rasters. Plot tests: `python -m unittest discover -s tests -v` (includes `tests/test_analyze_rate_recording.py`). **These changes have not been executed in the user's environment yet.**
 
 ## Fixed encoding and CH1 source configuration
 
@@ -120,7 +120,7 @@ The files in the configured `recordings_dir` use this exact prefix, for example:
 - `<run_id>_taxel.csv` and `<run_id>_events.csv` — legacy compatibility outputs (header-only with the rate-streaming MCU).
 - `<run_id>_settings.json` — versioned, frozen manifest with a copy of the entire experiment `config/config.json`, ACK-confirmed applied encoder values, recording start ISO timestamp, protocol description, recording ID and CSV filenames.
 
-The metadata is saved **with the data**, rather than inferred from whatever `config/config.json` contains when analysis is run later. `analyze_mcu_recording.py` loads the same manifest when available, prints the settings, annotates plot titles, and preserves the run ID in all figure filenames. For example: `analysis/20261119_101112_ra5_sa200Hz_t7_rai_traces.png` and `_traces_zoom.png`. The `--datetime` analysis argument accepts a **full run ID** (including suffix), while omitting it still selects the newest recording. Old timestamp-only recordings without a JSON manifest remain supported.
+The metadata is saved **with the data**, rather than inferred from whatever `config/config.json` contains when analysis is run later. `analyze_mcu_recording.py` loads the same manifest when available, prints the settings, annotates plot titles, and preserves the run ID in all figure filenames. For example: `results/mcu_recordings/20261119_101112_ra5_sa200Hz_t7_rai_traces.png` and `_traces_zoom.png`. The `--datetime` analysis argument accepts a **full run ID** (including suffix), while omitting it still selects the newest recording. Old timestamp-only recordings without a JSON manifest remain supported.
 
 The writer refuses to reuse an existing run ID instead of silently overwriting data. Run `python -m unittest discover -s tests -v` (includes `tests/test_recording_manifest.py`) to check metadata integrity and analysis naming. Changes are committed but not yet confirmed in a local user test session.
 

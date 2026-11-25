@@ -4,6 +4,10 @@ Uses original CH2 waveforms, approved decoded Gray frame IDs and Nano FRAME
 telemetry. Does not alter original clock mappings or CH1 pulse approvals.
 """
 from __future__ import annotations
+import sys as _bootstrap_sys
+from pathlib import Path as _bootstrap_path
+_bootstrap_sys.path.insert(0, str(_bootstrap_path(__file__).resolve().parents[1]))
+from experiment_analysis.paths import analysis_root
 
 import argparse
 import csv
@@ -310,6 +314,25 @@ def run(run_dir, *, threshold=2.):
     root = Path(run_dir).expanduser().resolve()
     meta = json.loads((root/"metadata.json").read_text(encoding="utf-8"))
     nano = read_nano_frames(root/"nano_serial.jsonl")
+    # Use the observed INFO response, not a requested mode or an assumption
+    # about the firmware version used for a historical recording.
+    frame_mode = meta.get("nano_info_fields", {}).get("FRAME_MODE")
+    if frame_mode == "10HZ_HW_TCA_BUFFERED":
+        firmware_timing = (
+            "The recorded Nano mode is `10HZ_HW_TCA_BUFFERED`. D7 is driven "
+            "by TCA0-WO1 hardware PWM. The frame-start ISR samples micros() "
+            "for EDGE_US and buffers that timestamp until after acquisition. "
+            "The ISR timestamp is not an independently latched electrical "
+            "edge time."
+        )
+    else:
+        firmware_timing = (
+            f"Recorded Nano frame mode: `{frame_mode or 'not recorded'}`. "
+            "CH2 supplies the physical threshold crossings; EDGE_US supplies "
+            "the separate Nano-reported frame timestamp. Check the firmware "
+            "used for this recording before attributing a timing difference "
+            "to edge scheduling or timestamp placement."
+        )
     frame_s = float(meta.get("plan", {}).get("nominal_frame_s", FRAME_S))
     if not math.isfinite(frame_s) or frame_s < .097:
         raise ValueError("Invalid nominal Gray frame period in metadata")
@@ -320,7 +343,7 @@ def run(run_dir, *, threshold=2.):
         print(f"[GRAY PHYSICAL {idx}] Reading CH2: {ch2}", flush=True)
         pulses, waveform = edges_from_csv(ch2, threshold=threshold)
         widths, spacing, stat = geometry(rec, nano, pulses, frame_s=frame_s)
-        folder = root/"analysis"/f"record_{idx:05d}"
+        folder = analysis_root(root)/f"record_{idx:05d}"
         folder.mkdir(parents=True, exist_ok=True)
         save_csv(folder/"gray_pulse_widths.csv", widths, [
             "frame", "role", "group", "scope_frame_s", "rise_s",
@@ -355,10 +378,11 @@ def run(run_dir, *, threshold=2.):
             f"{stat['nano_minus_rate_scaled_scope_spacing_us']['std']} us",
             flush=True,
         )
-    out = root/"analysis"
+    out = analysis_root(root)
     payload = {
         "schema": "matrix32_gray_physical_pulse_geometry_v1",
         "records": reports,
+        "recorded_nano_frame_mode": frame_mode,
         "original_clock_maps_untouched": True,
         "source_locked_CH1_approvals_untouched": True,
         "nominal_frame_s": frame_s,
@@ -369,10 +393,7 @@ def run(run_dir, *, threshold=2.):
         "# CH2 Gray-code pulse width and timebase analysis", "",
         "Measured from the original CH2 scope waveform. No approved CH1 "
         "pulse analysis is changed.", "",
-        "The Nano firmware uses micros() to schedule D7 switching in "
-        "tickGenerator(). It captures EDGE_US with another micros() call "
-        "AFTER the rising-edge digitalWrite(). Both use the same firmware "
-        "timer but are not simultaneous hardware events. The analyzed "
+        firmware_timing + " The analyzed "
         f"nominal frame period is {frame_s*1000:g} ms.", "",
         "| Record | Gray frames | START width median ± std (us) | "
         "DATA width median ± std (us) | END width median ± std (us) | "
@@ -444,13 +465,12 @@ def run(run_dir, *, threshold=2.):
         "in gray_pulse_widths.csv. Each frame's two anchors are "
         "training observations; the DATA bit edges are held out. "
         "This does NOT calibrate Nano EDGE_US or PC timing.", "",
-        "## Hardware limitation", "",
-        "This cannot verify a truly simultaneous GPIO edge timestamp. "
-        "The Nano Every uses an ATmega4809 clock for its CPU/timer and "
-        "software-driven D7, while USB buffering and PC timestamps "
-        "constitute another timing domain. A future hardware-timer "
-        "capture or compare output and shared electrical marker could "
-        "provide independent verification.", "",
+        "## Timestamp limitation", "",
+        "Physical D7 crossings, Nano FRAME timestamps and USB/PC timestamps "
+        "remain distinct observations. Hardware PWM does not by itself "
+        "make an ISR micros() reading a hardware-latched edge timestamp. "
+        "This geometry audit does not calibrate their absolute offsets "
+        "or verify Matrix32 command application latency.", "",
     ]
     report = out/"gray_pulse_geometry_report.md"
     report.write_text("\n".join(lines)+"\n", encoding="utf-8")

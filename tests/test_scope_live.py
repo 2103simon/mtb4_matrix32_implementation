@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 SCOPE = Path(__file__).resolve().parents[1] / "oscilloscope"
-sys.path.insert(0, str(SCOPE))
+sys.path.append(str(SCOPE))
 import record_scope_live as scope
 
 

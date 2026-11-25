@@ -84,13 +84,22 @@ def capture(f, channel, points, output):
     write(f, "DATA:START 1")
     write(f, f"DATA:STOP {points}")
 
+    source = query(f, "DATA:SOURCE?").strip().upper()
+    units = query(f, "WFMPRE:YUNit?").strip().strip('"').upper()
+    if source != f"CH{channel}":
+        raise RuntimeError(f"Waveform source mismatch: CH{channel} requested, {source!r} reported")
+    if units not in ("V", "VOLTS"):
+        raise RuntimeError(f"Expected voltage waveform units, scope reports {units!r}")
+
     def number(cmd):
         return float(query(f, cmd))
 
-    xincr = number("WFMPRE:XINcr?")
+    xincr_scpi = query(f, "WFMPRE:XINcr?").strip()
+    xincr = float(xincr_scpi)
     xzero = number("WFMPRE:XZEro?")
     ptoff = number("WFMPRE:PT_Off?")
-    ymult = number("WFMPRE:YMUlt?")
+    ymult_scpi = query(f, "WFMPRE:YMUlt?").strip()
+    ymult = float(ymult_scpi)
     yoff = number("WFMPRE:YOFf?")
     yzero = number("WFMPRE:YZEro?")
     width_number = number("WFMPRE:BYT_Nr?")
@@ -116,7 +125,13 @@ def capture(f, channel, points, output):
 
     expected_bytes = points * width
     payload = binary_block(f, expected_bytes=expected_bytes)
-    raw = struct.unpack(f"{endian}{points}{'h' if width == 2 else 'b'}", payload)
+    # The verified payload is already bounded (20 MB for 10M 16-bit samples).
+    # Iterate it directly instead of expanding millions of Python integers.
+    sample_format = f"{endian}{'h' if width == 2 else 'b'}"
+    rail = 32767 if width == 2 else 127
+    lower_rail = -rail - 1
+    raw_min = raw_max = None
+    rail_count = decoded_samples = 0
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     # No partial or incorrectly decoded CSV can masquerade as a valid capture.
@@ -129,35 +144,38 @@ def capture(f, channel, points, output):
             temp_path = Path(fp.name)
             writer = csv.writer(fp)
             writer.writerow(["time_s", "voltage_v", "raw"])
-            for i, value in enumerate(raw):
+            for i, (value,) in enumerate(struct.iter_unpack(sample_format, payload)):
                 writer.writerow([xzero + (i - ptoff) * xincr,
                                  (value - yoff) * ymult + yzero, value])
+                raw_min = value if raw_min is None else min(raw_min, value)
+                raw_max = value if raw_max is None else max(raw_max, value)
+                rail_count += value in (lower_rail, rail)
+                decoded_samples += 1
         os.replace(temp_path, output)
     finally:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
 
-    rail = 32767 if width == 2 else 127
-    lower_rail = -rail - 1
     report = {
         "waveform_preamble": {
-            "xincr_s": xincr, "xzero_s": xzero, "ptoff": ptoff,
-            "ymult_v_per_code": ymult, "yoff_codes": yoff,
+            "source": source, "voltage_units": units,
+            "xincr_s": xincr, "xincr_scpi": xincr_scpi,
+            "xzero_s": xzero, "ptoff": ptoff,
+            "ymult_v_per_code": ymult, "ymult_scpi": ymult_scpi,
+            "yoff_codes": yoff,
             "yzero_v": yzero, "bytes_per_sample": width,
             "byte_order": order, "binary_format": fmt,
         },
         "binary_transfer": {
-            "requested_samples": points, "decoded_samples": len(raw),
+            "requested_samples": points, "decoded_samples": decoded_samples,
             "declared_payload_bytes": len(payload),
             "expected_payload_bytes": expected_bytes,
-            "raw_min": min(raw), "raw_max": max(raw),
-            "storage_rail_code_count": sum(
-                code in (lower_rail, rail) for code in raw
-            ),
+            "raw_min": raw_min, "raw_max": raw_max,
+            "storage_rail_code_count": rail_count,
         },
     }
-    print(f"Received {len(raw)} points; saved {output}")
-    print(f"Raw sample range: {min(raw)} .. {max(raw)}")
+    print(f"Received {decoded_samples} points; saved {output}")
+    print(f"Raw sample range: {raw_min} .. {raw_max}")
     return report
 
 def main():

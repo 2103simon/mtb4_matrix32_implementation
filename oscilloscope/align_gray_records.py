@@ -10,6 +10,10 @@ from collections import Counter
 import json
 import math
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from experiment_analysis.paths import derived_json_path
 import re
 import statistics
 
@@ -224,14 +228,15 @@ def main(argv=None):
     p.add_argument("run_dir", type=Path, help="Directory containing metadata.json and nano_serial.jsonl")
     p.add_argument("--max-fit-rms-us", type=float, default=100.0)
     p.add_argument("--output", type=Path,
-                   help="JSON output (default: RUN_DIR/gray_alignment.json)")
+                   help="Offline JSON output (default: results/<RUN_ID>/analysis/gray_alignment_diagnostics.json)")
     args = p.parse_args(argv)
     if not math.isfinite(args.max_fit_rms_us) or args.max_fit_rms_us <= 0:
         p.error("--max-fit-rms-us must be positive")
     meta = json.loads((args.run_dir / "metadata.json").read_text())
     nano = read_nano_frames(args.run_dir / "nano_serial.jsonl")
     result = build_alignment(meta, nano, max_rms_us=args.max_fit_rms_us)
-    out = args.output or args.run_dir / "gray_alignment.json"
+    out = derived_json_path(args.run_dir, args.output,
+                            filename="gray_alignment_diagnostics.json")
     out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(f"Matched {result['decoded_frames_total']} Gray frames in "
           f"{result['source_record_count']} scope records. Saved {out}")

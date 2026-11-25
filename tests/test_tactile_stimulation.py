@@ -3,9 +3,11 @@ import asyncio
 import time
 import unittest
 from copy import deepcopy
+from unittest.mock import AsyncMock, Mock, patch
 
 from run_tactile_stimulation import (
     build_stim_config, frequency_worker, requested_frequency, validate_settings,
+    run,
 )
 from matrix32 import Matrix32Device
 
@@ -163,6 +165,24 @@ class LiveFrequencyBoundsTest(unittest.IsolatedAsyncioTestCase):
         device = Matrix32Device()
         with self.assertRaisesRegex(ValueError, "1..400"):
             await device.apply_live_frequency(0)
+
+
+class ManifestProvenanceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_recorded_zero_request_strategy_matches_the_400hz_worker(self):
+        config = {**deepcopy(CONFIG), "recordings_dir": "unused-no-file-created"}
+        device = Mock(client=None)
+        device.connect = AsyncMock(side_effect=RuntimeError("synthetic connection failure"))
+        serial = Mock()
+        with patch("run_tactile_stimulation.check_bleak_version"), \
+             patch("run_tactile_stimulation.check_pc_bluetooth"), \
+             patch("run_tactile_stimulation.OptionalCapture") as capture:
+            with self.assertRaisesRegex(RuntimeError, "synthetic connection failure"):
+                await run(config, arm=False, record=True,
+                          serial_factory=lambda **_: serial,
+                          device_factory=lambda **_: device)
+        manifest = capture.call_args.args[2]
+        self.assertEqual(manifest["stimulation_control"]["zero_request_strategy"],
+                         "SC1=0_then_SF=400; restore_SF_then_SC1")
 
 
 class LiveCurrentGuardTest(unittest.IsolatedAsyncioTestCase):

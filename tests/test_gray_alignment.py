@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "oscilloscope"))
+sys.path.append(str(ROOT / "oscilloscope"))
 from align_gray_records import read_nano_frames, fit_affine, build_alignment
 
 

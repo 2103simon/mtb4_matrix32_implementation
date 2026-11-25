@@ -9,6 +9,10 @@ Usage:
   python -m oscilloscope.evaluate_clock_models --run-dir DATA_DIR --block-s 2
 """
 from __future__ import annotations
+import sys as _bootstrap_sys
+from pathlib import Path as _bootstrap_path
+_bootstrap_sys.path.insert(0, str(_bootstrap_path(__file__).resolve().parents[1]))
+from experiment_analysis.paths import analysis_root
 
 import argparse
 import csv
@@ -286,7 +290,7 @@ def run(run_dir, *, block_s=1., gate_us=100.):
             assessment, cv_points = assess_models(
                 x, y, block_s=block_s, gate_us=gate_us)
             report.update(assessment)
-            folder = root/"analysis"/f"record_{index:05d}"
+            folder = analysis_root(root)/f"record_{index:05d}"
             folder.mkdir(parents=True, exist_ok=True)
             with (folder/"clock_model_holdout_predictions.csv").open(
                     "w", newline="", encoding="utf-8") as handle:
@@ -301,7 +305,7 @@ def run(run_dir, *, block_s=1., gate_us=100.):
         reports.append(report)
         overview.append(report)
 
-    analysis = root/"analysis"
+    analysis = analysis_root(root)
     analysis.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema": "matrix32_cv_clock_model_diagnostics_v1",

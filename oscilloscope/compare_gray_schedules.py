@@ -15,6 +15,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
+from experiment_analysis.paths import analysis_root
 
 import numpy as np
 
@@ -26,7 +27,7 @@ from oscilloscope.record_scope import atomic_json
 def _load(root):
     root = Path(root).resolve()
     meta = json.loads((root/"metadata.json").read_text())
-    report = json.loads((root/"analysis"/"gray_pulse_geometry_summary.json").read_text())
+    report = json.loads((analysis_root(root)/"gray_pulse_geometry_summary.json").read_text())
     frames = read_nano_frames(root/"nano_serial.jsonl")
     clock = root/"epoch_clock_analysis.json"
     epoch = (json.loads(clock.read_text()) if clock.exists() else None)
@@ -83,7 +84,10 @@ def run(baseline, experiment, *, output=None):
             and abs(float(e[1]["plan"].get("nominal_frame_s", .1))-.2) < 1e-9):
         raise ValueError("Comparison requires 10Hz baseline and 5Hz candidate")
     rows = rows_for_run("10Hz_original", *b) + rows_for_run("5Hz_deferred", *e)
-    out = Path(output) if output else e[0]/"analysis"
+    out = Path(output).expanduser().resolve() if output else analysis_root(e[0])
+    for raw in (b[0], e[0]):
+        if out == raw or raw in out.parents:
+            raise ValueError("Refusing to write Gray schedule analysis into raw recording")
     out.mkdir(parents=True, exist_ok=True)
     fields = list(rows[0])
     with (out/"gray_schedule_comparison.csv").open("w", newline="",

@@ -9,8 +9,11 @@ Dry run by default; --run explicitly opts in to real hardware.
 The scope must support 2 s/div and 1,000,000-point SINGLE SEQUENCE;
 the underlying scope code verifies actual SCPI configuration.
 """
+from pathlib import Path
 import sys
-from test_gray_timecode import main as gray_main
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from oscilloscope.test_gray_timecode import main as gray_main
 
 
 def main(argv=None):

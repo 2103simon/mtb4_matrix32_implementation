@@ -8,6 +8,10 @@ import csv
 import json
 import math
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from experiment_analysis.paths import ensure_derived_destination
 
 START_S = 0.004
 DATA_S = 0.007
@@ -256,8 +260,12 @@ def main(argv=None):
     }
     payload = json.dumps(report, indent=2) + "\n"
     if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(payload)
+        # Explicit diagnostic exports must not overwrite recorded waveform
+        # metadata or acquisition sidecars.
+        raw_folders = [path.resolve().parent.parent for path in args.csv
+                       if path.parent.name == 'waveforms']
+        dest = ensure_derived_destination(args.output, *raw_folders)
+        dest.write_text(payload, encoding='utf-8')
     print(payload)
 
 

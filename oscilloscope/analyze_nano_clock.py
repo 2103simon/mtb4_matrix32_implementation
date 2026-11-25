@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from experiment_analysis.paths import derived_json_path
 
 from communication.clock_estimator_diagnostics import diagnose_active_clock
 from communication.clock_sync import (
@@ -77,7 +78,8 @@ def main(argv=None):
     p.add_argument("--output", type=Path)
     args = p.parse_args(argv)
     result = analyze_run(args.run_dir)
-    out = args.output or args.run_dir / "nano_host_clock.json"
+    out = derived_json_path(args.run_dir, args.output,
+                            filename="nano_host_clock_diagnostics.json")
     out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(f"[CLOCK] {result['status']}; saved {out}")
     print(f"[PASSIVE] {result['passive']['sample_count']} frames, "

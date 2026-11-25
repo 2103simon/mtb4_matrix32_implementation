@@ -3,3 +3,6 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Local PlatformIO/VS Code workspace state is not source code.
+.vscode/

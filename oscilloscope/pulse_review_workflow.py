@@ -152,10 +152,13 @@ def _diagnostic_rejections(t, v, result):
             "sample_index": index, "time_s": center,
             "voltage_v": float(row["voltage_v"]),
             "original_status": row["status"],
-            "diagnostic_tag": ("POSSIBLE_BIPHASIC_PULSE_REVIEW"
-                               if trough < baseline - max(12., 1.5*drop)
-                               and peak > baseline + max(8., drop)
-                               else "SECONDARY_OR_WEAK_CROSSING_REVIEW"),
+            "diagnostic_tag": (
+                "NEGATIVE_ONLY_MISSING_POSITIVE_PHASE"
+                if row["status"] == "REJECTED_MISSING_POSITIVE_PHASE"
+                else "POSSIBLE_BIPHASIC_PULSE_REVIEW"
+                if trough < baseline - max(12., 1.5*drop)
+                and peak > baseline + max(8., drop)
+                else "SECONDARY_OR_WEAK_CROSSING_REVIEW"),
             "quiet_before_us": preceding_quiet * sample_dt_us, "negative_min_v": trough,
             "positive_max_v": peak, "expected_slot_s": None,
             "delta_to_expected_us": None,
@@ -197,7 +200,7 @@ def plot_report(output, t, volts, result):
     axes = np.atleast_1d(axes)
     threshold = result.get("threshold", {})
     groups = (
-        ("accepted_pulses", "accepted onset candidate", "x", 15, "C1"),
+        ("accepted_pulses", "biphasic pulse candidate (negative onset)", "x", 15, "C1"),
         ("rejected", "rejected transition", "o", 25, "C3"),
         ("suppressed", "suppressed crossing", "+", 30, "C4"),
     )
@@ -354,6 +357,14 @@ def report_markdown(result, output, manifest, figures, *, root=None, record=None
         "sampling_interval_us": result["sampling_interval_us"],
         "capture_span_s": result["capture_end_s"]-result["capture_start_s"],
         "accepted_candidate_count": len(result["accepted_pulses"]),
+        "negative_onset_candidates_before_phase_gate": result.get(
+            "negative_onset_candidates_before_phase_gate"),
+        "negative_only_rejected_count": result.get(
+            "negative_only_rejected_count", 0),
+        "positive_phase_detector": result.get("positive_phase_detector"),
+        "positive_phase_window_us": result.get("positive_phase_window_us"),
+        "positive_phase_min_excursion_v": result.get(
+            "positive_phase_min_excursion_v"),
         "unverified_interval_count": len(intervals_s),
         "unverified_mean_period_ms": (
             float(np.mean(intervals_s)*1000) if len(intervals_s) else None
@@ -417,7 +428,9 @@ def report_markdown(result, output, manifest, figures, *, root=None, record=None
         f"| Sample spacing | {result['sampling_interval_us']:.3f} us |",
         "", "## 2. Detection and diagnostic flags", "",
         "| Metric | Value |", "| --- | ---: |",
-        f"| Accepted onset candidates | {len(result['accepted_pulses'])} |",
+        f"| Biphasic-confirmed negative-onset candidates | {len(result['accepted_pulses'])} |",
+        f"| Negative events lacking confirmed positive phase | "
+        f"{result.get('negative_only_rejected_count', 0)} |",
         f"| Rejected crossings | {len(result['rejected'])} |",
         f"| Threshold-specific onset locations | "
         f"{len(result.get('threshold_sensitivity_unmatched_events', []))} |",
@@ -429,7 +442,20 @@ def report_markdown(result, output, manifest, figures, *, root=None, record=None
         f"| Baseline (V) | {threshold.get('baseline_v')} |",
         f"| Noise sigma (V) | {threshold.get('noise_sigma_v')} |",
         f"| Threshold (V) | {threshold.get('threshold_v')} |",
+        f"| Positive confirmation rule | "
+        f"{result.get('positive_phase_detector', 'not applied')} |",
+        f"| Positive search window (us) | "
+        f"{result.get('positive_phase_window_us', 'n/a')} |",
+        f"| Minimum positive excursion above baseline (V) | "
+        f"{result.get('positive_phase_min_excursion_v', 'n/a')} |",
         "", "Flags: " + (", ".join(result["flags"]) if result["flags"] else "none"),
+        "", "Only candidates exhibiting both a negative onset and a "
+        "sustained positive phase enter the automatic pulse inventory. "
+        "The negative onset retains its original scope timestamp. "
+        "Missing-positive-phase crossings appear among rejected R events "
+        "and require an explicit operator decision (normally EXCLUDE). "
+        "Positive-phase confirmation is a morphology filter, not a second "
+        "timing reference or evidence of Matrix32 command execution.",
         "", "## 3. Period inventory", "",
         f"{len(result['periods'])} consecutive **unverified** intervals. "
         "A missed physical pulse can invalidate neighboring intervals. "

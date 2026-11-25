@@ -19,7 +19,7 @@ import numpy as np
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config" / "config.json"
-OUTPUT_FOLDER = BASE_DIR / "analysis"
+OUTPUT_FOLDER = BASE_DIR / "results" / "mcu_recordings"
 CHANNEL_COUNT = 12
 
 
@@ -191,7 +191,8 @@ def _experiment_label(data):
     )
 
 
-def plot_traces(data, output, interval=None, selected_taxel=None, x_axis="mcu"):
+def plot_traces(data, output, interval=None, selected_taxel=None, x_axis="mcu",
+                scope_windows=None):
     """Three aligned panels: raw taxels, RA requested rate, SA requested rate."""
     if x_axis == "pc":
         if "taxel_pc_ns" not in data:
@@ -248,6 +249,27 @@ def plot_traces(data, output, interval=None, selected_taxel=None, x_axis="mcu"):
             ax.set_yticks([selected_taxel] if selected_taxel is not None
                           else range(CHANNEL_COUNT))
             ax.grid(True, alpha=0.25)
+
+    # Estimated scope coverage is shown only on PC arrival time. Boundaries
+    # come from an uncalibrated scope/Nano/host map, not ground truth.
+    if scope_windows:
+        if x_axis != "pc":
+            raise ValueError("Scope-window overlays require x_axis='pc'")
+        for j, (begin_ms, end_ms) in enumerate(scope_windows, start=1):
+            if not np.isfinite(begin_ms) or not np.isfinite(end_ms) or end_ms <= begin_ms:
+                raise ValueError("Invalid provisional scope window")
+            for ax in axs:
+                ax.axvline(begin_ms, color="black", ls="--", lw=1.25,
+                           label="Scope start (estimated)" if ax is axs[0] and j == 1 else None)
+                ax.axvline(end_ms, color="black", ls="--", lw=1.25,
+                           label="Scope end (estimated)" if ax is axs[0] and j == 1 else None)
+            axs[0].text((begin_ms + end_ms) / 2, 0.03 + 0.06 * ((j - 1) % 3),
+                        f"scope record {j} (provisional)", ha="center",
+                        va="bottom", transform=axs[0].get_xaxis_transform(),
+                        fontsize=8, bbox=dict(facecolor="white", alpha=0.8,
+                                              edgecolor="none"))
+        handles, labels = axs[0].get_legend_handles_labels()
+        axs[0].legend(handles, labels, ncol=4, fontsize=8, loc="upper center")
 
     axs[-1].set_xlabel("Elapsed PC arrival time (ms)" if x_axis == "pc"
                         else "Elapsed corrected MCU time (ms)")
@@ -337,6 +359,8 @@ def main():
                         metavar="0-11", help="Show only this taxel across all three panels")
     parser.add_argument("--zoom-sec", type=float, default=0.5,
                         help="Duration of most-active zoom plot in seconds (default 0.5)")
+    parser.add_argument("--output-root", type=Path, default=OUTPUT_FOLDER,
+                        help="Separate output folder for MCU-only plots (default: results/mcu_recordings)")
     parser.add_argument("--pc-time", action="store_true",
                         help="Use PC arrival timestamps instead of corrected MCU time")
     args = parser.parse_args()
@@ -355,11 +379,14 @@ def main():
         print(_experiment_label(data))
     else:
         print("No settings manifest found; plotting legacy recording metadata.")
-    OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
+    destination = args.output_root.expanduser().resolve()
+    if destination == data_dir.resolve() or data_dir.resolve() in destination.parents:
+        raise ValueError("Refusing to write generated plots into the MCU recording directory")
+    destination.mkdir(parents=True, exist_ok=True)
 
     axis = "pc" if args.pc_time else "mcu"
     suffix = f"_taxel{args.taxel}" if args.taxel is not None else ""
-    full_path = OUTPUT_FOLDER / f"{recording_id}_traces{suffix}.png"
+    full_path = destination / f"{recording_id}_traces{suffix}.png"
     plot_traces(data, full_path, selected_taxel=args.taxel, x_axis=axis)
     print(f"Saved {full_path} ({len(data['taxel_data'])} samples, {data['mode']} mode)")
 
@@ -371,12 +398,12 @@ def main():
         pc_t = (data["taxel_pc_ns"] - data["taxel_pc_ns"][0]) / 1e6
         start_ms = float(np.interp(start_ms, mcu_t, pc_t))
         end_ms = float(np.interp(end_ms, mcu_t, pc_t))
-    zoom_path = OUTPUT_FOLDER / f"{recording_id}_traces_zoom{suffix}.png"
+    zoom_path = destination / f"{recording_id}_traces_zoom{suffix}.png"
     plot_traces(data, zoom_path, interval=(start_ms, end_ms),
                 selected_taxel=args.taxel, x_axis=axis)
     print(f"Saved {zoom_path}")
 
-    combined_path = OUTPUT_FOLDER / f"{recording_id}_traces_combined{suffix}.png"
+    combined_path = destination / f"{recording_id}_traces_combined{suffix}.png"
     if plot_combined(data, combined_path, selected_taxel=args.taxel):
         print(f"Saved {combined_path}")
 

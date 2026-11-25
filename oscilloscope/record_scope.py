@@ -46,7 +46,43 @@ def scope_settings(f, channels, trigger_channel=None, *, horizontal_position=Fal
     for ch in channels:
         result[f"ch{ch}_v_div"] = query(f, f"CH{ch}:SCAle?").strip()
         result[f"ch{ch}_enabled"] = query(f, f"SELect:CH{ch}?").strip()
+        # Read-only provenance for voltage/headroom review. The operator still
+        # verifies the physical probe, grounding, ratings and calibration.
+        # Tektronix programmer manual 077-0510-05, vertical command group.
+        for name, command in (
+                ("probe_gain", "PROBe:GAIN"), ("coupling", "COUPling"),
+                ("termination_ohm", "TERmination"), ("offset_v", "OFFSet"),
+                ("position_div", "POSition"), ("inverted", "INVert")):
+            result[f"ch{ch}_{name}"] = query(f, f"CH{ch}:{command}?").strip()
+        gain = float(result[f"ch{ch}_probe_gain"])
+        if not math.isfinite(gain) or gain <= 0:
+            raise RuntimeError(f"CH{ch}: invalid probe gain readback {gain}")
+        # Gain is output/input (0.1 for a 10x probe). WFMPRE already applies
+        # this scale; do not multiply the downloaded voltages by it again.
+        result[f"ch{ch}_probe_attenuation"] = 1.0 / gain
     return result
+
+
+# Compatibility with SCPI values rounded to five significant decimal digits.
+# This is a settings-consistency tolerance, not a physical accuracy claim.
+# Equivalent spellings (500000 and 5E5) must have the same acceptance bound.
+NUMERIC_READBACK_REL_TOL = 5e-5
+
+
+def numeric_readback_tolerance(token):
+    """Small format-independent numeric compatibility bound, plus float slack.
+
+    A short SCPI spelling does not imply an uncertainty interval around its
+    last printed digit. Preserve original tokens as provenance only; never
+    weaken validation when trailing zeros are omitted.
+    """
+    try:
+        number = float(token)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError(f"Invalid numeric scope readback: {token!r}") from exc
+    if not math.isfinite(number):
+        raise RuntimeError(f"Non-finite numeric scope readback: {token!r}")
+    return max(abs(number) * NUMERIC_READBACK_REL_TOL, 8 * math.ulp(number))
 
 
 def verify(settings, args):
@@ -70,12 +106,23 @@ def verify(settings, args):
                 f"expected {args.trigger_position_pct}%, scope reports "
                 f"{actual_position}%"
             )
-    actual_points = int(float(settings["record_length"]))
+    actual_points = float(settings["record_length"])
     if actual_points != args.points:
         raise RuntimeError(
             f"Scope record length mismatch: requested {args.points:,} points, "
-            f"scope reports {actual_points:,}. Select a supported record length; "
+            f"scope reports {settings['record_length']}. Select a supported record length; "
             "acquisition was not started."
+        )
+    expected_rate = args.points / (10 * args.time_div_us * 1e-6)
+    actual_rate = float(settings["sample_rate"])
+    rate_tolerance = numeric_readback_tolerance(settings["sample_rate"])
+    if (not math.isfinite(actual_rate) or actual_rate <= 0 or
+            not math.isclose(actual_rate, expected_rate, rel_tol=0,
+                             abs_tol=rate_tolerance + 8 * math.ulp(expected_rate))):
+        raise RuntimeError(
+            f"Sample rate mismatch: expected {expected_rate:g} samples/s for "
+            f"{args.points:,} samples over {10 * args.time_div_us * 1e-6:g}s, "
+            f"scope reports {settings['sample_rate']}"
         )
     if settings["acquisition_mode"].upper() not in ("SAM", "SAMP", "SAMPLE"):
         raise RuntimeError("Acquisition mode must be SAMPLE for a finite waveform")
@@ -146,7 +193,7 @@ def observed_query(f, command):
             "query_end_monotonic_s": after}
 
 
-def acquire(f, timeout, on_armed=None, *, on_progress=None):
+def acquire(f, timeout, on_armed=None, *, on_progress=None, on_run_written=None):
     """Acquire one sequence, optionally reporting host-observed trigger states.
 
     The Tektronix programmer manual defines TRIGGER as acquiring post-trigger
@@ -159,12 +206,18 @@ def acquire(f, timeout, on_armed=None, *, on_progress=None):
 
     Without on_progress, preserve the existing acquisition-only polling path.
     All USB queries can block; the caller must retain the child-process watchdog.
+    on_run_written is an optional host timer hook immediately after the RUN
+    write, before any query. It does not certify a hardware trigger or replace
+    the existing verified-running on_armed callback.
     """
     write(f, "ACQuire:STATE STOP")
     write(f, "ACQuire:STOPAfter SEQuence")
     run_begin = time.monotonic()
     write(f, "ACQuire:STATE RUN")
     run_end = time.monotonic()
+    if on_run_written is not None:
+        on_run_written({"run_write_begin_monotonic_s": run_begin,
+                        "run_write_end_monotonic_s": run_end})
     # RUN establishes an enabled fresh sequence, not its hardware trigger time.
     first = observed_query(f, "ACQuire:STATE?")
     if first["value"] not in ("1", "RUN", "ON"):
@@ -271,15 +324,139 @@ def acquire(f, timeout, on_armed=None, *, on_progress=None):
 
 
 def validate_csv(path, points):
+    """Validate original samples in bounded memory, including their time grid."""
+    if points < 2:
+        raise ValueError("At least two waveform samples are required")
+    count = 0
+    first = previous = first_interval = None
+    min_interval = float("inf")
+    max_interval = 0.0
     with path.open(newline="") as f:
-        rows = list(csv.DictReader(f))
-    if len(rows) != points:
-        raise RuntimeError(f"{path}: expected {points} samples, received {len(rows)}")
-    times = [float(row["time_s"]) for row in rows]
-    if any(b <= a for a, b in zip(times, times[1:])):
-        raise RuntimeError("Non-increasing waveform times")
-    return {"samples": len(rows), "sample_interval_s": times[1] - times[0],
-            "span_s": times[-1] - times[0]}
+        reader = csv.DictReader(f)
+        if not {"time_s", "voltage_v"}.issubset(reader.fieldnames or []):
+            raise RuntimeError(f"{path}: waveform needs time_s and voltage_v columns")
+        for row in reader:
+            timestamp = float(row["time_s"])
+            voltage = float(row["voltage_v"])
+            if not math.isfinite(timestamp) or not math.isfinite(voltage):
+                raise RuntimeError(f"{path}: non-finite waveform sample {count + 1}")
+            if previous is None:
+                first = timestamp
+            else:
+                interval = timestamp - previous
+                if interval <= 0:
+                    raise RuntimeError("Non-increasing waveform times")
+                if first_interval is None:
+                    first_interval = interval
+                min_interval = min(min_interval, interval)
+                max_interval = max(max_interval, interval)
+            previous = timestamp
+            count += 1
+    if count != points:
+        raise RuntimeError(f"{path}: expected {points} samples, received {count}")
+    span = previous - first
+    mean_interval = span / (count - 1)
+    # The CSV writes xzero + (i - ptoff) * xincr in double precision.
+    # Allow arithmetic roundoff, not missing samples or an irregular grid.
+    rounding = 16 * max(math.ulp(first), math.ulp(previous),
+                        math.ulp(span), math.ulp(mean_interval))
+    if max(abs(min_interval - mean_interval),
+           abs(max_interval - mean_interval)) > rounding:
+        raise RuntimeError(f"{path}: non-uniform waveform time grid")
+    return {"samples": count, "sample_interval_s": first_interval,
+            "mean_sample_interval_s": mean_interval,
+            "span_s": span, "first_time_s": first, "last_time_s": previous,
+            "min_sample_interval_s": min_interval,
+            "max_sample_interval_s": max_interval}
+
+
+def verify_waveform_timing(timing, settings, args, transfer=None):
+    """Check actual CSV duration against the requested finite scope record.
+
+    The nominal window is N*dt; first-to-last sample span is (N-1)*dt.
+    Tolerance covers numeric formatting and float arithmetic, never a fitted
+    cross-device clock residual or physical oscillator calibration.
+    """
+    if timing["samples"] != args.points:
+        raise RuntimeError("Waveform sample count differs from the requested record")
+    window = 10 * args.time_div_us * 1e-6
+    expected_interval = window / args.points
+    rate = float(settings["sample_rate"])
+    rate_tolerance = numeric_readback_tolerance(settings["sample_rate"])
+    if not math.isfinite(rate) or rate <= rate_tolerance:
+        raise RuntimeError("Invalid sample rate for waveform timing verification")
+    interval_tolerance = max(
+        abs(1 / (rate - rate_tolerance) - 1 / rate),
+        abs(1 / (rate + rate_tolerance) - 1 / rate))
+    if transfer is not None:
+        preamble = transfer["waveform_preamble"]
+        xincr = preamble["xincr_s"]
+        interval_tolerance += numeric_readback_tolerance(
+            preamble.get("xincr_scpi", str(xincr)))
+        if not math.isfinite(xincr) or xincr <= 0:
+            raise RuntimeError("Invalid waveform preamble sample interval")
+    rounding = 16 * max(math.ulp(timing["first_time_s"]),
+                        math.ulp(timing["last_time_s"]),
+                        math.ulp(window))
+    expected_span = (args.points - 1) * expected_interval
+    span_tolerance = (args.points - 1) * interval_tolerance + rounding
+    if (not math.isfinite(timing["span_s"]) or
+            abs(timing["span_s"] - expected_span) > span_tolerance):
+        raise RuntimeError(
+            f"Waveform duration mismatch: expected first-to-last span "
+            f"{expected_span:g}s for a {window:g}s record, "
+            f"received {timing['span_s']:g}s"
+        )
+    if transfer is not None:
+        actual_interval = timing["span_s"] / (args.points - 1)
+        if abs(actual_interval - xincr) > rounding:
+            raise RuntimeError("CSV time interval differs from waveform preamble")
+    return {"nominal_window_s": window,
+            "nominal_sample_interval_s": expected_interval,
+            "expected_first_to_last_span_s": expected_span,
+            "numeric_span_tolerance_s": span_tolerance,
+            "settings_consistent": True,
+            "physical_clock_calibration_verified": False}
+
+
+def verify_waveform_scaling(transfer, settings):
+    """Compare preamble scaling with channel readback, without altering data."""
+    preamble = transfer["waveform_preamble"]
+    source = preamble["source"]
+    if not re.fullmatch(r"CH[1-4]", source):
+        raise RuntimeError(f"Unexpected waveform source: {source!r}")
+    if preamble["voltage_units"] not in ("V", "VOLTS"):
+        raise RuntimeError("Waveform is not expressed in volts")
+    ch = source[2:]
+    scale_token = settings[f"ch{ch}_v_div"]
+    scale = float(scale_token)
+    ymult = float(preamble["ymult_v_per_code"])
+    # Tektronix 077-0510-05, WFMOutpre:YOFF (pp.2-860/861): 25
+    # digitizing levels/div for one-byte data, 6400 for two-byte data.
+    width = preamble["bytes_per_sample"]
+    if width not in (1, 2):
+        raise RuntimeError(f"Unsupported waveform byte width: {width}")
+    levels_per_div = 25 if width == 1 else 6400
+    preamble_scale = abs(ymult) * levels_per_div
+    tolerance = numeric_readback_tolerance(scale_token)
+    tolerance += levels_per_div * numeric_readback_tolerance(
+        preamble.get("ymult_scpi", str(ymult)))
+    if (not math.isfinite(scale) or scale <= 0 or
+            not math.isfinite(preamble_scale) or preamble_scale <= 0 or
+            abs(preamble_scale - scale) > tolerance):
+        raise RuntimeError(
+            f"{source} waveform scale mismatch: preamble gives "
+            f"{preamble_scale:g} V/div, channel readback is {scale:g} V/div"
+        )
+    gain = float(settings[f"ch{ch}_probe_gain"])
+    if not math.isfinite(gain) or gain <= 0:
+        raise RuntimeError(f"{source} invalid probe gain readback")
+    return {"source": source, "scope_v_div": scale,
+            "preamble_v_div": preamble_scale,
+            "scope_reported_probe_gain": gain,
+            "scope_reported_probe_attenuation": 1.0 / gain,
+            "settings_consistent": True,
+            "physical_probe_calibration_verified": False}
 
 
 def main():
@@ -431,9 +608,14 @@ def main():
             for ch in a.channels:
                 file = root / "waveforms" / f"ch{ch}.csv"
                 report = capture(f, ch, a.points, file)
-                metadata["waveforms"][f"CH{ch}"] = {
-                    "path": str(file.relative_to(root)), "transfer": report,
-                    "timing": validate_csv(file, a.points)}
+                channel_record = {"path": str(file.relative_to(root)), "transfer": report}
+                metadata["waveforms"][f"CH{ch}"] = channel_record
+                timing = validate_csv(file, a.points)
+                channel_record["timing"] = timing
+                timing["verification"] = verify_waveform_timing(
+                    timing, metadata["scope_after"], a, report)
+                channel_record["scaling"] = verify_waveform_scaling(
+                    report, metadata["scope_after"])
             metadata["status"] = "captured_unqualified"
     except BaseException as exc:
         metadata["status"] = "failed"

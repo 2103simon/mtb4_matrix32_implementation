@@ -9,6 +9,7 @@ import numpy as np
 from oscilloscope.clock_qualification_diagnostics import (
     _frame_pairs, _residual_fit, _robust_candidate, diagnose,
 )
+from experiment_analysis.paths import use_results_root
 
 
 class ClockQualificationTests(unittest.TestCase):
@@ -45,7 +46,8 @@ class ClockQualificationTests(unittest.TestCase):
 
     def test_full_report_exposes_failure_without_requalification(self):
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
+            root = Path(td) / "raw"
+            root.mkdir()
             frames = []
             serial = []
             for i in range(30):
@@ -73,14 +75,16 @@ class ClockQualificationTests(unittest.TestCase):
             (root / "epoch_clock_analysis.json").write_text(json.dumps({
                 "records": [entry],
             }))
-            report, rows = diagnose(root)
+            with use_results_root(Path(td) / "results"):
+                report, rows = diagnose(root)
             self.assertEqual(rows[0]["original_status"], "unqualified")
             self.assertEqual(rows[0]["failed_checks"], [
                 "Scope/Nano Gray edge RMS"])
             self.assertFalse(rows[0]["clock_map_updated"])
             self.assertTrue(report.exists())
-            self.assertTrue((root / "analysis/record_00001/"
+            self.assertTrue((Path(td) / "results/raw/analysis/record_00001/"
                              "clock_residual_diagnostics.png").exists())
+            self.assertFalse((root / "analysis").exists())
             self.assertIn("125.0", report.read_text())
 
 
