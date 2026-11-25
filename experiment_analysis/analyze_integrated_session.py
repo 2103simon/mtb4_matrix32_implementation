@@ -403,7 +403,7 @@ def analyze_session(root, meta, *, taxel=None, show=False):
     events = read_events(trace_files[0]) if trace_files else []
     ack_states = acknowledged_frequency_states(events)
     output = analysis_root(root)
-    output.mkdir(exist_ok=True)
+    output.mkdir(parents=True, exist_ok=True)
     full_plot = output / "mcu_full_stream.png"
     plot_traces(mcu, full_plot, selected_taxel=taxel, x_axis="pc")
     from experiment_analysis.approved_frequency_analysis import plot_session_summary
