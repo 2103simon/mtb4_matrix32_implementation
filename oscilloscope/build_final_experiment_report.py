@@ -311,6 +311,11 @@ def build(run_dir):
         ] if timing.get('pipeline_timing_stats') else []),
       '![Host protocol latency](command_timing/figures/latency_distribution.png)','',
       '![ACK spacing vs requested cycle time](command_timing/figures/command_burst_analysis.png)','',
+      *( ['![Per-second throughput and acknowledged current-state fractions](command_timing/figures/throughput_per_second.png)','',
+          '![Timing distributions for ACK-indicated active and muted states](command_timing/figures/active_muted_timing_boxplots.png)','',
+          '[Per-second counts](command_timing/throughput_per_second.csv) · '
+          '[Per-state timing statistics](command_timing/state_timing_statistics.csv).','']
+         if timing.get('host_state_timing') else []),
       '[Full host timing report](command_timing/report.md) · '
       '[Per-SF protocol timing](command_timing/sf_command_latency.csv).','',
       '## Confidence and remaining limitations','',
@@ -329,7 +334,8 @@ def build(run_dir):
       'software version and assumptions in its `summary.json`.','',
       '[Full machine-readable provenance](extended_analysis_manifest.json).'])
     report=analysis/'final_experiment_report.md'
-    report.write_text('\n'.join(lines)+'\n',encoding='utf-8')
+    from oscilloscope.report_figure_captions import add_figure_captions
+    report.write_text(add_figure_captions('\n'.join(lines)+'\n'),encoding='utf-8')
     manifest=dict(schema='matrix32_extended_report_manifest_v1',
          provenance=ctx['provenance'],approved_onsets=len(ctx['onsets']),
          approved_intervals=len(ctx['onsets'])-1,
