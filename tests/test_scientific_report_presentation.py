@@ -13,6 +13,7 @@ import unittest
 
 from oscilloscope.present_scientific_report import (
     _check_figures, _frequency_pairs, _image, present,
+    migrate_archived_technical_report, TECHNICAL_REPORT_FILENAME, OLD_ARCHIVE_FILENAME,
 )
 
 
@@ -66,14 +67,45 @@ class ScientificReportPresentationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Refusing to replace'):
                 present(analysis)
 
+    def test_migrate_old_archive_preserves_exact_bytes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            analysis = Path(temp)
+            old = analysis / OLD_ARCHIVE_FILENAME
+            data = b'# Original technical report\\n\\x00unchanged\\r\\n'
+            old.write_bytes(data)
+            new = migrate_archived_technical_report(analysis)
+            self.assertEqual(new.name, TECHNICAL_REPORT_FILENAME)
+            self.assertEqual(new.read_bytes(), data)
+            self.assertFalse(old.exists())
+            # A second run must leave the archived contents untouched.
+            self.assertEqual(migrate_archived_technical_report(analysis).read_bytes(), data)
+
+    def test_migrate_identical_duplicate_names_and_reject_conflicts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            analysis = Path(temp)
+            old = analysis / OLD_ARCHIVE_FILENAME
+            new = analysis / TECHNICAL_REPORT_FILENAME
+            old.write_bytes(b'same technical archive')
+            new.write_bytes(b'same technical archive')
+            migrate_archived_technical_report(analysis)
+            self.assertFalse(old.exists())
+            self.assertEqual(new.read_bytes(), b'same technical archive')
+            old.write_bytes(b'different original')
+            with self.assertRaisesRegex(FileExistsError, 'Conflicting archived reports'):
+                migrate_archived_technical_report(analysis)
+            self.assertEqual(old.read_bytes(), b'different original')
+            self.assertEqual(new.read_bytes(), b'same technical archive')
+
     def test_signed_recording_report_and_legacy(self):
         sample = os.environ.get('MTB4_SCI_REPORT_RUN')
         if not sample:
             self.skipTest('Set MTB4_SCI_REPORT_RUN to run source-locked recording regression')
         root = Path(sample)
         source = root/'analysis'
+        archive_name = (TECHNICAL_REPORT_FILENAME if
+            (source/TECHNICAL_REPORT_FILENAME).is_file() else OLD_ARCHIVE_FILENAME)
         required = [
-            'final_experiment_report_legacy.md',
+            archive_name,
             'command_delivery_scorecard.json', 'command_delivery_scorecard.png',
             'extended_analysis_manifest.json', 'frequency_robustness_summary.json',
             'frequency_robustness_all_intervals.csv',
@@ -96,7 +128,7 @@ class ScientificReportPresentationTests(unittest.TestCase):
                 p = a/rel
                 p.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source/rel,p)
-            original = (a/'final_experiment_report_legacy.md').read_bytes()
+            original = (a/archive_name).read_bytes()
             (a/'final_experiment_report.md').write_bytes(
                 original + b'\n<!-- regenerated technical index; preserve existing legacy -->\n')
             copy_hash = hashlib.sha256((a/'frequency_robustness_all_intervals.csv').read_bytes()).hexdigest()
@@ -111,7 +143,9 @@ class ScientificReportPresentationTests(unittest.TestCase):
             self.assertIn('## Conclusions and remaining questions',text)
             self.assertIn('Operator cue schedule',text)
             self.assertIn('hypothetical alignment scenarios',text.lower())
-            self.assertEqual((a/'final_experiment_report_legacy.md').read_bytes(),original)
+            self.assertEqual((a/TECHNICAL_REPORT_FILENAME).read_bytes(),original)
+            self.assertFalse((a/OLD_ARCHIVE_FILENAME).exists())
+            self.assertEqual(result['technical_report'], TECHNICAL_REPORT_FILENAME)
             self.assertEqual(hashlib.sha256((a/'frequency_robustness_all_intervals.csv').read_bytes()).hexdigest(),copy_hash)
             self.assertEqual(len(list((a/'presentation_figures').glob('*.png'))),3)
             # A second direct presentation call must not silently replace legacy.
