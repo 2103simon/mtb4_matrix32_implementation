@@ -209,6 +209,7 @@ def present(analysis_dir):
         raise ValueError('Requires full-session host throughput analysis')
     ps = timing['pipeline_timing_stats']
     scope_duration = float(metadata['plan']['nominal_observed_scope_duration_s'])
+    scope_points = int(metadata['plan']['points'])
     host_duration = float(host['bins'])
     _window_plot(analysis, scope_duration, host_duration)
     _accuracy_plot(analysis, eligible)
@@ -250,7 +251,8 @@ def present(analysis_dir):
         '',
         '## Experiment and measurement windows', '',
         'A single Tektronix record captured **CH1 electrical output across an operator-verified isolated resistive dummy load** '
-        'and **CH2 Nano Every D7 timecode** at 10 million samples per channel for an approximately '
+        'and **CH2 Nano Every D7 timecode** at approximately '
+        f'**{scope_points:,} samples per channel** for an approximately '
         f'**{scope_duration:g}-second** scope window. The MCU/controller logs span approximately '
         f'**{host_duration:g} seconds** and contain **{throughput["mcu_messages"]:,} MCU message arrivals**. '
         'The 20-second waveform and much longer host session are different observation windows; the host-to-scope '
