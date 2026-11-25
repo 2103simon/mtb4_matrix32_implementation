@@ -1,7 +1,9 @@
-"""Compatibility entry point; use experiment_analysis.analyze_stimulation_shutdown for new work."""
+"""Legacy import/CLI compatibility: implementation in experiment_analysis.analyze_stimulation_shutdown."""
+from pathlib import Path as _Path
+import sys as _sys
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 from experiment_analysis import analyze_stimulation_shutdown as _implementation
-for _symbol, _value in vars(_implementation).items():
-    if not _symbol.startswith("__"):
-        globals()[_symbol] = _value
 if __name__ == "__main__":
-    main()
+    _implementation.main()
+else:
+    _sys.modules[__name__] = _implementation
