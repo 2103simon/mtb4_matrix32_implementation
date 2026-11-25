@@ -106,6 +106,29 @@ def analysis_root(run_dir, *, results_root_override=None, legacy_ok=True):
     return target
 
 
+
+def ensure_derived_destination(destination, *raw_directories):
+    """Validate a diagnostic output location and create only its parent folder.
+
+    Explicit --output values must not point anywhere inside managed raw data,
+    nor into the supplied recording directories (which may live elsewhere).
+    """
+    out = Path(destination).expanduser().resolve()
+    blocked = [(REPO_ROOT / 'data' / 'recordings').resolve()]
+    blocked.extend(Path(p).expanduser().resolve() for p in raw_directories)
+    if any(out == root or root in out.parents for root in blocked):
+        raise ValueError(f'Refusing to write derived output inside raw recordings: {out}')
+    out.parent.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def derived_json_path(run_dir, output=None, *, filename):
+    """Select external results by default and reject explicit raw-file writes."""
+    root = raw_run_dir(run_dir)
+    target = Path(output) if output is not None else analysis_root(root) / filename
+    return ensure_derived_destination(target, root)
+
+
 @contextlib.contextmanager
 def use_results_root(override=None):
     """Temporarily select a results destination for nested CLI runners."""
