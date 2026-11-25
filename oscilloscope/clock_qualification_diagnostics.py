@@ -4,6 +4,9 @@ Offline only. Candidate robust fits are DIAGNOSTIC; never replace the
 original time mapping or reclassify unqualified as qualified automatically.
 """
 from __future__ import annotations
+import sys as _bootstrap_sys
+from pathlib import Path as _bootstrap_path
+_bootstrap_sys.path.insert(0, str(_bootstrap_path(__file__).resolve().parents[1]))
 from experiment_analysis.paths import analysis_root
 
 import json
