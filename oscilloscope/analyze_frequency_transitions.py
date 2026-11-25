@@ -237,7 +237,8 @@ def run(run_dir):
       '[transition subset](transition_classifications.csv) · '
       '[numeric scenario sweep](offset_sensitivity.json) · '
       '[source-locked provenance](summary.json).']
-    (out/'report.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
+    from oscilloscope.report_figure_captions import add_figure_captions
+    (out/'report.md').write_text(add_figure_captions('\n'.join(lines)+'\n'),encoding='utf-8')
     print(f"[TRANSITIONS] {len(rows)} approved intervals; {len(changes)} prior-ACK mismatches; {summary['mismatches_with_compatible_in_interval_sf_ack']} compatible in-interval ACKs")
     return summary
 
