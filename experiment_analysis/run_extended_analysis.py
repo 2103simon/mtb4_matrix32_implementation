@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 from experiment_analysis.paths import use_results_root
+from experiment_analysis.register_recording import register
 
 from experiment_analysis import analyze_frequency_transitions
 from experiment_analysis import analyze_stimulation_shutdown
@@ -17,6 +18,9 @@ from experiment_analysis import build_final_experiment_report
 
 
 def run(run_dir):
+    # New clean recordings get a source manifest automatically. Legacy runs
+    # must be migrated explicitly; registration never merges old analysis.
+    register(run_dir)
     analyze_frequency_transitions.run(run_dir)
     analyze_stimulation_shutdown.run(run_dir)
     analyze_command_timing.run(run_dir)
