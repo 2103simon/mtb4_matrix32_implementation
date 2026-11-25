@@ -149,6 +149,19 @@ def present(analysis_dir):
 
     root = analysis.parent
     metadata = _read(root/'metadata.json')
+    # Read-only controller setup detail, when uniquely present in the run.
+    # It is supplemental metadata, not a new electrical classification.
+    settings_files = sorted((root/'mcu_matrix32').glob('*_settings.json'))
+    source_description = ''
+    settings_sha256 = None
+    if len(settings_files) == 1:
+        import hashlib
+        settings = _read(settings_files[0])
+        source = settings.get('configuration', {}).get('stimulation_source', {})
+        if source.get('taxel') is not None:
+            source_description = (f" The controller selected tactile taxel "
+                                  f"**{source['taxel']}** with **{source.get('encoding', 'unspecified')}** encoding.")
+        settings_sha256 = hashlib.sha256(settings_files[0].read_bytes()).hexdigest()
     timing = _read(analysis/'command_timing'/'summary.json')
     transitions = _read(analysis/'frequency_transitions'/'summary.json')
     shutdown = _read(analysis/'stimulation_shutdown'/'summary.json')
@@ -271,7 +284,7 @@ def present(analysis_dir):
         f'**{scope_duration:g}-second** scope window. The MCU/controller logs span approximately '
         f'**{host_duration:g} seconds** and contain **{throughput["mcu_messages"]:,} MCU message arrivals**. '
         'The 20-second waveform and much longer host session are different observation windows; the host-to-scope '
-        'offset is **not independently qualified**. No person was connected.',
+        'offset is **not independently qualified**. No person was connected.' + source_description,
         '',
         _image('presentation_figures/observation_windows.png',
                'Bars show total available host-log and scope-record durations using their respective clocks. '
@@ -425,7 +438,8 @@ def present(analysis_dir):
     return {'primary_report': 'final_experiment_report.md',
             'legacy_report': 'final_experiment_report_legacy.md',
             'primary_figures': figures, 'figure_count': len(figures),
-            'presentation_schema': 'matrix32_scientific_report_v1'}
+            'presentation_schema': 'matrix32_scientific_report_v1',
+            'controller_settings_sha256_if_available': settings_sha256}
 
 
 def main(argv=None):
