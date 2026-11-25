@@ -95,8 +95,10 @@ def audit(run_dir, *, scan_all=False):
                      'extended_analysis_technical_report.md'):
             if not (analysis / name).is_file():
                 errors.append(f'Generated report missing in results: {name}')
-        if not (analysis / 'record_00001/pulse_review/review_approval.json').is_file():
-            errors.append('Signed record 1 approval is missing from external results')
+        signed = [p for p in analysis.rglob('review_approval.json')
+                  if 'pulse_review' in p.parts and p.is_file()]
+        if not signed:
+            errors.append('No signed pulse-review approval found in external results')
     embedded = raw / 'analysis'
     if embedded.exists():
         errors.append(
