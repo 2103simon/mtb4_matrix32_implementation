@@ -12,6 +12,7 @@ from unittest.mock import patch
 from experiment_analysis.paths import analysis_root, results_dir, use_results_root, sha256
 from experiment_analysis.migrate_layout import migrate, inventory, verify_migration
 from experiment_analysis.register_recording import register
+from experiment_analysis.finalize_layout import finalize
 from experiment_analysis.publish_reports import publish, _safe_relative
 
 
@@ -156,6 +157,44 @@ class SeparateRecordingAndReportsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'does not record a completed'):
                 analysis_root(self.raw)
         self.assertTrue((legacy / 'pulse_review/review_approval.json').exists())
+
+    def test_verified_finalization_moves_only_embedded_analysis(self):
+        migrate(self.raw, results_root=self.resultroot, apply=True)
+        original_ch1 = sha256(self.raw/'waveforms/ch1.csv')
+        original_signed = sha256(
+            self.raw/'analysis/pulse_review/review_approval.json')
+        preview = finalize(self.raw, results_root=self.resultroot)
+        self.assertEqual(preview['status'], 'READY_TO_ARCHIVE')
+        self.assertTrue((self.raw/'analysis').is_dir())
+        final = finalize(self.raw, results_root=self.resultroot, apply=True)
+        self.assertEqual(final['status'], 'ARCHIVED')
+        self.assertFalse((self.raw/'analysis').exists())
+        archive = self.resultroot/'sample_run'/'_legacy_source_analysis'
+        self.assertEqual(sha256(archive/'pulse_review/review_approval.json'),
+                         original_signed)
+        self.assertEqual(sha256(self.raw/'waveforms/ch1.csv'), original_ch1)
+        self.assertTrue((self.resultroot/'sample_run'/
+                         'legacy_analysis_archive_receipt.json').is_file())
+        self.assertEqual(verify_migration(
+            self.raw, results_root=self.resultroot)['status'], 'VERIFIED')
+        self.assertEqual(finalize(
+            self.raw, results_root=self.resultroot)['status'], 'ALREADY_ARCHIVED')
+
+    def test_finalizer_does_not_move_unmigrated_raw_approval(self):
+        with self.assertRaises(FileNotFoundError):
+            finalize(self.raw, results_root=self.resultroot)
+        self.assertTrue(
+            (self.raw/'analysis/pulse_review/review_approval.json').is_file())
+
+    def test_finalizer_rejects_changed_original_signed_review(self):
+        migrate(self.raw, results_root=self.resultroot, apply=True)
+        (self.raw/'analysis/pulse_review/review_approval.json').write_text(
+            'changed human decisions')
+        with self.assertRaisesRegex(ValueError, 'Original human review'):
+            finalize(self.raw, results_root=self.resultroot, apply=True)
+        self.assertTrue((self.raw/'analysis').is_dir())
+        self.assertFalse(
+            (self.resultroot/'sample_run'/'_legacy_source_analysis').exists())
 
     def test_legacy_science_module_imports_alias_canonical_modules(self):
         import importlib
