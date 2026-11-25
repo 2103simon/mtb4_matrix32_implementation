@@ -8,6 +8,9 @@ Usage:
     python -m oscilloscope.plot_mcu_scope_coverage --run-dir data/recordings/<run>
 """
 from __future__ import annotations
+import sys as _bootstrap_sys
+from pathlib import Path as _bootstrap_path
+_bootstrap_sys.path.insert(0, str(_bootstrap_path(__file__).resolve().parents[1]))
 from experiment_analysis.paths import analysis_root
 
 import argparse
