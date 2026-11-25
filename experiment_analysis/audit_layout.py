@@ -13,7 +13,7 @@ import re
 import subprocess
 
 from experiment_analysis.paths import REPO_ROOT, raw_run_dir, results_dir, sha256
-from experiment_analysis.migrate_layout import verify_migration
+from experiment_analysis.migrate_layout import verify_migration, inventory
 
 IMAGE_LINK = re.compile(r'!\[[^\]]*\]\(([^)]+)\)')
 
@@ -110,6 +110,8 @@ def audit(run_dir, *, scan_all=False):
         note = json.loads(receipt.read_text(encoding='utf-8'))
         if note.get('run_id') != raw.name:
             errors.append('Legacy analysis archival receipt identifies wrong run')
+        elif inventory(archive) != note.get('original_analysis_files_inventory'):
+            errors.append('Preserved pre-migration analysis archive changed since cleanup')
     repo_reports = REPO_ROOT / 'reports' / raw.name
     packages = sorted(p for p in repo_reports.iterdir() if p.is_dir()) if repo_reports.is_dir() else []
     if not packages:
@@ -146,7 +148,9 @@ def audit(run_dir, *, scan_all=False):
                 f'{len(other_residuals)} OTHER historic recordings have analysis/ '
                 'trees; archive/migrate each if you intend to clean all recordings.')
     return {
-        'status': 'PASS' if not errors else 'FAIL',
+        'status': ('FAIL' if errors else
+                   'PASS_WITH_HISTORICAL_RESIDUALS' if other_residuals
+                   else 'PASS'),
         'run_id': raw.name,
         'raw_files_verified': None if verified is None else verified['raw_files_unchanged'],
         'signed_review_files_verified': (None if verified is None
