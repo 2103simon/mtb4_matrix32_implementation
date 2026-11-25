@@ -138,7 +138,7 @@ def publish(run_dir, *, reports_root=None, tag=None, analysis_path=None):
             'metadata_sha256':binding['metadata_sha256'],
             'binding_manifest_sha256':sha256(manifest_path),
             'files':items,
-            'source_analysis_at_publication':str(source),
+            'source_analysis_at_publication':f'results/{raw.name}/analysis',
             'raw_data_included':False,
             'signed_review_included':False,
         }
