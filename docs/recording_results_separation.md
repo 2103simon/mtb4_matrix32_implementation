@@ -155,6 +155,28 @@ through a small compatibility wrapper; new work should use
 `oscilloscope/record_integrated_matrix32.py` and writes raw evidence only;
 its optional post-capture overview plot is directed into `results/`.
 
+## Scientific report source path after migration
+
+The consolidated builder reads raw experiment metadata and optional MCU
+controller settings **from the original recording directory**, but writes
+Markdown and figures **under the results analysis directory**. It must not
+expect `results/<RUN_ID>/metadata.json` and must never copy raw metadata
+into the results directory just to make a report work.
+
+If the three extended analyses completed but the scientific presentation
+failed during an earlier version of this refactor, update the branch and
+regenerate **only the consolidated report**:
+
+```bash
+git pull --ff-only origin refactor/separate-recordings-results
+MTB4_SCI_REPORT_RUN="$MTB4_RUN" python -m unittest discover -s tests \
+  -p 'test_scientific_report_presentation.py' -v
+python -u -m experiment_analysis.build_final_experiment_report --run-dir "$MTB4_RUN"
+```
+
+There is no need to migrate a second time, redetect pulses, or re-sign the
+operator approval. The signed-review and raw-evidence hashes remain unchanged.
+
 ## Regression tests
 
 ```bash
