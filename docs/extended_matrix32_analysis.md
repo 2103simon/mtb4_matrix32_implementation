@@ -1,5 +1,14 @@
 # Matrix32 extended scientific analyses
 
+> **Authoritative report (November 2026 presentation revision):**
+> `analysis/final_experiment_report.md` is now the concise six-figure scientific report
+> with research-question conclusions, measured frequency errors, timing sensitivity,
+> protocol timing, and limitations. The previous longer report is automatically
+> preserved as `analysis/final_experiment_report_legacy.md`, and the older
+> `final_integrated_report.md` is a historical index only. The detailed
+> frequency-transition, shutdown, timing, robustness, and per-ACK reports remain
+> unchanged. See [scientific report documentation](scientific_report_presentation.md).
+>
 The extended analysis operates offline, using **only the source-locked,
 operator-signed biphasic pulse inventory** and the original raw waveform,
 MCU samples, BLE command trace and provisional clock mapping. It does not
