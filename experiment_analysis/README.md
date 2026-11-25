@@ -6,6 +6,9 @@ Nano synchronization evidence.
 
 - `paths.py`: separate raw-recording inputs from derived results.
 - `migrate_layout.py`: dry-run or lossless migration of existing analyses.
+- `finalize_layout.py`: verified, reversible archival of old analysis outside raw.
+- `audit_layout.py`: read-only integrity and Git-publication cleanup checks.
+- `register_recording.py`: bind new clean recordings to external results.
 - `analyze_frequency_transitions.py`, `analyze_stimulation_shutdown.py`,
   `analyze_command_timing.py`: three independent analyses.
 - `run_extended_analysis.py`: all three analyses and the verified final report.
