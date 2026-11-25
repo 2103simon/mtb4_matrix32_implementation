@@ -70,5 +70,6 @@ def add_figure_captions(markdown):
             j += 1
         if j < len(lines) and lines[j].strip() == caption:
             continue
-        result.append('\n' + caption + '\n')
+        # Leave a full blank line after the caption, even before the next figure.
+        result.append('\n' + caption + '\n\n')
     return ''.join(result)
