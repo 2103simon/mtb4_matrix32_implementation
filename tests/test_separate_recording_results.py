@@ -13,6 +13,7 @@ from experiment_analysis.paths import analysis_root, results_dir, use_results_ro
 from experiment_analysis.migrate_layout import migrate, inventory, verify_migration
 from experiment_analysis.register_recording import register
 from experiment_analysis.finalize_layout import finalize
+from experiment_analysis.audit_layout import audit
 from experiment_analysis.publish_reports import publish, _safe_relative
 
 
@@ -195,6 +196,32 @@ class SeparateRecordingAndReportsTests(unittest.TestCase):
         self.assertTrue((self.raw/'analysis').is_dir())
         self.assertFalse(
             (self.resultroot/'sample_run'/'_legacy_source_analysis').exists())
+
+    def test_readonly_final_audit_requires_raw_cleanup_and_checks_publication(self):
+        from types import SimpleNamespace
+        migrate(self.raw, results_root=self.resultroot, apply=True)
+        with use_results_root(self.resultroot):
+            published = publish(self.raw, reports_root=self.home/'reports',
+                                tag='audited')
+            files = sorted(p.relative_to(self.home).as_posix()
+                           for p in published.rglob('*') if p.is_file())
+            with patch('experiment_analysis.audit_layout.REPO_ROOT', self.home), \
+                 patch('experiment_analysis.audit_layout.subprocess.run',
+                       return_value=SimpleNamespace(stdout='\\n'.join(files))):
+                pending = audit(self.raw)
+                self.assertEqual(pending['status'], 'FAIL')
+                self.assertTrue(pending['raw_recording_has_analysis_dir'])
+                finalize(self.raw, results_root=self.resultroot, apply=True)
+                approved = audit(self.raw)
+                self.assertEqual(approved['status'], 'PASS', approved['errors'])
+                self.assertEqual(approved['published_snapshots_checked'], 1)
+                self.assertTrue(approved['preserved_legacy_analysis_archive'])
+                # Even a tracked/committed figure must still match the saved hash.
+                (published/'figures/plot.png').write_bytes(b'tampered-figure')
+                broken = audit(self.raw)
+                self.assertEqual(broken['status'], 'FAIL')
+                self.assertTrue(any('Published file hash changed' in x
+                                    for x in broken['errors']))
 
     def test_legacy_science_module_imports_alias_canonical_modules(self):
         import importlib
