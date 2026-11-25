@@ -5,13 +5,16 @@ import unittest
 from unittest.mock import patch
 
 from oscilloscope.review_pulse_detection import analyze_record
+from experiment_analysis.paths import use_results_root
 
 
 class ReviewEvidencePreservationTests(unittest.TestCase):
     def test_rerun_preserves_all_existing_evidence_and_approved_figure(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            output = root / "analysis/record_00001/pulse_review"
+            root = Path(tmp) / "raw"
+            root.mkdir()
+            (root / "metadata.json").write_text('{"status": "complete", "records": []}')
+            output = Path(tmp) / "results" / "raw" / "analysis/record_00001/pulse_review"
             (output / "figures").mkdir(parents=True)
             names = (
                 "audit.json", "accepted_onsets.csv", "periods_unverified.csv",
@@ -29,8 +32,9 @@ class ReviewEvidencePreservationTests(unittest.TestCase):
                 "CH1": {"path": "waveforms/original_ch1.csv"},
             }}
             with patch("oscilloscope.review_pulse_detection.load_wave") as load:
-                with self.assertRaisesRegex(FileExistsError, "existing pulse-review evidence"):
-                    analyze_record(root, record)
+                with use_results_root(Path(tmp) / "results"):
+                    with self.assertRaisesRegex(FileExistsError, "existing pulse-review evidence"):
+                        analyze_record(root, record)
                 load.assert_not_called()
             self.assertEqual(
                 {name: (output / name).read_bytes() for name in names}, expected)
@@ -40,16 +44,19 @@ class ReviewEvidencePreservationTests(unittest.TestCase):
                      "review_approval.json", "approved_onsets.csv",
                      "approved_intervals.csv"):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                output = root / "analysis/record_00001/pulse_review"
+                root = Path(tmp) / "raw"
+            root.mkdir()
+            (root / "metadata.json").write_text('{"status": "complete", "records": []}')
+                output = Path(tmp) / "results" / "raw" / "analysis/record_00001/pulse_review"
                 output.mkdir(parents=True)
                 file = output / name
                 file.write_text("Operator evidence must survive\n")
                 record = {"index": 1, "status": "captured", "channels": {
                     "CH1": {"path": "waveforms/original_ch1.csv"},
                 }}
-                with self.assertRaisesRegex(FileExistsError, "Preserve/archive"):
-                    analyze_record(root, record)
+                with use_results_root(Path(tmp) / "results"):
+                    with self.assertRaisesRegex(FileExistsError, "Preserve/archive"):
+                        analyze_record(root, record)
                 self.assertEqual(file.read_text(), "Operator evidence must survive\n")
 
 
