@@ -1,5 +1,14 @@
 # Tektronix oscilloscope acquisition and integrated Matrix32 analysis
 
+> **November 2026 results-layout refactor:** New analyses and signed pulse
+> reviews are written under `results/<RUN_ID>/analysis/`, separate from
+> immutable inputs under `data/recordings/<RUN_ID>/`. Existing recording
+> directories with `analysis/` must be [migrated without deletion](
+> ../docs/recording_results_separation.md) before reanalysis. Use
+> `python -m experiment_analysis.run_extended_analysis --run-dir RAW_RUN`
+> for cross-device analyses and `python -m experiment_analysis.publish_reports`
+> to create Git-tracked reports with their figures. Any older output paths
+> shown further below document the pre-refactor layout.\n\n
 This module controls a **Tektronix MDO4104B-6** over USBTMC/SCPI, records finite acquisitions, decodes the independent **Arduino Nano Every D7 Gray reference**, and relates those scope observations to the PC's MCU/Matrix32 command logs.
 
 [Repository overview](../README.md) · [Linux installation and safe wiring](../docs/installation_and_operations.md) · [Clock mapping](../docs/clock_mapping_and_time_domains.md) · [Full integrated bench procedure](../docs/integrated_matrix32_scope_recording.md) · [CH1 100 kΩ dummy load and grounding](../docs/electrical_bench_setup.md)

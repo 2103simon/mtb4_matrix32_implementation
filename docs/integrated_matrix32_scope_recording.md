@@ -1,5 +1,14 @@
 # Integrated Matrix32 + Feather M4 + Nano + Tektronix oscilloscope recording
 
+> **November 2026 results-layout refactor:** New analyses and signed pulse
+> reviews are written under `results/<RUN_ID>/analysis/`, separate from
+> immutable inputs under `data/recordings/<RUN_ID>/`. Existing recording
+> directories with `analysis/` must be [migrated without deletion](
+> recording_results_separation.md) before reanalysis. Use
+> `python -m experiment_analysis.run_extended_analysis --run-dir RAW_RUN`
+> for cross-device analyses and `python -m experiment_analysis.publish_reports`
+> to create Git-tracked reports with their figures. Any older output paths
+> shown further below document the pre-refactor layout.\n\n
 This is the **current standard** for CH1-only, dummy-load integrated measurements. One run gathers continuous Feather MCU telemetry, live BLE Matrix32 command/ACK history, and Arduino Nano Every Gray reference while acquiring **N independent, finite 20-second scope CH1+CH2 records** (`--count N`, default 1). Scope USB transfers introduce genuine unobserved gaps. All results are recorded for later independent per-record analysis.
 
 [Project README](../README.md) · [Electrical CH1 setup](electrical_bench_setup.md) · [Clock mapping](clock_mapping_and_time_domains.md) · [Oscilloscope scripts](../oscilloscope/README.md)
