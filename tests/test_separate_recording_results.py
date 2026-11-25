@@ -47,6 +47,17 @@ class SeparateRecordingAndReportsTests(unittest.TestCase):
                         'source_ch1_sha256':sha256(ch1)}) + '\n')
         self.resultroot = self.home/'results'
 
+    def test_missing_raw_metadata_fails_closed(self):
+        # Test fixtures must not weaken production source requirements.
+        # Missing metadata is an invalid raw recording, not a signal to
+        # fall back to writing analysis underneath the raw directory.
+        (self.raw/'metadata.json').unlink()
+        with use_results_root(self.resultroot):
+            with self.assertRaisesRegex(FileNotFoundError, 'metadata.json'):
+                analysis_root(self.raw)
+        self.assertFalse((self.raw/'analysis/record_00001').exists())
+        self.assertFalse(self.resultroot.exists())
+
     def test_dry_run_does_not_create_results(self):
         original = inventory(self.raw/'analysis')
         info = migrate(self.raw, results_root=self.resultroot)
