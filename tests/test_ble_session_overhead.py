@@ -139,13 +139,12 @@ class MixedSessionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MixedDeviceTests(unittest.IsolatedAsyncioTestCase):
-    def device(self, shared):
+    def device(self):
         from copy import deepcopy
         from matrix32.device import Matrix32Device
         device = Matrix32Device(
             config={"sa": [1], "sc": [100], "sf": 81, "sw": [100],
-                    "pw": 100, "sv": 50, "st": 10},
-            experimental_shared_sf_sc=shared)
+                    "pw": 100, "sv": 50, "st": 10})
         client = FakeClient()
         device.client = client
         device.write_char_uuid = "write"
@@ -156,7 +155,7 @@ class MixedDeviceTests(unittest.IsolatedAsyncioTestCase):
         return device, client
 
     async def test_shared_mute_resume_preserves_order_guard_and_config(self):
-        device, client = self.device(True)
+        device, client = self.device()
         try:
             sf = await device.apply_live_frequency(80)
             mute = await device.apply_live_current(1, 0)
@@ -183,21 +182,25 @@ class MixedDeviceTests(unittest.IsolatedAsyncioTestCase):
             await device.close_live_frequency_session()
         self.assertEqual(client.closes, 1)
 
-    async def test_default_sc_still_uses_temporary_session(self):
-        device, client = self.device(False)
+    async def test_sc_first_opens_shared_session_and_sf_reuses_it(self):
+        device, client = self.device()
         try:
-            await device.apply_live_frequency(80)
-            await device.apply_live_current(1, 0)
-            self.assertEqual((client.opens, client.closes), (2, 2))
+            sc = await device.apply_live_current(1, 0)
+            self.assertFalse(sc["persistent_session_reused"])
+            self.assertEqual((client.opens, client.closes), (1, 0))
             sf = await device.apply_live_frequency(400)
-            self.assertFalse(sf["persistent_session_reused"])
+            self.assertTrue(sf["persistent_session_reused"])
+            self.assertEqual((client.opens, client.closes), (1, 0))
+            self.assertGreaterEqual(
+                sf["write_begin_monotonic_s"] - sc["ack_monotonic_s"],
+                .0075 - 1e-6)
         finally:
             await device.close_live_frequency_session()
-        self.assertEqual((client.opens, client.closes), (3, 3))
+        self.assertEqual((client.opens, client.closes), (1, 1))
 
     async def test_sc_error_closes_session_and_invalidates_config(self):
         from matrix32.device import LiveCurrentUpdateError
-        device, client = self.device(True)
+        device, client = self.device()
         await device.apply_live_frequency(80)
         client.replies = [b">ERR<"]
         with self.assertRaises(LiveCurrentUpdateError):
@@ -212,7 +215,7 @@ class MixedDeviceTests(unittest.IsolatedAsyncioTestCase):
     async def test_independent_stop_during_pending_sc(self):
         from unittest.mock import AsyncMock, patch
         from matrix32.device import LiveCurrentUpdateError
-        device, client = self.device(True)
+        device, client = self.device()
         await device.apply_live_frequency(80)
         client.write_started.clear()
         client.release_write = asyncio.Event()
