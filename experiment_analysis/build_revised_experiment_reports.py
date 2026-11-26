@@ -35,7 +35,7 @@ def sections(markdown):
 
 
 def historical_body(markdown,heading):
-    body = sections(markdown)[heading]
+    body = sections(markdown)[heading].replace("\\`","`")
     # Published local supporting evidence paths are already explicit text.
     # Reuse the unchanged images in the existing reference analysis folder.
     return IMAGE_RE.sub(lambda m:f"![{m.group(1)}](../{m.group(2)})",body)
@@ -71,9 +71,10 @@ def ratio_range(lo,hi,n):
 
 
 def table(headers,rows):
-    return "\n".join(["| "+" | ".join(headers)+" |",
-                      "| "+" | ".join("---" for _ in headers)+" |"]+
-                     ["| "+" | ".join(str(x) for x in row)+" |" for row in rows])
+    def line(cells):
+        require(len(cells)==len(headers),"Markdown table row width differs from header")
+        return "| "+" | ".join(str(x).replace("|",r"\|").replace("\n"," ") for x in cells)+" |"
+    return "\n".join([line(headers),line(["---"]*len(headers))]+[line(row) for row in rows])
 
 
 def primary(m,label):
@@ -269,14 +270,18 @@ def summary_paragraph(m):
     p=m["pooled_replays"]["1.0"]["original"]
     a,b=p["baseline"],p["shared"]
     ordinary=b["types"]["ordinary"]
+    baseline_ordinary=a["types"]["ordinary"]
+    replay_intervals=sum(m["runs"][label]["approved_intervals"] for label in ("A1","B1","A2","B2"))
     return (f"Across the shared replay recordings, **{count_range(b['min'],b['max'])} of {b['target_acks']}** "
             f"target SF ACKs ({ratio_range(b['min'],b['max'],b['target_acks'])}) are represented in the assessed "
             f"physical output under the cycle-boundary/latest-pending-SF model and chronological attribution. "
             f"The corresponding baseline estimate is **{count_range(a['min'],a['max'])}/{a['target_acks']}** "
             f"({ratio_range(a['min'],a['max'],a['target_acks'])}). Ordinary shared SF updates have "
-            f"{ordinary['local_matching']}/{ordinary['n']} local matching coverage ({pct(ordinary['local_matching'],ordinary['n'])}). "
+            f"{ordinary['local_matching']}/{ordinary['n']} local matching coverage ({pct(ordinary['local_matching'],ordinary['n'])}), "
+            f"versus {baseline_ordinary['local_matching']}/{baseline_ordinary['n']} ({pct(baseline_ordinary['local_matching'],baseline_ordinary['n'])}) for baseline. "
             f"Across the four replays, {a['matching']+b['matching']}/{a['assessed']+b['assessed']} assessed periods "
-            "match a candidate. These are model-conditioned observability estimates, not independently measured device execution or failure rates.")
+            f"match a candidate; {replay_intervals-a['assessed']-b['assessed']} of {replay_intervals} approved intervals are not assessed. "
+            "These are model-conditioned observability estimates, not independently measured device execution or failure rates.")
 
 
 def method_text():
@@ -308,7 +313,7 @@ def clock_text():
 
 def charge_text(m):
     a,b=m["charge"]["A2"]["2.5"],m["charge"]["B2"]["2.5"]
-    return (f"The 20 V/div repetition avoids storage-rail samples; rejected negative-only candidates "
+    return (f"The 20 V/div repetition contains no storage-rail samples (this does not rule out analog clipping); rejected negative-only candidates "
             f"number {a['groups']['rejected']['candidate_count']} and {b['groups']['rejected']['candidate_count']}. "
             "For a nominal 100 kΩ resistor branch, integrate baseline-subtracted voltage divided by "
             "resistance from 100 µs before onset to the selected endpoint. Only quiet, nonoverlapping, "
@@ -366,10 +371,10 @@ def render_condensed(m,old):
                ("Reference SF/SC protocol delivery",f"{ref['sf_ok']}/{ref['sf_requests']} SF; {ref['sc_ok']}/{ref['sc_requests']} SC OK"),
                ("Reference settled frequency",f"{ref['stable']['ack']['stable_intervals']} selected intervals; median |error| {ref['stable']['ack']['median_abs_error_hz']:.3f} Hz"),
                ("Shared replay physical observability",f"{count_range(b['min'],b['max'])}/{b['target_acks']} under model; {b['matching']}/{b['assessed']} assessed periods match"),
-               ("BLE transport",transport_reduction(m)),
+               ("BLE transport: reduction in median request-to-terminal latency",transport_reduction(m)),
                ("Electrical safety","Not established; verified dummy-load bench only")]),
            "## Experiment and measurement windows",historical_body(old,"Experiment and measurement windows"),
-           "The preceding original measurement description and figures concern the reference run. Four independent scope records replayed the same recorded input window; they are not additional portions of the original host session.",
+           "The preceding original measurement description and figures concern the reference run. Four separate scope records replayed the same recorded input window; they are not additional portions of the original host session.",
            sources_table(m),
            f"Replay input: {m['replay_source']['sample_count']} snapshots over {m['replay_source']['duration_s']} s, identical verified source values and schedule. The first pair used 10 V/div and the second 20 V/div on CH1. Each run is a separate dummy-load recording.",
            "## 1. Frequency requests and physical observability",main_observability(m),
@@ -387,15 +392,15 @@ def render_condensed(m,old):
            "The preceding host-cadence result is from the original reference session. In the controlled paired replays, actual input values/schedule are verified; changed target selection and output are outcomes, not fixed command streams.",
            transport_table(m),
            figure("transport_latency","Median request-to-trace-terminal durations for matched replay conditions; latency is host protocol timing, not electrical application."),
-           "The shared implementation reduces subscription overhead and is now the sole live SF/SC transport. The existing 7.5 ms SF guard is retained and applied across the shared SF/SC session; zero-current mute ordering remains unchanged; no firmware change was made. No demonstrated degradation in ordinary-frequency matching coverage is established from these two descriptive repetitions.",
+           "The shared implementation reduces subscription overhead and is now the sole live SF/SC transport. The existing 7.5 ms SF guard is retained and applied across the shared SF/SC session; zero-current mute ordering remains unchanged; no firmware change was made. The ordinary-frequency local matching coverage is similar in these two descriptive repetitions; no statistical equivalence or noninferiority claim is made.",
            "## 5. Current shutdown, restart and incomplete waveforms",historical_body(old,"5. Current shutdown, restart and incomplete waveforms"),
            restart_table(m),
            "First-pulse alternatives are conditional on SC availability; they may include residual pulses. The reported host window is not a measured current-on duration. Local restart matches are not added to chronological counts without joint attribution.",
            charge_text(m),charge_table(m),
            "## Conclusions and remaining questions",summary_paragraph(m),
-           "The shared persistent session is supported for the verified dummy-load research setup. Insufficient observation time, current transitions and possible between-cycle replacement explain much of the missing evidence; an unmatched ACK is not a failed command. Exact physical application latency, internally superseded command identities, complete current/charge balance and safety remain unproven. No additional hardware experiment is required to answer the present model-conditioned observability question.",
+           "The shared persistent session is supported for the verified dummy-load research setup. Insufficient observation time and current transitions limit attribution, and some commands are consistent with between-cycle replacement. Many unmatched commands remain unresolved; an unmatched ACK is not evidence of a failed command. Exact physical application latency, internally superseded command identities, complete current/charge balance and safety remain unproven. The present model-conditioned estimates can be reported without another acquisition.",
            "## Detailed evidence, limitations and reproducibility",
-           "[Detailed technical consolidation](extended_analysis_technical_report.md). "+evidence_index(m)]
+           "[Detailed technical consolidation](extended_analysis_technical_report.md).",evidence_index(m)]
     return number_condensed_figures("\n\n".join(lines)+"\n")
 
 
@@ -405,7 +410,7 @@ def render_detailed(m,old):
     coverage=chain["sample_coverage_counts"]
     count_rows=[(k,v) for k,v in coverage.items()]
     lines=["# Matrix32 — consolidated experimental analysis",
-           "**Review revision — not yet approved.** Signed reference and four independent replay recordings. Historical approved analyses are preserved; revised calculations do not redetect pulses or recalibrate clocks.",
+           "**Review revision — not yet approved.** Signed reference and four separate recordings replaying the same source input. Historical approved analyses are preserved; revised calculations do not redetect pulses or recalibrate clocks.",
            "## Requested → ACKed → physically observed (executive scorecard)",summary_paragraph(m),
            sources_table(m),main_observability(m),
            figure("observability","Chronological distinct ACK count bounds for the reference and each replay. Target counts exclude muted-scheduler SF commands and outside-support ACKs."),
@@ -431,7 +436,7 @@ def render_detailed(m,old):
            historical_body(old,"2. Rapid frequency transitions"),
            "## 3. Current shutdown and restart",historical_body(old,"3. Current shutdown and restart"),
            "### Restart-specific analysis",restart_table(m),reason_table(m,"restart_unmatched_reasons"),
-           "Positive SF restore attempts can be replaced before actual SC restoration, or a newer SF can be the only candidate compatible with the first observable cycle. If no supported pulse occurs before the next SC write, STOP or support edge, electrical restart cannot be inferred. The first-cycle analysis relaxes only the associated SC overlap and does not automatically change chronological bounds.",
+           "Positive SF restore attempts can be replaced before the acknowledged SC restoration, or a newer SF can be the only candidate compatible with the first observable cycle. If no supported pulse occurs before the next SC write, STOP or support edge, electrical restart cannot be inferred. The first-cycle analysis relaxes only the associated SC overlap and does not automatically change chronological bounds.",
            "### Resistor-branch transient charge",charge_text(m),charge_table(m),charge_sensitivity(m),
            "## 4. Host command timing and cycle opportunities",historical_body(old,"4. Host command timing and cycle opportunities"),
            "### Reference command chain (integer target reconstruction)",
