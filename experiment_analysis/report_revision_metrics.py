@@ -132,7 +132,7 @@ class Evidence:
         require(all((a["start_onset_id"],a["end_onset_id"])==(b["start_id"],b["end_id"])
                     and abs(float(a["period_ms"])/1000-float(b["period_s"]))<1e-9
                     for a,b in zip(stable_rows,approved_rows)), "Stable CSV differs from signed periods")
-        for key,kind in (("ack","ack"),("controller_target","mcu")):
+        for key,kind in (("ack","ack"),("controller_target","controller_target")):
             observed = [abs(float(r[kind+"_error_hz_if_stable"])) for r in stable_rows
                         if r[kind+"_assessment"]=="STABLE_ACROSS_TESTED_OFFSETS"]
             require(len(observed)==stable[key]["stable_intervals"],f"{key}: stable count differs")
