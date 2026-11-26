@@ -73,6 +73,37 @@ def ns(evidence, key):
     return round(v*1e9) if isinstance(v, (int, float)) and math.isfinite(v) else None
 
 
+def subscription_timings(evidence, request, terminal):
+    """Measure only subscription events belonging to this transaction.
+
+    Reused persistent sessions carry historical subscription timestamps.
+    Legacy SC stores subscription/unsubscription timestamps in nested ACK.
+    Pre-device-request time can include closing the SF session, but is
+    not a direct measurement of that close.
+    """
+    nested = evidence.get("ack") or {}
+    if not isinstance(nested, dict):
+        nested = {}
+    reused = evidence.get("persistent_session_reused")
+    def stamp(key):
+        value = ns(evidence, key)
+        return value if value is not None else ns(nested, key)
+    def duration(a, b):
+        if a is None or b is None or not request <= a <= b <= terminal:
+            return None
+        return elapsed_ms(a, b)
+    return {
+        "persistent_session_reused": reused,
+        "subscribe_ms": (None if reused is True else duration(
+            stamp("subscribe_begin_monotonic_s"), stamp("subscribe_return_monotonic_s"))),
+        "unsubscribe_ms": duration(stamp("unsubscribe_begin_monotonic_s"),
+                                    stamp("unsubscribe_return_monotonic_s")),
+        "before_device_request_ms": duration(request, ns(evidence, "request_monotonic_s")),
+        "device_request_to_write_ms": duration(ns(evidence, "request_monotonic_s"),
+                                               stamp("write_begin_monotonic_s")),
+    }
+
+
 def transaction_rows(events, sample_ns, targets):
     by_time = defaultdict(list)
     for i, t in enumerate(sample_ns):
@@ -125,6 +156,7 @@ def transaction_rows(events, sample_ns, targets):
             "ack_to_trace_ms": elapsed_ms(ack, done) if timing_valid and ok else None,
             "request_to_terminal_ms": elapsed_ms(request, done),
             "guard_sleep_requested_ms": ev.get("guard_sleep_requested_ms"),
+            **subscription_timings(ev, request, done),
         })
     return rows, issues
 
