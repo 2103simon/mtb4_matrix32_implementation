@@ -49,7 +49,7 @@ def _clean_links(text, root, run_id, *, link_root=None):
         local = _safe_relative(root, uri, link_root=link_root)
         if local is None:
             return match.group(0)
-        return f"{label} (local supporting evidence: \`results/{run_id}/analysis/{local.as_posix()}\`)"
+        return f"{label} (local supporting evidence: `results/{run_id}/analysis/{local.as_posix()}`)"
     return LINK_RE.sub(render_link, text)
 
 
