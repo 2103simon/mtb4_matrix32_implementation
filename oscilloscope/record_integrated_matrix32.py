@@ -198,7 +198,9 @@ def plan(args, p):
         "replay_source": args.replay_provenance,
         "controller_ready_timeout_s": args.controller_ready_timeout,
         "capture_before_matrix32_start": args.capture_before_start,
-        "acquisition_order": "controller_ready_then_pre_sync_then_arm_scope",
+        "acquisition_order": ("replay_ready_then_pre_sync_then_scope_RUN_triggers_replay"
+                              if args.replay_provenance else
+                              "controller_ready_then_pre_sync_then_arm_scope"),
         "no_person_connected": True,
         "clock_offset_calibrated": False,
         "sample_gap_free": False,
