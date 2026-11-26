@@ -94,11 +94,13 @@ def sc_overlap(model, start, end):
                and r["ack_ns"]>=start for r in model["commands"])
 
 
-def compatible(measured, hz):
-    return abs(measured-hz)<=max(MATCH_ABSOLUTE_HZ,MATCH_RELATIVE_FRACTION*hz)
+def compatible(measured, hz, *, absolute_hz=MATCH_ABSOLUTE_HZ,
+               fraction=MATCH_RELATIVE_FRACTION):
+    return abs(measured-hz)<=max(absolute_hz,fraction*hz)
 
 
-def analyze_cycles(model,times,ids,mapped,support):
+def analyze_cycles(model,times,ids,mapped,support, *,
+                   absolute_hz=MATCH_ABSOLUTE_HZ, fraction=MATCH_RELATIVE_FRACTION):
     lo,hi = mapped["lower"],mapped["upper"]
     _,support_start,support_end,_ = support
     candidates = [boundary_states(model,a,b) if v and a>=support_start and b<=support_end else []
@@ -108,7 +110,8 @@ def analyze_cycles(model,times,ids,mapped,support):
         states = candidates[i]
         active = [(owner,hz) for owner,hz,on in states if on]
         hz = 1/float(dt)
-        matches = [(owner,freq) for owner,freq in active if compatible(hz,freq)]
+        matches = [(owner,freq) for owner,freq in active
+                   if compatible(hz,freq,absolute_hz=absolute_hz,fraction=fraction)]
         # Do not infer frequency from gaps or intervals where current may change.
         if not mapped["interval_valid"][i] or not states or not candidates[i+1]:
             label = "OUTSIDE_SUPPORTED_BOUNDARIES"
@@ -223,10 +226,154 @@ def summarize(cycles,commands):
             "assessed_cycles_with_match":sum(r["assessed"] and r["matching_count"]>0 for r in cycles)}
 
 
+TOLERANCES = (
+    ("original", MATCH_ABSOLUTE_HZ, MATCH_RELATIVE_FRACTION),
+    ("tight", .5, .01),
+    ("very_tight", .25, .005),
+)
+
+
+def candidate_ids(value):
+    """Initial START precedes every live SF identity; retain repeated values."""
+    return {-1 if x=="initial" else int(x) for x in value.split(";") if x}
+
+
+def chronological_attribution(cycles, target_ids):
+    """Exact extrema and identity membership over nondecreasing owner paths.
+
+    A target contributes once, when first entered. Nondecreasing IDs ensure
+    it cannot be revisited after leaving. Each state carries min/max counts
+    and the intersection/union of target IDs across all paths to that state.
+    No choice of clock offset or actual BLE availability is inferred.
+    Excluded periods do not constrain owners. Incompatible assessed periods
+    are reported and omitted only for the explicitly conditional subset.
+    """
+    target_ids = set(target_ids)
+    assessed = [r for r in cycles if r["assessed"]]
+    matching = [r for r in assessed if r["matching_count"]>0]
+    base = {"assessed_cycles":len(assessed),"matching_cycles":len(matching),
+            "incompatible_cycles":len(assessed)-len(matching),
+            "incompatible_cycle_ids":[r["start_id"]+"->"+r["end_id"]
+                                      for r in assessed if r["matching_count"]==0],
+            "clock_realization_validated":False}
+    empty = {**base,"path_exists":False,"all_assessed_cycles_have_path":False,
+             "min_distinct_target_acks":None,"max_distinct_target_acks":None,
+             "required_target_ids":[],"possible_target_ids":[]}
+    if not matching:
+        return {**empty,"status":"NO_MATCHING_CYCLES"}
+    # prior owner, then (minimum count, maximum count, required IDs, possible IDs)
+    dp = {-1:(0,0,set(),set())}
+    for row in matching:
+        following = {}
+        for owner in candidate_ids(row["matching_candidate_ids"]):
+            paths = []
+            for previous,(low,high,required,possible) in dp.items():
+                if previous>owner:
+                    continue
+                add = int(owner!=previous and owner in target_ids)
+                visited = {owner} if owner in target_ids else set()
+                paths.append((low+add,high+add,required|visited,possible|visited))
+            if paths:
+                following[owner] = (min(p[0] for p in paths),max(p[1] for p in paths),
+                                    set.intersection(*(p[2] for p in paths)),
+                                    set.union(*(p[3] for p in paths)))
+        if not following:
+            return {**empty,"status":"NO_NONDECREASING_PATH",
+                    "first_order_conflict_cycle":row["start_id"]+"->"+row["end_id"]}
+        dp = following
+    final = list(dp.values())
+    return {**base,"path_exists":True,
+            "all_assessed_cycles_have_path":len(matching)==len(assessed),
+            "status":"COMPLETE_ASSESSED_PATH" if len(matching)==len(assessed)
+                     else "MATCHING_SUBSET_ONLY",
+            "min_distinct_target_acks":min(p[0] for p in final),
+            "max_distinct_target_acks":max(p[1] for p in final),
+            "required_target_ids":sorted(set.intersection(*(p[2] for p in final))),
+            "possible_target_ids":sorted(set.union(*(p[3] for p in final)))}
+
+
+def command_investigation(model, cycles, candidates, commands, mapped, chronology):
+    """Explain missing matches using per-command evidence, not inferred execution."""
+    lo,hi = mapped["lower"],mapped["upper"]
+    required,possible = set(chronology["required_target_ids"]),set(chronology["possible_target_ids"])
+    targets = [r for r in commands if r["scope_membership"]=="inside"
+               and r["purpose"]!="mute_scheduler"]
+    rows = []
+    for row in targets:
+        owner = row["sf_id"]
+        tr = model["sf_by_id"][owner]
+        successor = row["successor_sf_id"]
+        nxt = model["sf_by_id"].get(successor)
+        active = [i for i,states in enumerate(candidates)
+                  if any(o==owner and on for o,_,on in states)]
+        muted = [i for i,states in enumerate(candidates)
+                 if any(o==owner and not on for o,_,on in states)]
+        relevant = [r for r in cycles if str(owner) in r["active_candidate_ids"].split(";")]
+        assessed = [r for r in relevant if r["assessed"]]
+        errors = [abs(r["inverse_period_hz"]-row["frequency_hz"]) for r in assessed]
+        strict,possible_brackets = [],[]
+        if nxt is not None and tr["mode"]=="ordinary" and nxt["mode"]=="ordinary":
+            for i,r in enumerate(cycles):
+                if not r["assessed"] or not r["matching_count"] or not candidates[i+1]:
+                    continue
+                if not all(s[2] for s in candidates[i]+candidates[i+1]):
+                    continue
+                if sc_overlap(model,lo[i],hi[i+1]):
+                    continue
+                witness = r["start_id"]+"->"+r["end_id"]
+                # A weaker possible bracket allows the actual boundary and
+                # command availability to lie anywhere in their tested windows.
+                # This is a local possibility, not a joint clock solution.
+                if lo[i]<tr["ack_ns"] and nxt["write_begin_ns"]<hi[i+1]:
+                    possible_brackets.append(witness)
+                if hi[i]<tr["write_begin_ns"] and nxt["ack_ns"]<lo[i+1]:
+                    strict.append(witness)
+        local_match = row["possible_matching_cycles"]>0
+        if not chronology["path_exists"]:
+            order_status = "NO_CHRONOLOGICAL_SOLUTION"
+        elif owner in required:
+            order_status = "REQUIRED_ON_ALL_MATCHING_PATHS"
+        elif owner in possible:
+            order_status = "OPTIONAL_ON_MATCHING_PATHS"
+        elif local_match:
+            order_status = "LOCAL_MATCH_EXCLUDED_BY_ORDER"
+        else:
+            order_status = "NO_LOCAL_MATCH"
+        if local_match:
+            reason = "LOCAL_MATCH_PRESENT"
+        elif assessed:
+            reason = ("OTHER_CANDIDATE_MATCHES" if all(r["matching_count"]>0 for r in assessed)
+                      else "INCOMPATIBLE_ASSESSED_CYCLE")
+        elif active:
+            reason = "ACTIVE_BOUNDARY_WITHOUT_ASSESSED_FOLLOWING_CYCLE"
+        elif strict:
+            reason = "STRICT_BETWEEN_CYCLE_REPLACEMENT_CANDIDATE"
+        elif possible_brackets:
+            reason = "POSSIBLE_BETWEEN_CYCLE_REPLACEMENT"
+        elif muted:
+            reason = "MUTED_BOUNDARY_ONLY"
+        elif nxt is None:
+            reason = "NO_SUCCESSOR_OR_SUPPORTED_BOUNDARY"
+        else:
+            reason = "NO_SUPPORTED_BOUNDARY_UNRESOLVED"
+        rows.append({**row,"chronological_status":order_status,"investigation_reason":reason,
+                     "possible_muted_boundaries":len(muted),
+                     "assessed_candidate_cycles":len(assessed),
+                     "candidate_cycle_ids":";".join(r["start_id"]+"->"+r["end_id"] for r in relevant),
+                     "candidate_cycle_classes":";".join(sorted({r["classification"] for r in relevant})),
+                     "nearest_candidate_error_hz":min(errors) if errors else None,
+                     "next_sf_write_ns":nxt["write_begin_ns"] if nxt else None,
+                     "next_sf_embedded_ack_ns":nxt["ack_ns"] if nxt else None,
+                     "ack_to_next_sf_write_ms":(nxt["write_begin_ns"]-tr["ack_ns"])/1e6 if nxt else None,
+                     "strict_replacement_brackets":";".join(strict),
+                     "possible_replacement_brackets":";".join(possible_brackets)})
+    return rows
+
+
 def run(run_dir):
     ctx = load_refined_evidence(run_dir)
     root = ctx["root"]
-    dest = ensure_derived_destination(ctx["analysis"]/"cycle_boundary_observability",root)
+    dest = ensure_derived_destination(ctx["analysis"]/"cycle_boundary_observability_chronological",root)
     if dest.exists():
         raise FileExistsError(dest)
     model = prepare_commands(ctx["events"])
@@ -235,43 +382,63 @@ def run(run_dir):
     scenarios,outputs = {},{}
     for scale in (1.,2.,3.):
         mapped,support,clock = map_refined_evidence(ctx,scale)
-        cycles,candidates = analyze_cycles(model,times,ids,mapped,support)
-        commands = classify_commands(model,cycles,candidates,times,mapped,support)
-        scenarios[str(scale)] = {**summarize(cycles,commands),"clock":clock}
-        outputs[str(scale)] = (cycles,commands)
+        scenarios[str(scale)] = {"clock":clock,"tolerances":{}}
+        for name,absolute,fraction in TOLERANCES:
+            cycles,candidates = analyze_cycles(model,times,ids,mapped,support,
+                                               absolute_hz=absolute,fraction=fraction)
+            commands = classify_commands(model,cycles,candidates,times,mapped,support)
+            target_ids = {r["sf_id"] for r in commands if r["scope_membership"]=="inside"
+                          and r["purpose"]!="mute_scheduler"}
+            chronology = chronological_attribution(cycles,target_ids)
+            result = {**summarize(cycles,commands),"chronological":chronology,
+                      "tolerance_abs_hz":absolute,"tolerance_fraction":fraction}
+            scenarios[str(scale)]["tolerances"][name] = result
+            if name=="original":
+                details = command_investigation(model,cycles,candidates,commands,mapped,chronology)
+                result["chronological_status_counts"] = dict(Counter(r["chronological_status"] for r in details))
+                result["unmatched_reason_counts"] = dict(Counter(
+                    r["investigation_reason"] for r in details if r["possible_matching_cycles"]==0))
+                outputs[str(scale)] = details
     dest.mkdir(parents=True,exist_ok=False)
-    for scale,(cycles,commands) in outputs.items():
-        if cycles:
-            _csv(dest/f"physical_cycles_scale_{scale}.csv",cycles,list(cycles[0]))
-        if commands:
-            _csv(dest/f"sf_ack_attribution_scale_{scale}.csv",commands,list(commands[0]))
+    for scale,details in outputs.items():
+        if details:
+            _csv(dest/f"target_ack_investigation_scale_{scale}.csv",details,list(details[0]))
     atomic_json(dest/"summary.json",{
-        "schema":"cycle_boundary_latest_pending_sf_v1","run":root.name,
+        "schema":"cycle_boundary_latest_pending_sf_chronological_v2","run":root.name,
         "source_sha256":ctx["hashes"],"trace_sha256":sha256(ctx["trace"]),
         "refinement_sha256":sha256(ctx["refinement_path"]),
         "approved_onsets_sha256":ctx["approval"]["approved_onsets_sha256"],
         "physical_application_proven":False,"absolute_alignment_calibrated":False,
         "model":"latest available SF at approved negative onset controls following cycle",
         "availability_assumption":"between host write begin and embedded ACK receipt",
-        "tolerance_abs_hz":MATCH_ABSOLUTE_HZ,"tolerance_fraction":MATCH_RELATIVE_FRACTION,
+        "chronology_assumption":"nondecreasing SF identity across matching assessed cycles",
+        "common_clock_realization_validated":False,
         "max_regular_period_s":MAX_REGULAR_PERIOD_S,"scenarios":scenarios})
-    lines = ["# Exploratory cycle-boundary observability","",f"Run: {root.name}","",
-             "The scheduler is modeled as selecting the latest available SF at each approved",
-             "negative onset. Availability between BLE write begin and ACK is an assumption;",
-             "neither ACK nor clock alignment proves internal application. No clock fit was",
-             "chosen using frequency agreement. Commands during a physical cycle do not",
-             "invalidate that cycle's witness. SC-overlap intervals and long gaps are excluded.",
-             "Unique matches require a single candidate identity, not just one matching value.",
-             "Supersession candidates require two successive SF commands strictly between",
-             "compatible observed boundaries, no SC change and no possible active boundary",
-             "for the earlier SF. Unobserved internal boundaries remain possible.",
-             "Muted scheduler ACKs are counted but excluded from the target denominator.",
-             "Initial START frequency is context, not a live SF ACK.","",
-             "| Gray scale | Target ACKs | Unique match | Any candidate match | Supersession candidates | Assessed cycles matching |",
-             "| --- | ---: | ---: | ---: | ---: | ---: |"]
+    lines = ["# Exploratory chronological cycle-boundary observability","",f"Run: {root.name}","",
+             "Original clock envelopes and signed pulse inventory are unchanged.",
+             "Each matching assessed cycle chooses one candidate SF identity in chronological order.",
+             "Distinct target ACK extrema count repeated cycles of one command only once.",
+             "Required identities appear on every feasible path; optional identities on some.",
+             "These are combinatorial bounds under the availability model and per-boundary",
+             "envelopes, NOT measured execution counts or a jointly calibrated clock solution.",
+             "A path through matching cycles only is explicitly conditional if any assessed",
+             "cycle is incompatible. Excluded intervals remain unobserved.",
+             "Replacement brackets are candidate explanations, not proof of supersession.","",
+             "| Gray scale | Tolerance | Target ACKs | Unique local | Any local | Min distinct | Max distinct | Matching/assessed cycles | Path status |",
+             "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |"]
     for scale,s in scenarios.items():
-        lines.append(f"| {scale} | {s['target_acks_inside']} | {s['target_unique_matching']} | {s['target_any_matching']} | {s['target_supersession_candidates']} | {s['assessed_cycles_with_match']}/{s['assessed_cycles']} |")
-    (dest/"report.md").write_text("\n".join(lines)+"\n",encoding="utf-8")
+        for name,r in s["tolerances"].items():
+            p = r["chronological"]
+            lines.append(f"| {scale} | {name} | {r['target_acks_inside']} | {r['target_unique_matching']} | {r['target_any_matching']} | {p['min_distinct_target_acks']} | {p['max_distinct_target_acks']} | {r['assessed_cycles_with_match']}/{r['assessed_cycles']} | {p['status']} |")
+    lines += ["","## Primary scenario: 1x, original tolerance","",
+              "Unmatched local command evidence:"]
+    primary = scenarios["1.0"]["tolerances"]["original"]
+    for reason,count in sorted(primary["unmatched_reason_counts"].items()):
+        lines.append(f"- {reason}: {count}")
+    lines += ["","Chronological identity membership:"]
+    for reason,count in sorted(primary["chronological_status_counts"].items()):
+        lines.append(f"- {reason}: {count}")
+    (dest/"report.md").write_text("\\n".join(lines)+"\\n",encoding="utf-8")
     print(f"[CYCLE BOUNDARY] {dest/'report.md'}")
 
 
