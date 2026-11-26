@@ -8,7 +8,6 @@ import math
 from pathlib import Path
 import time
 
-from analyze_mcu_recording import choose_recording, load_recordings
 from experiment_analysis.paths import raw_run_dir, sha256
 
 
@@ -29,6 +28,9 @@ def load_replay(source_run, *, duration_s=20.5, start_s=None, stale_s=.25):
         raise ValueError("Replay must be finite, at most 24 seconds")
     if not math.isfinite(stale_s) or stale_s <= 0:
         raise ValueError("Invalid stale threshold")
+    # Keep numerical/plotting imports off the ordinary live-controller startup path.
+    from analyze_mcu_recording import choose_recording, load_recordings
+
     root = raw_run_dir(source_run)
     folder = root/"mcu_matrix32"
     if len(list(folder.glob("*_tactile_rates.csv"))) != 1:
