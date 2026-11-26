@@ -213,3 +213,32 @@ tolerance. Detailed command investigation uses the original tolerance at
 each scale. Existing cycle CSVs and signed approvals are not rewritten or
 copied. The chronological result remains an exploratory model-conditioned
 estimate, not an electrical safety or device execution qualification.
+
+
+## Mute/resume diagnostic (exploratory)
+
+```bash
+python -m experiment_analysis.audit_restart_observability --run-dir "$MTB4_RUN"
+```
+
+Output: `results/<RUN_ID>/analysis/restart_observability/`. The diagnostic
+shares the signed pulse, clock envelope, transaction and cycle-boundary
+functions above. It distinguishes actual acknowledged SC restoration from
+positive SF restore attempts that were replaced while current remained
+commanded zero. The first observed onset candidates run from the restore
+write to the first definitely post-ACK onset. Each is conditional on SC
+restore availability at that boundary; earlier or residual output cannot
+be ruled out. A candidate first-to-second pulse period may overlap the
+associated SC restore transaction, but must not overlap any subsequent
+SC write, STOP, timing-support edge or long pause. New SF transactions
+during the period do not invalidate its initial frequency candidate.
+
+The same frequency tolerance and 1x/2x/3x timing scales are used. CSVs
+inventory SC restorations, first-cycle candidates and all restoration SF
+ACKs (including cancelled attempts). The summary compares prior local
+matches with newly recovered local evidence, counting each restore SF once.
+These local union counts do not update the chronological bounds, because
+possible-first-pulse alternatives need not all be realizable together.
+No internal application time, electrical OFF, or successful physical
+restart is proved by the SC ACK or timing model. All signed evidence and
+prior outputs remain unchanged.
