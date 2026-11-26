@@ -58,6 +58,12 @@ def predict(model, x_train, y_train, x_query):
         coefficients = np.polynomial.polynomial.polyfit(
             centered, residual, degree)
         delta = np.polynomial.polynomial.polyval(prediction_x, coefficients)
+    elif model == "piecewise_linear":
+        if (np.any(np.diff(x_train) <= 0) or not np.all(np.isfinite(x_train))
+                or not np.all(np.isfinite(x_query))
+                or np.any(x_query < x_train[0]) or np.any(x_query > x_train[-1])):
+            raise ValueError("Piecewise interpolation requires ordered anchors and no extrapolation")
+        delta = np.interp(prediction_x, centered, residual)
     elif model.startswith("local_linear_"):
         bandwidth = {
             "local_linear_0p75s": .75,
@@ -97,10 +103,11 @@ def _metrics(error_us):
     }
 
 
-def blocked_holdout(x, y, *, block_s=1., models=MODEL_NAMES):
+def blocked_holdout(x, y, *, block_s=1., models=MODEL_NAMES, single_frame=False):
     """Predict *contiguous, withheld* blocks; never fit on test frames.
 
-    Every interior block is a fold. Endpoint blocks are omitted because they
+    With single_frame=True, withhold each interior frame individually.
+    Otherwise every interior time block is a fold. Endpoint blocks are omitted because they
     require extrapolation, which is a distinct problem. No frames are removed
     as outliers. Model selection on this same CV is exploratory and should
     not be confused with independent final validation.
@@ -109,7 +116,8 @@ def blocked_holdout(x, y, *, block_s=1., models=MODEL_NAMES):
     if block_s <= 0 or len(x) != len(y):
         raise ValueError("Invalid block duration or frame arrays")
     base = float(x[0])
-    block_index = np.floor((x-base)/block_s).astype(int)
+    block_index = (np.arange(len(x)) if single_frame else
+                   np.floor((x-base)/block_s).astype(int))
     # Exclude first and last observed blocks: score interpolation only.
     interior = range(int(block_index.min())+1, int(block_index.max()))
     predictions = {model: [] for model in models}
@@ -118,7 +126,7 @@ def blocked_holdout(x, y, *, block_s=1., models=MODEL_NAMES):
     for block in interior:
         test = block_index == block
         train = ~test
-        if np.count_nonzero(test) < 2 or np.count_nonzero(train) < 12:
+        if np.count_nonzero(test) < (1 if single_frame else 2) or np.count_nonzero(train) < 12:
             continue
         if x[train].min() >= x[test].min() or x[train].max() <= x[test].max():
             continue
@@ -139,7 +147,10 @@ def blocked_holdout(x, y, *, block_s=1., models=MODEL_NAMES):
 
 def model_stability(model, x, y):
     """Assess non-physical clock reversal and local drift-rate variation."""
-    grid = np.linspace(float(x[0]), float(x[-1]), 1001)
+    # Piecewise derivatives are exactly the slopes between adjacent anchors.
+    # A sampled grid can otherwise hide a short segment with extreme slope.
+    grid = (np.asarray(x, dtype=float) if model == "piecewise_linear" else
+            np.linspace(float(x[0]), float(x[-1]), 1001))
     predicted = predict(model, x, y, grid)
     slope = np.diff(predicted)/np.diff(grid)
     median = float(np.median(slope))
