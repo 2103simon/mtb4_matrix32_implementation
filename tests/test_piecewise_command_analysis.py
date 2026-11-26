@@ -4,7 +4,8 @@ import unittest
 import numpy as np
 
 from experiment_analysis.offset_robust_command_matching import (
-    classify_interval, refined_onset_envelopes,
+    classify_interval, classify_mcu_rate, controller_target_rates,
+    refined_onset_envelopes,
 )
 from experiment_analysis.run_piecewise_command_analysis import agreement_statistics
 
@@ -62,6 +63,41 @@ class PiecewiseAssociationTests(unittest.TestCase):
             mcu_pc=np.array([1e9, 1.155e9]), mcu_rates=np.array([20., 30.]),
             ack_pc=np.array([], dtype=int), ack_states=[], measured_hz=20.)
         self.assertEqual(row["mcu_assessment"], "MCU_FREQUENCY_CHANGES_WITHIN_OFFSET_RANGE")
+
+    def test_live_integer_target_policy_for_both_receptors(self):
+        rates = np.array([[.8], [1.99], [2.], [42.49], [42.5],
+                          [80.59], [400.], [405.2]])
+        mcu = {"sa_rate_hz": rates, "ra_rate_hz": rates[::-1]}
+        expected = [0, 0, 2, 42, 43, 81, 400, 400]
+        np.testing.assert_array_equal(controller_target_rates(mcu, 0, "sa_ii"), expected)
+        np.testing.assert_array_equal(controller_target_rates(mcu, 0, "ra_i"), expected[::-1])
+        self.assertTrue(np.issubdtype(controller_target_rates(mcu, 0, "sa_ii").dtype,
+                                      np.integer))
+
+    def test_stability_is_checked_after_rounding(self):
+        raw = np.array([80.59, 81.3])
+        times = np.array([1e9, 1.12e9])
+        start, end = np.array([1.10e9]), np.array([1.15e9])
+        target = controller_target_rates({"sa_rate_hz": raw[:, None]}, 0, "sa_ii")
+        args = dict(mcu_pc=times, measured_hz=81.04)
+        raw_result = classify_mcu_rate(start, end, mcu_rates=raw, **args)
+        result = classify_mcu_rate(start, end, mcu_rates=target, **args)
+        self.assertEqual(raw_result["mcu_assessment"], "MCU_FREQUENCY_CHANGES_WITHIN_OFFSET_RANGE")
+        self.assertEqual(result["mcu_assessment"], "STABLE_ACROSS_TESTED_OFFSETS")
+        self.assertEqual(result["mcu_requested_hz_if_stable"], 81)
+        self.assertAlmostEqual(result["mcu_error_hz_if_stable"], .04)
+
+    def test_mute_not_in_positive_frequency_statistics(self):
+        rows = [{"controller_target_assessment": "STABLE_MUTE_TARGET",
+                 "controller_target_hz_if_stable": 0,
+                 "controller_target_error_hz_if_stable": None},
+                {"controller_target_assessment": "STABLE_ACROSS_TESTED_OFFSETS",
+                 "controller_target_hz_if_stable": 81,
+                 "controller_target_error_hz_if_stable": .04}]
+        result = agreement_statistics(rows, "controller_target")
+        self.assertEqual(result["stable_intervals"], 1)
+        self.assertEqual(result["total_approved_intervals"], 2)
+        self.assertAlmostEqual(result["median_abs_error_hz"], .04)
 
     def test_statistics_keep_unclassified_in_denominator(self):
         rows = [{"mcu_assessment": "STABLE_ACROSS_TESTED_OFFSETS",
