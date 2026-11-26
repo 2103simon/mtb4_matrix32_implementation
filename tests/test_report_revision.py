@@ -8,7 +8,7 @@ from experiment_analysis.paths import sha256, use_results_root
 from experiment_analysis.publish_reports import publish, REPORTS
 from experiment_analysis.report_revision_metrics import pool
 from experiment_analysis.build_revised_experiment_reports import (
-    historical_body, number_condensed_figures, count_range, ratio_range,
+    historical_body, number_condensed_figures, count_range, ratio_range, table,
 )
 
 
@@ -43,6 +43,13 @@ class ReportRevisionTests(unittest.TestCase):
         source="# report\n\n## Host\n\nOriginal result.\n\n![Figure 1](plot.png)\n\n*Figure 1 - Original caption.*\n\n## Other\n\nNo."
         actual=historical_body(source,"Host")
         self.assertEqual(actual,"Original result.\n\n![Figure 1](../plot.png)\n\n*Figure 1 - Original caption.*")
+
+    def test_markdown_table_escapes_literal_pipes(self):
+        text=table(("Source","Median |error| Hz"),[("ACK","0.039")])
+        self.assertIn(r"Median \|error\| Hz",text)
+        self.assertEqual(len(text.splitlines()),3)
+        with self.assertRaisesRegex(ValueError,"row width"):
+            table(("A","B"),[("too short",)])
 
     def test_condensed_renumbers_six_figures(self):
         text="\n\n".join(f"![Old](plot{i}.png)\n\n*Figure 9 - caption {i}.*" for i in range(6))
