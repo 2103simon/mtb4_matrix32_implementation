@@ -361,6 +361,8 @@ class PersistentConfigAckSession:
         cancelled = None
 
         try:
+            if record.get("abort_requested"):
+                raise asyncio.CancelledError()
             record["write_begin_monotonic_s"] = time.monotonic()
             await self.client.write_gatt_char(
                 self.write_uuid, bytes(message), response=bool(write_response))
@@ -396,6 +398,8 @@ class PersistentConfigAckSession:
             record["elapsed_ms"] = round(
                 (time.monotonic() - started) * 1000, 3)
             record["completed_monotonic_s"] = time.monotonic()
+            if cause is not None or cancelled is not None:
+                self._fatal_reason = self._fatal_reason or record["status"]
             self._busy = False
             self._record = None
             self._response = None
