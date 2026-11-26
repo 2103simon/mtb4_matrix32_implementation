@@ -274,6 +274,15 @@ def collect(recordings_dir):
     evidence = {k:Evidence(Path(recordings_dir)/run) for k,run in RUNS.items()}
     data = {k:v.collect() for k,v in evidence.items()}
     reference = evidence["Reference"]
+    historical = reference.load("extended_analysis_manifest.json","matrix32_extended_report_manifest_v1")
+    provenance = historical["provenance"]
+    require(historical["approved_onsets"]==reference.approved and
+            historical["approved_intervals"]==reference.approved-1 and
+            provenance["approved_onsets_sha256"]==reference.approval["approved_onsets_sha256"] and
+            provenance["raw_ch1_sha256"]==reference.approval["source_ch1_sha256"] and
+            provenance["matrix32_commands_sha256"]==reference.digest(reference.trace) and
+            provenance["clock_epoch_sha256"]==reference.digest(reference.root/"epoch_clock_analysis.json"),
+            "Historical report and revised reference do not share signed source evidence")
     chain = reference.load("command_chain_diagnostic/summary.json","matrix32_command_chain_diagnostic_v1","run")
     reference.check_raw(chain["source_sha256"])
     for name,digest in chain["derived_sha256"].items():
