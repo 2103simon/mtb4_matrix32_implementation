@@ -416,6 +416,9 @@ class StimulationChild:
             command.append("--arm")
         if self.experimental_shared_sf_sc:
             command.append("--experimental-shared-sf-sc")
+            if self.arm:
+                # The parent plan already requires explicit dummy-load confirmation.
+                command.append("--dummy-load-confirmed")
         # Separate process group: cancelling this scope session must cancel
         # the entire BLE/MCU task group, not just this parent process.
         self.process = subprocess.Popen(
