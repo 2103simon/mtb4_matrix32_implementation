@@ -1084,8 +1084,10 @@ class Matrix32Device:
                 remaining = max(0.0, guard_deadline - time.monotonic())
                 record["guard_sleep_requested_ms"] = round(
                     remaining * 1000.0, 3)
-                if remaining > 0:
+                while remaining > 0:
                     await asyncio.sleep(remaining)
+                    self._check_control_generation(generation)
+                    remaining = max(0.0, guard_deadline - time.monotonic())
 
             self._check_control_generation(generation)
             if timing_marker is not None:
@@ -1256,16 +1258,18 @@ class Matrix32Device:
             if not defer_release:
                 if self._live_frequency_task is exchange:
                     self._live_frequency_task = None
-                if failed and self._live_frequency_session is not None:
-                    try:
-                        await self._close_live_frequency_session()
-                    except Exception as exc:
-                        if record is not None:
-                            record["session_close_error"] = "{}: {}".format(
-                                type(exc).__name__, exc)
-                self._live_persistent_record = None
-                if self._configuration_lock.locked():
-                    self._configuration_lock.release()
+                try:
+                    if failed and self._live_frequency_session is not None:
+                        try:
+                            await self._close_live_frequency_session()
+                        except Exception as exc:
+                            if record is not None:
+                                record["session_close_error"] = "{}: {}".format(
+                                    type(exc).__name__, exc)
+                finally:
+                    self._live_persistent_record = None
+                    if self._configuration_lock.locked():
+                        self._configuration_lock.release()
 
     async def _apply_live_frequency_legacy(
             self, hz, *, timeout_s=2.0, timing_marker=None):
