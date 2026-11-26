@@ -74,8 +74,6 @@ def parser():
                         "24.5 s Nano buffer polling budget including BEGIN overhead")
     p.add_argument("--sync-count", type=int, default=30,
                    help="Number of binary CRC32 sync exchanges before AND after recording")
-    p.add_argument("--experimental-shared-sf-sc", action="store_true",
-                   help="Opt in to unqualified mixed persistent SF/SC ACK transport")
     p.add_argument("--replay-source", type=Path, default=None,
                    help="Replay recorded MCU rate snapshots from an existing integrated run")
     p.add_argument("--replay-start-s", type=float, default=None,
@@ -199,7 +197,7 @@ def plan(args, p):
         "matrix32_armed": args.arm,
         "verified_dummy_load_operator_confirmation": bool(args.dummy_load_confirmed),
         "mcu_stale_timeout_ms": args.stale_ms,
-        "experimental_shared_sf_sc": args.experimental_shared_sf_sc,
+        "live_transport": "shared_persistent_sf_sc",
         "replay_source": args.replay_provenance,
         "replay_initialization": args.replay_initialization,
         "controller_ready_timeout_s": args.controller_ready_timeout,
@@ -424,12 +422,11 @@ class StimulationChild:
     """Isolated process preserves existing Matrix32 BLE watchdog and shutdown."""
 
     def __init__(self, root, *, arm, stale_ms, capture_before_start=False,
-                 experimental_shared_sf_sc=False, replay_provenance=None,
+                 replay_provenance=None,
                  replay_start_s=None):
         self.root = Path(root)
         self.arm = arm
         self.stale_ms = stale_ms
-        self.experimental_shared_sf_sc = experimental_shared_sf_sc
         self.replay_provenance = replay_provenance
         self.replay_start_s = replay_start_s
         self.replay_ready = threading.Event()
@@ -452,20 +449,14 @@ class StimulationChild:
                    "--record", "--recordings-dir", str(self.root / "mcu_matrix32"),
                    "--stale-ms", str(self.stale_ms)]
         if self.arm:
-            command.append("--arm")
-        if self.experimental_shared_sf_sc:
-            command.append("--experimental-shared-sf-sc")
-            if self.arm:
-                # The parent plan already requires explicit dummy-load confirmation.
-                command.append("--dummy-load-confirmed")
+            # The parent plan already requires explicit dummy-load confirmation.
+            command.extend(["--arm", "--dummy-load-confirmed"])
         if self.replay_provenance is not None:
             command.extend(["--replay-source", self.replay_provenance["source_run"],
                             "--replay-duration-s", str(self.replay_provenance["duration_s"]),
                             "--replay-trigger", str(self.root / "replay_start.json")])
             if self.replay_start_s is not None:
                 command.extend(["--replay-start-s", str(self.replay_start_s)])
-            if self.arm and "--dummy-load-confirmed" not in command:
-                command.append("--dummy-load-confirmed")
         # Separate process group: cancelling this scope session must cancel
         # the entire BLE/MCU task group, not just this parent process.
         self.process = subprocess.Popen(
@@ -651,7 +642,6 @@ def _run_session(args, requested, root, *, console=None):
         meta["console_log"] = "console.log"
     child = StimulationChild(root, arm=args.arm, stale_ms=args.stale_ms,
                              capture_before_start=args.capture_before_start,
-                             experimental_shared_sf_sc=args.experimental_shared_sf_sc,
                              replay_provenance=args.replay_provenance,
                              replay_start_s=args.replay_start_s)
     nano_started = False

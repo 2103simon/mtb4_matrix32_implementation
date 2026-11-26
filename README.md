@@ -220,7 +220,7 @@ For MCU-driven Matrix32 operation without the oscilloscope, the separate control
 ```bash
 python run_tactile_stimulation.py --record           # no stimulation
 # Isolated dummy load and authorized bench setup ONLY:
-python run_tactile_stimulation.py --arm --record
+python run_tactile_stimulation.py --arm --dummy-load-confirmed --record
 ```
 
 It uses a **250 ms stale-tactile-input supervisor** (overridable with `--stale-ms`), sequential BLE commands/ACKs, and best-effort STOP on shutdown. See [Matrix32/MCU software architecture](docs/pipeline_and_components.md).

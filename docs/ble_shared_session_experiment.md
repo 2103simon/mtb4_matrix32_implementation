@@ -1,53 +1,61 @@
-# Experimental shared SF/SC ACK session
+# Shared persistent live SF/SC ACK session
 
-This is an unqualified, opt-in bench transport, not a change to the default
-controller and not evidence of physical stimulation safety. Use only the
-existing isolated resistive dummy-load setup with independent physical
-disconnect and operator verification. No person or electrodes attached.
+The former opt-in transport is now the sole live SF/SC implementation on
+this branch. There is no runtime legacy selector. Use the existing verified
+resistive dummy-load bench only, with independent physical disconnect and
+operator verification. No person or stimulation electrodes attached.
+
+## Evidence and decision
+
+Two matched deterministic replay pairs collected on 2026-11-26 used identical
+recorded MCU inputs, 1,414 snapshots over 20.5 s, and the same controller
+settings. Both showed substantially lower SC and SF-after-SC latency
+(about 38-40% and 48-49% lower medians), fewer unreferenced target changes,
+and no observed ACK failures. The second pair avoided digital storage-rail
+clipping; exploratory resistor-branch charge estimates showed comparable
+ordinary biphasic pulses and negative-only transient magnitude. Its pulse
+inventories remain pending formal operator sign-off. Physical frequency
+improvement is not established; electrical safety is not qualified.
+The negative-only transients and SC0 -> SF400 workaround remain separate
+investigations. No stimulation policy or firmware change is part of this
+consolidation.
+
+Historical raw runs (preserve in place):
+- 20261126T090848918698Z_ble_ab_baseline
+- 20261126T091212099927Z_ble_ab_shared
+- 20261126T094712943788Z_ble_ab_baseline_20vdiv
+- 20261126T095023427339Z_ble_ab_shared_20vdiv
+
+The pre-consolidation revision 0baa0c0056967627fa431ff0f7f502c603049931 preserves the original experimental
+selector and baseline transport for historical reproduction. Do not copy
+raw recordings or change approved reports to reproduce the comparison.
 
 ## Design
 
-- Both SF and SC use the same existing PersistentConfigAckSession and the
-  same device-level persistent exchange implementation. Default SC retains
-  its per-command subscription path.
-- The configuration lock rejects concurrent commands. A unique positive
-  application ACK is required, and failed exchanges invalidate the verified
-  configuration and close the session. Generic ACKs lack command identifiers:
-  an unrelated delayed ACK arriving during the next exchange cannot be
-  conclusively identified by host code.
-- Experimental mode conservatively applies the existing 7.5 ms minimum
-  ACK-to-next-write guard after either SF or SC, rather than assuming SC
-  can be sent immediately. SF's configurable larger guard remains supported.
-- No changes to integer target conversion, mute/resume command ordering,
-  watchdog or independent STOP writes. STOP invalidates pending control
-  generations and active persistent exchanges retain teardown ownership.
-  A write already handed to BLE cannot be retracted.
-- SF and SC records retain separate command histories and record transport,
-  subscription reuse and host timing. Experimental persistent SC uses
-  the SF exchange timeout semantics (not the default SC complete-exchange
-  timeout); independent shutdown supervision is still required.
+- SF and SC use the same PersistentConfigAckSession and device exchange.
+  Initial full configuration, SW, stopped probes and other indication-owning
+  operations retain their own existing paths.
+- One outstanding command; unique positive application ACK required. A failed
+  exchange invalidates the verified configuration and closes its session.
+  Generic ACKs lack request IDs: delayed unrelated ACKs cannot be conclusively
+  identified by host code.
+- Minimum 7.5 ms ACK-to-next-write guard after either SF or SC. SF can request
+  a larger guard. SC uses the previously tested shared exchange timeout
+  semantics (subscription, guard and optional marker precede exchange timeout).
+- Integer conversion, SC0 -> SF400, restore SF -> SC, watchdog and independent
+  STOP behavior are unchanged. Generation invalidation prevents stale control
+  operations from succeeding; writes already submitted cannot be retracted.
+- SF and SC retain separate records and timing evidence; new metadata uses
+  live_transport=shared_persistent_sf_sc. Historical A/B readers accept the
+  original experimental_shared_sf_sc boolean for archived evidence only.
 
-## Qualification sequence
+## Operation and regression
 
-Run the synthetic session, controller and integrated recording regression
-tests before any hardware trial. A mock transport cannot establish physical
-ACK attribution, electrical output behavior or real BLE timing.
+Run all no-hardware tests before an armed bench acquisition:
 
-The integrated recorder accepts `--experimental-shared-sf-sc` and passes it
-to the controller. Omitting the flag retains the default transport.
-The selected mode is recorded in the capture plan and MCU settings. An armed
-experimental CLI session requires explicit dummy-load confirmation.
+    python -m unittest discover -s tests -v
 
-After reviewing passing tests and verifying the isolated bench, compare
-matched recordings using the same existing operator prompts, scope settings,
-controller configuration and duration. Do not change firmware, current,
-frequency encoding or pulse-detection rules for the comparison.
-
-Use `experiment_analysis.analyze_ble_session_overhead` on each recording
-and compare per-group transaction coverage, subscription counts, host
-request-to-write and write-to-ACK distributions. Review errors, shutdown,
-mute and resume behavior and approved CH1 output before drawing conclusions.
-Do not treat ACK time as physical application time. Do not promote the
-experimental mode or update approved reports until the results are reviewed.
-
-Raw recordings stay in place and existing analyses are preserved.
+For the direct controller CLI, --arm requires --dummy-load-confirmed.
+The integrated recorder already requires --run --arm --dummy-load-confirmed
+and propagates that confirmation. No experimental transport flag is needed.
+Verify physical shutdown independently of software STOP or ACK.

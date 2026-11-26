@@ -224,7 +224,7 @@ class PersistentConfigAckSession:
     request ID, so unsolicited, duplicate, malformed, or otherwise ambiguous
     indications fail the session closed.
 
-    This helper underpins the qualified Matrix32Device live-frequency path and
+    This helper underpins the shared Matrix32Device live SF/SC path and
     remains available to experiment runners that need the same transport
     semantics explicitly.
     """

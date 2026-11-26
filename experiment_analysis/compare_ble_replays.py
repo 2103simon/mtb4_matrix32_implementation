@@ -71,6 +71,20 @@ def latency_groups(rows):
             for key, group in groups.items()}
 
 
+def shared_transport(settings):
+    """Read new transport identity or immutable historical A/B metadata."""
+    if "live_transport" in settings:
+        if settings["live_transport"] != "shared_persistent_sf_sc":
+            raise ValueError("Unknown live transport")
+        if "experimental_shared_sf_sc" in settings and settings["experimental_shared_sf_sc"] is not True:
+            raise ValueError("Conflicting transport metadata")
+        return True
+    flag = settings["experimental_shared_sf_sc"]
+    if type(flag) is not bool:
+        raise ValueError("Invalid historical transport metadata")
+    return flag
+
+
 def analyze(run_dir, shared):
     root = raw_run_dir(run_dir)
     folder = root/"mcu_matrix32"
@@ -79,10 +93,10 @@ def analyze(run_dir, shared):
     config = mcu["experiment_settings"]["configuration"]
     control = config["stimulation_control"]
     source = control["replay_source"]
-    if control["experimental_shared_sf_sc"] is not shared:
+    if shared_transport(control) is not shared:
         raise ValueError("Unexpected transport mode")
     meta = json.loads((root/"metadata.json").read_text())
-    if meta["plan"]["replay_source"] != source or meta["plan"]["experimental_shared_sf_sc"] is not shared:
+    if meta["plan"]["replay_source"] != source or shared_transport(meta["plan"]) is not shared:
         raise ValueError("Capture plan and controller settings disagree")
     if meta.get("status") != "complete":
         raise ValueError("Incomplete acquisition")

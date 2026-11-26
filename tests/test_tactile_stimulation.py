@@ -181,6 +181,9 @@ class ManifestProvenanceTest(unittest.IsolatedAsyncioTestCase):
                           serial_factory=lambda **_: serial,
                           device_factory=lambda **_: device)
         manifest = capture.call_args.args[2]
+        self.assertEqual(manifest["stimulation_control"]["live_transport"],
+                         "shared_persistent_sf_sc")
+        self.assertNotIn("experimental_shared_sf_sc", manifest["stimulation_control"])
         self.assertEqual(manifest["stimulation_control"]["zero_request_strategy"],
                          "SC1=0_then_SF=400; restore_SF_then_SC1")
 

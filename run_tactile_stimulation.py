@@ -477,7 +477,7 @@ async def run_replay_tasks(plan, trigger, device, ready, capture, *, arm,
 
 
 async def run(config, stim_config=None, *, arm, record=False,
-              stale_seconds=STALE_SECONDS, experimental_shared_sf_sc=False,
+              stale_seconds=STALE_SECONDS,
               replay_plan=None, replay_trigger=None,
               serial_factory=SerialManager, device_factory=Matrix32Device):
     stim_config = build_stim_config(config) if stim_config is None else stim_config
@@ -494,8 +494,7 @@ async def run(config, stim_config=None, *, arm, record=False,
             raise ValueError("Refusing pre-existing replay trigger")
     check_bleak_version()
     await asyncio.to_thread(check_pc_bluetooth)
-    device = (device_factory(config=stim_config, experimental_shared_sf_sc=True)
-              if experimental_shared_sf_sc else device_factory(config=stim_config))
+    device = device_factory(config=stim_config)
     sm = None if replay_plan is not None else serial_factory(config=config)
     ready = asyncio.Event()
     ready.configured_ns = 0
@@ -510,7 +509,7 @@ async def run(config, stim_config=None, *, arm, record=False,
             "stale_timeout_ms": int(stale_seconds * 1000),
             "source": config["stimulation_source"],
             "matrix32_channel": 1,
-            "experimental_shared_sf_sc": experimental_shared_sf_sc,
+            "live_transport": "shared_persistent_sf_sc",
             "replay_source": replay_plan.provenance if replay_plan is not None else None,
             "replay_initialization": (replay_initialization(
                 replay_plan, requested_frequency, taxel=taxel, receptor=receptor)[1]
@@ -577,9 +576,7 @@ def main():
     parser.add_argument("--recordings-dir", type=Path, default=None,
                         help="Override recording output directory (for integrated scope sessions)")
     parser.add_argument("--dummy-load-confirmed", action="store_true",
-                        help="Confirm isolated dummy-load setup for experimental transport")
-    parser.add_argument("--experimental-shared-sf-sc", action="store_true",
-                        help="Unqualified mixed persistent ACK session; isolated dummy-load bench only")
+                        help="Confirm isolated dummy-load setup for armed stimulation")
     parser.add_argument("--replay-source", type=Path)
     parser.add_argument("--replay-start-s", type=float)
     parser.add_argument("--replay-duration-s", type=float, default=20.5)
@@ -587,8 +584,8 @@ def main():
     parser.add_argument("--stale-ms", type=int, default=250,
                         help="Stop output when no tactile sample arrives for this many ms (default 250)")
     args = parser.parse_args()
-    if (args.experimental_shared_sf_sc or args.replay_source) and args.arm and not args.dummy_load_confirmed:
-        parser.error("Armed replay or experimental transport requires --dummy-load-confirmed")
+    if args.arm and not args.dummy_load_confirmed:
+        parser.error("Armed stimulation requires --dummy-load-confirmed")
     if bool(args.replay_source) != bool(args.replay_trigger) or (args.replay_source and not args.record):
         parser.error("Replay requires --replay-source, --replay-trigger and --record")
     if args.replay_source is None and args.replay_start_s is not None:
@@ -613,7 +610,6 @@ def main():
         asyncio.run(run(config, stim_config, arm=args.arm,
                         record=args.record,
                         stale_seconds=args.stale_ms / 1000,
-                        experimental_shared_sf_sc=args.experimental_shared_sf_sc,
                         replay_plan=replay_plan, replay_trigger=args.replay_trigger))
     except KeyboardInterrupt:
         print("[STOP] Ctrl+C requested.")
