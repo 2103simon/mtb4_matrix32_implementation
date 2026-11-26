@@ -436,13 +436,14 @@ async def stale_supervisor(sm, device, ready, *, arm, stale_seconds, capture=Non
 
 
 async def run(config, stim_config=None, *, arm, record=False,
-              stale_seconds=STALE_SECONDS,
+              stale_seconds=STALE_SECONDS, experimental_shared_sf_sc=False,
               serial_factory=SerialManager, device_factory=Matrix32Device):
     stim_config = build_stim_config(config) if stim_config is None else stim_config
     taxel, receptor = validate_settings(config, stim_config, arm=arm)
     check_bleak_version()
     await asyncio.to_thread(check_pc_bluetooth)
-    device = device_factory(config=stim_config)
+    device = (device_factory(config=stim_config, experimental_shared_sf_sc=True)
+              if experimental_shared_sf_sc else device_factory(config=stim_config))
     sm = serial_factory(config=config)
     ready = asyncio.Event()
     ready.configured_ns = 0
@@ -457,6 +458,7 @@ async def run(config, stim_config=None, *, arm, record=False,
             "stale_timeout_ms": int(stale_seconds * 1000),
             "source": config["stimulation_source"],
             "matrix32_channel": 1,
+            "experimental_shared_sf_sc": experimental_shared_sf_sc,
         },
     }
     capture = OptionalCapture(record, config["recordings_dir"], manifest_config)
@@ -512,6 +514,8 @@ def main():
                         help="Save all MCU samples and timestamped Matrix32 commands/ACKs")
     parser.add_argument("--recordings-dir", type=Path, default=None,
                         help="Override recording output directory (for integrated scope sessions)")
+    parser.add_argument("--experimental-shared-sf-sc", action="store_true",
+                        help="Unqualified mixed persistent ACK session; isolated dummy-load bench only")
     parser.add_argument("--stale-ms", type=int, default=250,
                         help="Stop output when no tactile sample arrives for this many ms (default 250)")
     args = parser.parse_args()
@@ -531,7 +535,8 @@ def main():
     try:
         asyncio.run(run(config, stim_config, arm=args.arm,
                         record=args.record,
-                        stale_seconds=args.stale_ms / 1000))
+                        stale_seconds=args.stale_ms / 1000,
+                        experimental_shared_sf_sc=args.experimental_shared_sf_sc))
     except KeyboardInterrupt:
         print("[STOP] Ctrl+C requested.")
     except Exception as exc:
