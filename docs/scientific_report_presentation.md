@@ -124,6 +124,17 @@ B2=20261126T095023427339Z_ble_ab_shared_20vdiv
 )
 ```
 
+Alternatively, run the same preparation and build in one command:
+
+```bash
+python -m experiment_analysis.build_revised_experiment_reports --prepare-missing
+```
+
+This invokes the existing analysis modules only when their output directory
+is absent (including the A/B and charge diagnostics). A partial directory
+without its summary is an error; existing completed outputs are validated
+by the report builder rather than regenerated.
+
 The earlier A/B comparison and quiet-threshold charge diagnostics must also
 be present (they were generated during the investigation). If absent, use
 `experiment_analysis.compare_ble_replays --baseline ... --shared ...`
