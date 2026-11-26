@@ -514,11 +514,15 @@ def main():
                         help="Save all MCU samples and timestamped Matrix32 commands/ACKs")
     parser.add_argument("--recordings-dir", type=Path, default=None,
                         help="Override recording output directory (for integrated scope sessions)")
+    parser.add_argument("--dummy-load-confirmed", action="store_true",
+                        help="Confirm isolated dummy-load setup for experimental transport")
     parser.add_argument("--experimental-shared-sf-sc", action="store_true",
                         help="Unqualified mixed persistent ACK session; isolated dummy-load bench only")
     parser.add_argument("--stale-ms", type=int, default=250,
                         help="Stop output when no tactile sample arrives for this many ms (default 250)")
     args = parser.parse_args()
+    if args.experimental_shared_sf_sc and args.arm and not args.dummy_load_confirmed:
+        parser.error("Experimental armed transport requires --dummy-load-confirmed")
     if not 50 <= args.stale_ms <= 2000:
         parser.error("--stale-ms must be between 50 and 2000")
     with MCU_CONFIG.open(encoding="utf-8") as file:
