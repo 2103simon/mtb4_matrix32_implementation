@@ -25,7 +25,13 @@ from oscilloscope.align_gray_records import read_nano_frames
 from oscilloscope.refine_timing_investigation import record_sync_exchanges
 from oscilloscope.record_scope import atomic_json
 
-COLUMNS = INTERVAL_COLUMNS + [
+TARGET_FIELDS = {
+    "mcu_assessment": "controller_target_assessment",
+    "mcu_requested_hz_if_stable": "controller_target_hz_if_stable",
+    "mcu_error_hz_if_stable": "controller_target_error_hz_if_stable",
+}
+COLUMNS = [TARGET_FIELDS.get(k, k) for k in INTERVAL_COLUMNS] + [
+    "raw_mcu_assessment", "raw_mcu_rate_hz_if_stable",
     "start_host_lower_ns", "start_host_upper_ns",
     "end_host_lower_ns", "end_host_upper_ns",
 ]
@@ -71,7 +77,7 @@ def run(run_dir, *, scale=1.):
     nano_frames = read_nano_frames(sources[1])
     mcu, ack, taxel, encoding = load_command_inputs(root)
     destination = ensure_derived_destination(
-        analysis/"piecewise_command_analysis", root)
+        analysis/"piecewise_command_analysis_integer", root)
     if destination.exists():
         raise FileExistsError(f"Preserving existing analysis: {destination}")
     summaries, all_rows = [], []
@@ -82,15 +88,27 @@ def run(run_dir, *, scale=1.):
         summary, rows, _ = analyze_record(
             root=root, record=record, epoch=epoch, cv={}, mcu=mcu,
             states=ack, taxel=taxel, encoding=encoding, scale=scale,
-            refinement=refined[idx], exchanges=sync, nano_frames=nano_frames)
+            refinement=refined[idx], exchanges=sync, nano_frames=nano_frames,
+            integer_targets=True)
         if len(rows) != summary["approved_intervals"]:
             raise ValueError(f"Record {idx}: incomplete interval analysis: {summary.get('reason')}")
-        summary["mcu"] = agreement_statistics(rows, "mcu")
+        for row in rows:
+            for old, new in TARGET_FIELDS.items():
+                if old in row:
+                    row[new] = row.pop(old)
+        for old in ("mcu_assessment_counts",
+                    "mcu_stable_median_absolute_frequency_difference_hz"):
+            if old in summary:
+                summary["controller_target" + old[3:]] = summary.pop(old)
+        summary["controller_target"] = agreement_statistics(rows, "controller_target")
         summary["ack"] = agreement_statistics(rows, "ack")
+        summary["raw_mcu_assessment_counts"] = dict(Counter(
+            r["raw_mcu_assessment"] for r in rows))
         summaries.append(summary)
         all_rows.extend(rows)
     payload = {
-        "schema": "matrix32_piecewise_command_association_v1",
+        "schema": "matrix32_piecewise_command_association_integer_v2",
+        "controller_target_policy": "run_tactile_stimulation.requested_frequency",
         "source_run": root.name,
         "source_sha256": fingerprints,
         "timing_refinement_sha256": sha256(refinement_path),
@@ -98,7 +116,8 @@ def run(run_dir, *, scale=1.):
         "gray_p95_sensitivity_scale": scale,
         "records": summaries,
         "total_approved_intervals": len(all_rows),
-        "mcu": agreement_statistics(all_rows, "mcu"),
+        "controller_target": agreement_statistics(all_rows, "controller_target"),
+        "raw_mcu_assessment_counts": dict(Counter(r["raw_mcu_assessment"] for r in all_rows)),
         "ack": agreement_statistics(all_rows, "ack"),
         "both_stable_intervals": sum(bool(r.get("all_scenarios_agree")) for r in all_rows),
         "absolute_alignment_calibrated": False,
@@ -106,12 +125,19 @@ def run(run_dir, *, scale=1.):
         "original_clock_maps_unchanged": True,
         "original_frequency_reports_unchanged": True,
     }
+    both = [r for r in all_rows if r.get("all_scenarios_agree")]
+    payload["same_interval_comparison"] = {
+        source: agreement_statistics(both, source)
+        for source in ("controller_target", "ack")
+    }
+    payload["stable_mute_target_intervals"] = sum(
+        r.get("controller_target_assessment") == "STABLE_MUTE_TARGET" for r in all_rows)
     # Physical frequency always remains 1 / raw scope-clock onset period.
     # Only event attribution uses the piecewise clock mapping.
     destination.mkdir(parents=True, exist_ok=False)
     _csv(destination/"all_intervals.csv", all_rows, COLUMNS)
     lines = [
-        "# Exploratory piecewise timing: MCU and Matrix32 output", "",
+        "# Exploratory piecewise timing: integer controller targets and Matrix32 output", "",
         f"Recording: {root.name}; taxel {taxel}; encoding {encoding}.", "",
         "**Not a calibrated timing or physical application-latency report.**",
         "Approved CH1 periods are unchanged; the piecewise clock map is used only for attribution.",
@@ -120,7 +146,11 @@ def run(run_dir, *, scale=1.):
         f"expanded by {scale:g} times the largest 1-frame, 1 s or 2 s held-out Gray p95.",
         "That margin is heuristic; firmware timestamp error, non-affine USB drift",
         "and physical Matrix32 application latency are not bounded.",
-        "MCU associations use recorded PC-domain snapshot timestamps.",
+        "Controller targets are reconstructed from logged MCU rates with the live requested_frequency() function.",
+        "Raw MCU rates are preserved as diagnostics, not transmitted SF commands.",
+        "Target stability is checked after quantization. Zero targets mean mute, not SF=0;",
+        "their physical pulse intervals are counted separately and excluded from positive-frequency errors.",
+        "Reconstructed targets use PC-domain MCU snapshot timestamps and are not evidence of actual transmission.",
         "ACK associations require a stable acknowledged state and prior-cycle guard.",
         "Intervals outside supported Gray anchors or crossing gaps >2 s are unclassified.", "",
         "| Source | Stable intervals / all | Median abs error (Hz) | p95 abs error (Hz) | Max abs error (Hz) |",
@@ -128,7 +158,7 @@ def run(run_dir, *, scale=1.):
     ]
     def fmt(v):
         return "n/a" if v is None else f"{v:.3f}"
-    for source in ("mcu", "ack"):
+    for source in ("controller_target", "ack"):
         item = payload[source]
         lines.append(
             f"| {source.upper()} | {item['stable_intervals']} / {len(all_rows)} | "
@@ -137,14 +167,21 @@ def run(run_dir, *, scale=1.):
         )
     lines += ["", f"Both stable: {payload['both_stable_intervals']} / {len(all_rows)}.",
               "Stable refers to attribution, not agreement or proof of command execution.",
-              "Errors describe selected subsets only.", ""]
+              "Errors describe selected subsets only.",
+              f"Physical intervals overlapping stable mute targets: {payload['stable_mute_target_intervals']}.",
+              "These are not by themselves proof of a mute failure.", "",
+              "## Same-interval comparison", "",
+              "| Source | Intervals | Median abs error (Hz) | p95 abs error (Hz) | Max abs error (Hz) |",
+              "| --- | ---: | ---: | ---: | ---: |"]
+    for source, item in payload["same_interval_comparison"].items():
+        lines.append(f"| {source} | {item['stable_intervals']} | {fmt(item['median_abs_error_hz'])} | {fmt(item['p95_abs_error_hz'])} | {fmt(item['max_abs_error_hz'])} |")
     for summary in summaries:
         idx = summary["record"]
         folder = destination/f"record_{idx:05d}"
         folder.mkdir()
         rows = [r for r in all_rows if r["record"] == idx]
         plot_tracking(folder/"tracking.png", rows, index=idx)
-        for source in ("mcu", "ack"):
+        for source in ("controller_target", "ack"):
             plot_command_agreement(folder/f"{source}_agreement.png", rows,
                                    index=idx, source=source)
         lines += [
@@ -152,9 +189,10 @@ def run(run_dir, *, scale=1.):
             f"Approved intervals: {len(rows)}.",
             f"Maximum tested host envelope width (ms): {fmt(summary['offset_scenarios']['max_tested_host_envelope_width_ms'])}.",
             f"Gray p95 (us): {fmt(summary['clock_holdout_p95_us'])}.",
-            f"MCU coverage: {summary['mcu']['assessment_counts']}.",
+            f"Controller target coverage: {summary['controller_target']['assessment_counts']}.",
+            f"Raw MCU rate coverage: {summary['raw_mcu_assessment_counts']}.",
             f"ACK coverage: {summary['ack']['assessment_counts']}.", "",
-            f"![MCU agreement](record_{idx:05d}/mcu_agreement.png)", "",
+            f"![Integer target agreement](record_{idx:05d}/controller_target_agreement.png)", "",
             f"![ACK agreement](record_{idx:05d}/ack_agreement.png)", "",
             f"![Physical interval classification](record_{idx:05d}/tracking.png)", "",
         ]
