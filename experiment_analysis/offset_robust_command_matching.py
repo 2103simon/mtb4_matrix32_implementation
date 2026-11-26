@@ -32,6 +32,9 @@ from experiment_analysis.analyze_integrated_matrix32 import (
 )
 from oscilloscope.apply_pulse_review import load_approved_onsets
 from oscilloscope.record_scope import atomic_json
+from communication.clock_estimator_diagnostics import (
+    causal_slope_interval, causal_host_envelope,
+)
 
 
 INTERVAL_COLUMNS = [
@@ -255,8 +258,68 @@ def classify_interval(start_host_ns, end_host_ns, *, mcu_pc, mcu_rates,
     return r
 
 
+def refined_onset_envelopes(times, x, y, epoch, refinement, exchanges, *, scale):
+    """Map supported onsets with the candidate piecewise map and USB envelope.
+
+    The largest held-out p95 is a sensitivity margin, not a confidence bound.
+    Only interpolate across gaps no longer than the longest tested block.
+    """
+    model = refinement["models"]["piecewise_linear"]
+    if not model["clock_rate_stability"]["monotonic"]:
+        raise ValueError("Piecewise clock candidate is not monotonic")
+    holdouts = model["holdouts"]
+    if any(holdouts[k]["p95_abs_us"] is None or holdouts[k]["n"] < 15
+           for k in ("single_frame", "1s", "2s")):
+        raise ValueError("Insufficient piecewise holdout evidence")
+    p95 = max(holdouts[k]["p95_abs_us"] for k in ("single_frame", "1s", "2s"))
+    fit = epoch.get("fit") or {}
+    if not fit.get("host_clock_mapping_estimated"):
+        raise ValueError("Missing original Nano-PC clock fit")
+    slopes = causal_slope_interval(exchanges)
+    if not slopes.get("feasible") or slopes.get("slope_upper_ns_per_us") is None:
+        raise ValueError("No finite feasible affine USB slope interval")
+    if not (min(r["t2_nano_us"] for r in exchanges) <= y[0]*1e6
+            and max(r["t3_nano_us"] for r in exchanges) >= y[-1]*1e6):
+        raise ValueError("SYNC observations do not bracket Gray anchors")
+    valid = (times >= x[0]) & (times <= x[-1])
+    segments = np.clip(np.searchsorted(x, times, side="right")-1, 0, len(x)-2)
+    valid &= np.diff(x)[segments] <= 2.
+    nominal = np.full(len(times), np.nan)
+    lower, upper = nominal.copy(), nominal.copy()
+    nano = predict("piecewise_linear", x, y, times[valid])
+    nominal[valid] = _nano_to_host_float(nano, fit)
+    # Convert the Nano-domain heuristic margin with the largest feasible rate.
+    extra_ns = p95 * scale * slopes["slope_upper_ns_per_us"]
+    for i, t in zip(np.flatnonzero(valid), nano):
+        envelope = causal_host_envelope(exchanges, t*1e6, fit, slopes)
+        lower[i] = nominal[i] + envelope["lower_relative_to_midpoint_fit_us"]*1000 - extra_ns
+        upper[i] = nominal[i] + envelope["upper_relative_to_midpoint_fit_us"]*1000 + extra_ns
+        if not (np.isfinite(lower[i]) and np.isfinite(upper[i]) and lower[i] <= upper[i]):
+            raise ValueError("Invalid USB host envelope")
+    # A pulse period crossing an unsupported internal Gray gap is also excluded.
+    gaps = np.flatnonzero(np.diff(x) > 2.)
+    interval_valid = valid[:-1] & valid[1:]
+    for g in gaps:
+        interval_valid &= ~((times[:-1] < x[g+1]) & (times[1:] > x[g]))
+    widths = (upper[valid] - lower[valid])/1e6
+    return {
+        "valid": valid, "interval_valid": interval_valid,
+        "nominal": nominal, "lower": lower, "upper": upper,
+        "p95_us": p95,
+        "scenario": {
+            "method": "conservative_joint_usb_slope_offset_envelope",
+            "causal_slope_interval": slopes,
+            "causal_interval_width_ms": None,
+            "extra_holdout_p95_sensitivity_ms": extra_ns/1e6,
+            "max_tested_host_envelope_width_ms": float(np.max(widths)) if len(widths) else None,
+            "not_guaranteed_absolute_error_bound": True,
+        },
+    }
+
+
 def analyze_record(*, root, record, epoch, cv, mcu, states,
-                   taxel, encoding, scale):
+                   taxel, encoding, scale, refinement=None, exchanges=None,
+                   nano_frames=None):
     idx = int(record["index"])
     report = {
         "record": idx, "original_clock_status": epoch.get("status"),
@@ -264,7 +327,8 @@ def analyze_record(*, root, record, epoch, cv, mcu, states,
         "candidate_only": True, "absolute_alignment_calibrated": False,
         "physical_apply_timestamp_validated": False,
     }
-    model, model_status = select_clock_model(cv)
+    model, model_status = (select_clock_model(cv) if refinement is None else
+                           ("piecewise_linear", "EXPLORATORY_PIECEWISE_NOT_RATE_QUALIFIED"))
     report["clock_model"] = model
     report["clock_candidate_status"] = model_status
     folder = analysis_root(root)/f"record_{idx:05d}"
@@ -278,33 +342,48 @@ def analyze_record(*, root, record, epoch, cv, mcu, states,
     if model is None:
         report["reason"] = "No cross-validated model estimates available"
         return report, result_rows, []
-    pairs, issue = _frame_pairs(root, record, read_nano_frames(root/"nano_serial.jsonl"))
+    pairs, issue = _frame_pairs(root, record, nano_frames if nano_frames is not None
+                                else read_nano_frames(root/"nano_serial.jsonl"))
     if issue:
         report["reason"] = issue
         return report, result_rows, []
     x, y = _xy(pairs)
-    holdouts = cv.get("models", {}).get(model, {})
-    p95s = [(holdouts.get(key) or {}).get("p95_abs_us")
-            for key in ("holdout", "holdout_2x")]
-    p95s = [float(value) for value in p95s if value is not None]
-    if not p95s:
-        report["reason"] = "No withheld timing uncertainty scale"
-        return report, result_rows, []
-    p95_us = max(p95s)
-    scenario, blocker = offset_scenarios(epoch, p95_us, scale=scale)
+    if refinement is not None:
+        mapped = refined_onset_envelopes(
+            times, x, y, epoch, refinement, exchanges, scale=scale)
+        p95_us, scenario = mapped["p95_us"], mapped["scenario"]
+        valid, host_float = mapped["valid"], mapped["nominal"]
+        interval_valid = mapped["interval_valid"]
+        lower, upper = mapped["lower"], mapped["upper"]
+        report["clock_rate_stability"] = refinement["models"][model]["clock_rate_stability"]
+    else:
+        holdouts = cv.get("models", {}).get(model, {})
+        p95s = [(holdouts.get(key) or {}).get("p95_abs_us")
+                for key in ("holdout", "holdout_2x")]
+        p95s = [float(value) for value in p95s if value is not None]
+        if not p95s:
+            report["reason"] = "No withheld timing uncertainty scale"
+            return report, result_rows, []
+        p95_us = max(p95s)
+        scenario, blocker = offset_scenarios(epoch, p95_us, scale=scale)
+        report["clock_holdout_p95_us"] = p95_us
+        report["offset_scenarios"] = scenario
+        if blocker:
+            report["reason"] = blocker
+            return report, result_rows, []
+        nano_sec = predict(model, x, y, times) if len(times) else np.array([])
+        # Never extrapolate a clock map outside the observed Gray-frame range.
+        valid = (times >= x[0]) & (times <= x[-1])
+        report["onsets_outside_gray_frame_support"] = int(np.sum(~valid))
+        report["onsets_inside_gray_frame_support"] = int(np.sum(valid))
+        host_float = (_nano_to_host_float(nano_sec, epoch["fit"])
+                      if len(times) else np.array([]))
+        deltas = np.asarray(scenario["deltas_ns"], dtype=float)
+        interval_valid = valid[:-1] & valid[1:]
     report["clock_holdout_p95_us"] = p95_us
     report["offset_scenarios"] = scenario
-    if blocker:
-        report["reason"] = blocker
-        return report, result_rows, []
-    nano_sec = predict(model, x, y, times) if len(times) else np.array([])
-    # Never extrapolate a clock map outside the observed Gray-frame range.
-    valid = (times >= x[0]) & (times <= x[-1])
     report["onsets_outside_gray_frame_support"] = int(np.sum(~valid))
     report["onsets_inside_gray_frame_support"] = int(np.sum(valid))
-    host_float = (_nano_to_host_float(nano_sec, epoch["fit"])
-                  if len(times) else np.array([]))
-    deltas = np.asarray(scenario["deltas_ns"], dtype=float)
     mcu_pc = np.asarray(mcu["taxel_pc_ns"], dtype=np.int64)
     rates = (mcu["sa_rate_hz"] if encoding == "sa_ii"
              else mcu["ra_rate_hz"])[:, taxel]
@@ -328,15 +407,25 @@ def analyze_record(*, root, record, epoch, cv, mcu, states,
             "physical_apply_timestamp_validated": False,
             "absolute_alignment_calibrated": False,
         }
-        if not (valid[i] and valid[i+1]):
+        if not interval_valid[i]:
             status = {
                 "mcu_assessment": "OUTSIDE_GRAY_FRAME_SUPPORT",
                 "ack_assessment": "OUTSIDE_GRAY_FRAME_SUPPORT",
                 "all_scenarios_agree": False,
             }
         else:
-            start = host_float[i]+deltas
-            end = host_float[i+1]+deltas
+            if refinement is None:
+                start = host_float[i]+deltas
+                end = host_float[i+1]+deltas
+            else:
+                start = np.array([lower[i], upper[i]])
+                end = np.array([lower[i+1], upper[i+1]])
+                row.update({
+                    "start_host_lower_ns": float(start[0]),
+                    "start_host_upper_ns": float(start[1]),
+                    "end_host_lower_ns": float(end[0]),
+                    "end_host_upper_ns": float(end[1]),
+                })
             status = classify_interval(
                 start, end, mcu_pc=mcu_pc, mcu_rates=rates,
                 ack_pc=ack_pc, ack_states=ack_sorted,
@@ -373,7 +462,7 @@ def analyze_record(*, root, record, epoch, cv, mcu, states,
     report["ack_diagnostic_tolerance_counts"] = dict(
         Counter(r.get("ack_matching_diagnostic") for r in result_rows))
     return report, result_rows, [(float(t), float(h))
-                                 for t, h in zip(times, host_float)]
+                                 for t, h in zip(times, host_float) if np.isfinite(h)]
 
 
 def plot_tracking(path, rows, *, index):
@@ -535,19 +624,7 @@ def record4_diagnostics(root, metadata, serial, *, block_s=2.):
             "csv": "record_00004/record4_clock_block_errors.csv"}
 
 
-def run(root, *, extra_scale=1., block_s=2., taxel=None):
-    root = Path(root).expanduser().resolve()
-    meta = json.loads((root/"metadata.json").read_text())
-    epoch = json.loads((root/"epoch_clock_analysis.json").read_text())
-    cv = json.loads((analysis_root(root)/"clock_model_cv_summary.json").read_text())
-    if abs(float(cv["block_s"])-block_s) > 1e-9:
-        raise ValueError(
-            f"Clock CV result uses {cv['block_s']}s blocks; "
-            f"rerun evaluate_clock_models --block-s {block_s:g} or "
-            "select the matching --block-s here.")
-    rec_cv = {int(r["record_index"]): r for r in cv["records"]}
-    rec_epoch = {int(r["record_index"]): r for r in epoch["records"]}
-    serial = read_nano_frames(root/"nano_serial.jsonl")
+def load_command_inputs(root, *, taxel=None):
     mcu_dir = root/"mcu_matrix32"
     rid = choose_recording(mcu_dir)
     mcu = load_recordings(mcu_dir, rid)
@@ -561,6 +638,23 @@ def run(root, *, extra_scale=1., block_s=2., taxel=None):
     encoding = source.get("encoding", "sa_ii")
     if taxel not in range(12) or encoding not in ("sa_ii", "ra_i"):
         raise ValueError("Invalid selected taxel/encoding")
+    return mcu, ack, taxel, encoding
+
+
+def run(root, *, extra_scale=1., block_s=2., taxel=None):
+    root = Path(root).expanduser().resolve()
+    meta = json.loads((root/"metadata.json").read_text())
+    epoch = json.loads((root/"epoch_clock_analysis.json").read_text())
+    cv = json.loads((analysis_root(root)/"clock_model_cv_summary.json").read_text())
+    if abs(float(cv["block_s"])-block_s) > 1e-9:
+        raise ValueError(
+            f"Clock CV result uses {cv['block_s']}s blocks; "
+            f"rerun evaluate_clock_models --block-s {block_s:g} or "
+            "select the matching --block-s here.")
+    rec_cv = {int(r["record_index"]): r for r in cv["records"]}
+    rec_epoch = {int(r["record_index"]): r for r in epoch["records"]}
+    serial = read_nano_frames(root/"nano_serial.jsonl")
+    mcu, ack, taxel, encoding = load_command_inputs(root, taxel=taxel)
     summaries = []
     all_rows = []
     for record in meta["records"]:
