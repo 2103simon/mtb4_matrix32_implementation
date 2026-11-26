@@ -493,12 +493,65 @@ def make_figures(dest,m):
     fig.tight_layout();fig.savefig(dest/"transport_latency.png",dpi=160);plt.close(fig)
 
 
-def build(recordings_dir):
+def prepare_missing_diagnostics(recordings_dir):
+    """Generate only absent diagnostics, using their original entry points.
+
+    A directory without its summary may contain partial evidence; never
+    overwrite it or silently repair it. Existing summaries are validated
+    by collect(), not assumed scientifically valid.
+    """
+    from oscilloscope import refine_timing_investigation, analyze_transient_charge
+    from experiment_analysis import (
+        run_piecewise_command_analysis, audit_refined_ack_observability,
+        audit_cycle_boundary_observability, audit_restart_observability,
+        analyze_command_chain, compare_ble_replays,
+    )
+
+    def ensure(raw, relative, action):
+        path = analysis_root(raw, legacy_ok=False)/relative
+        if path.is_file() and path.stat().st_size:
+            return
+        if path.parent.exists():
+            raise FileExistsError(
+                f"Missing or empty summary in existing diagnostic {path.parent}; "
+                "inspect and preserve that directory before regenerating")
+        print(f"[PREPARE] {raw.name}: {relative}", flush=True)
+        action()
+        if not path.is_file() or not path.stat().st_size:
+            raise RuntimeError(f"Diagnostic did not produce {path}")
+
+    raw = {label:Path(recordings_dir)/run for label,run in RUNS.items()}
+    for root in raw.values():
+        ensure(root,"timing_refinement/timing_refinement_summary.json",
+               lambda:refine_timing_investigation.run(root))
+        ensure(root,PIECEWISE+"/summary.json",
+               lambda:run_piecewise_command_analysis.run(root))
+        ensure(root,BOUNDARIES+"/summary.json",
+               lambda:audit_refined_ack_observability.run(root))
+        ensure(root,CHRON+"/summary.json",
+               lambda:audit_cycle_boundary_observability.run(root))
+        ensure(root,RESTART+"/summary.json",
+               lambda:audit_restart_observability.run(root))
+    ensure(raw["Reference"],"command_chain_diagnostic/summary.json",
+           lambda:analyze_command_chain.run(raw["Reference"]))
+    for a,b in (("A1","B1"),("A2","B2")):
+        ensure(raw[b],"ble_ab_comparison/summary.json",
+               lambda:compare_ble_replays.run(raw[a],raw[b]))
+    for label in ("A2","B2"):
+        for quiet in (2.5,4.0):
+            folder = f"transient_charge_diagnostic_quiet_{str(quiet).replace('.','p')}v"
+            ensure(raw[label],folder+"/summary.json",
+                   lambda:analyze_transient_charge.run(raw[label],100000,quiet))
+
+
+def build(recordings_dir, *, prepare_missing=False):
     recordings_dir=Path(recordings_dir).resolve()
     analysis=analysis_root(recordings_dir/REFERENCE,legacy_ok=False)
     dest=ensure_derived_destination(analysis/REVISION_FOLDER,*(recordings_dir/run for run in RUNS.values()))
     if dest.exists():
         raise FileExistsError(f"Review revision already exists: {dest}; preserve it before rebuilding")
+    if prepare_missing:
+        prepare_missing_diagnostics(recordings_dir)
     m=collect(recordings_dir)
     old,publication,publication_hash=load_approved_reference(m,analysis)
     reports={REPORTS[0]:render_condensed(m,old[REPORTS[0]]),
@@ -536,7 +589,10 @@ def build(recordings_dir):
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--recordings-dir",type=Path,default=REPO_ROOT/"data"/"recordings")
-    build(p.parse_args(argv).recordings_dir)
+    p.add_argument("--prepare-missing",action="store_true",
+                   help="Run only missing diagnostics; preserve existing outputs")
+    args = p.parse_args(argv)
+    build(args.recordings_dir,prepare_missing=args.prepare_missing)
 
 
 if __name__=="__main__":
