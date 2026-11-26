@@ -119,7 +119,10 @@ def run(run_dir, resistance, quiet_limit_v=1.):
     meta_path = root/"metadata.json"
     meta = json.loads(meta_path.read_text())
     analysis = analysis_root(root, legacy_ok=False)
-    dest = ensure_derived_destination(analysis/"transient_charge_diagnostic", root)
+    # A different quiet-band sensitivity is distinct derived evidence.
+    # Keep the original 1 V result and never overwrite any sensitivity run.
+    suffix = "" if quiet_limit_v == 1. else "_quiet_" + repr(float(quiet_limit_v)).replace(".", "p") + "v"
+    dest = ensure_derived_destination(analysis/("transient_charge_diagnostic"+suffix), root)
     if dest.exists():
         raise FileExistsError(dest)
     rows, sources, record_stats = [], {}, []
