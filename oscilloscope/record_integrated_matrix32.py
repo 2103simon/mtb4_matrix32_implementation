@@ -73,6 +73,8 @@ def parser():
                         "24.5 s Nano buffer polling budget including BEGIN overhead")
     p.add_argument("--sync-count", type=int, default=30,
                    help="Number of binary CRC32 sync exchanges before AND after recording")
+    p.add_argument("--experimental-shared-sf-sc", action="store_true",
+                   help="Opt in to unqualified mixed persistent SF/SC ACK transport")
     p.add_argument("--stale-ms", type=int, default=250)
     p.add_argument("--capture-before-start", action="store_true",
                    help="Bench-only: arm scope after MCU ACKs even if positive sensor input "
@@ -171,6 +173,7 @@ def plan(args, p):
         "matrix32_armed": args.arm,
         "verified_dummy_load_operator_confirmation": bool(args.dummy_load_confirmed),
         "mcu_stale_timeout_ms": args.stale_ms,
+        "experimental_shared_sf_sc": args.experimental_shared_sf_sc,
         "controller_ready_timeout_s": args.controller_ready_timeout,
         "capture_before_matrix32_start": args.capture_before_start,
         "acquisition_order": "controller_ready_then_pre_sync_then_arm_scope",
@@ -387,10 +390,12 @@ def verify_gray_frame_evidence(decoded, buffer):
 class StimulationChild:
     """Isolated process preserves existing Matrix32 BLE watchdog and shutdown."""
 
-    def __init__(self, root, *, arm, stale_ms, capture_before_start=False):
+    def __init__(self, root, *, arm, stale_ms, capture_before_start=False,
+                 experimental_shared_sf_sc=False):
         self.root = Path(root)
         self.arm = arm
         self.stale_ms = stale_ms
+        self.experimental_shared_sf_sc = experimental_shared_sf_sc
         self.capture_before_start = capture_before_start
         self.process = None
         self.log = None
@@ -409,6 +414,8 @@ class StimulationChild:
                    "--stale-ms", str(self.stale_ms)]
         if self.arm:
             command.append("--arm")
+        if self.experimental_shared_sf_sc:
+            command.append("--experimental-shared-sf-sc")
         # Separate process group: cancelling this scope session must cancel
         # the entire BLE/MCU task group, not just this parent process.
         self.process = subprocess.Popen(
@@ -565,7 +572,8 @@ def _run_session(args, requested, root, *, console=None):
     if console is not None:
         meta["console_log"] = "console.log"
     child = StimulationChild(root, arm=args.arm, stale_ms=args.stale_ms,
-                             capture_before_start=args.capture_before_start)
+                             capture_before_start=args.capture_before_start,
+                             experimental_shared_sf_sc=args.experimental_shared_sf_sc)
     nano_started = False
     try:
         nano_port = resolve_port(args.nano_port, "nano")
