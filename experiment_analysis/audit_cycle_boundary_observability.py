@@ -76,7 +76,7 @@ def prepare_commands(events):
             "acks":np.asarray([r["ack_ns"] for r in commands],dtype=np.int64)}
 
 
-def boundary_states(model, lower, upper):
+def boundary_states(model, lower, upper, *, minimum_prefix=0):
     """All serial command prefixes possible under the tested availability model."""
     if not (np.isfinite(lower) and np.isfinite(upper) and lower<=upper):
         return []
@@ -86,7 +86,7 @@ def boundary_states(model, lower, upper):
     last = int(np.searchsorted(model["writes"],upper,side="right"))
     if first>last:
         raise ValueError("Inconsistent command order")
-    return list(dict.fromkeys(model["states"][first:last+1]))
+    return list(dict.fromkeys(model["states"][max(first,minimum_prefix):last+1]))
 
 
 def sc_overlap(model, start, end):
