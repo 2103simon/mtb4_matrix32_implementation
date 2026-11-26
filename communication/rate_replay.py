@@ -95,6 +95,75 @@ def load_replay(source_run, *, duration_s=20.5, start_s=None, stale_s=.25):
     return ReplayPlan(provenance, cfg, batches)
 
 
+def replay_initialization(plan, requested_frequency, *, taxel, receptor):
+    """Select the first effective source snapshot, not an invented SF value.
+
+    Refuse a zero-start window: choose another explicitly reviewed source
+    window instead of introducing a positive target absent at its beginning.
+    """
+    first = plan.batches[0][1][-1]
+    target = requested_frequency(first, taxel, receptor)
+    if target <= 0:
+        raise ValueError("Replay begins with a mute target; select a positive-start window")
+    targets = [requested_frequency(s, taxel, receptor)
+               for _, batch in plan.batches for s in batch]
+    return first, {
+        "policy": "hold_first_effective_source_snapshot_until_verified_start",
+        "initial_target_hz": target,
+        "positive_source_samples": sum(t > 0 for t in targets),
+        "mute_source_samples": sum(t == 0 for t in targets),
+        "max_preroll_s": 10.0,
+        "post_start_settle_s": .25,
+        "preroll_excluded_from_replay_sample_count": True,
+    }
+
+
+async def await_replay_trigger(plan, snapshots, capture, trigger, *, device,
+                               arm, initial, initialization, stale_seconds):
+    """Publish bounded pre-roll until START returns and scope RUN is observed."""
+    deadline = time.monotonic() + initialization["max_preroll_s"]
+    ready_since = None
+    announced = False
+    period = min(.0145, stale_seconds/4)
+    next_publish = time.monotonic_ns()
+    while True:
+        if time.monotonic() >= deadline or not device.connected:
+            raise TimeoutError("Replay initialization/trigger deadline or BLE link lost")
+        if trigger.is_file():
+            if not announced:
+                raise RuntimeError("Replay trigger arrived before verified readiness")
+            if arm and (not device.running or not device.config_verified):
+                raise RuntimeError("Matrix32 lost verified running state before replay")
+            marker = json.loads(trigger.read_text(encoding="utf-8"))
+            if marker["source"] != plan.provenance:
+                raise ValueError("Replay source or selection changed since parent planning")
+            start_ns = int(marker["start_ns"])
+            if not 0 <= time.monotonic_ns()-start_ns <= 50_000_000:
+                raise TimeoutError("Replay trigger is stale or in the future")
+            return start_ns
+        now = time.monotonic_ns()
+        if now >= next_publish:
+            snapshots.publish([initial], now, capture.recorder)
+            capture.emit("replay_preroll_batch", arrival_ns=now, sample_count=1,
+                         target_hz=initialization["initial_target_hz"])
+            next_publish = now + round(period*1e9)
+        verified = (not arm or (device.running and device.config_verified
+                    and device.config["sf"] == initialization["initial_target_hz"]))
+        if verified:
+            if ready_since is None:
+                ready_since = time.monotonic()
+            if not announced and time.monotonic()-ready_since >= initialization["post_start_settle_s"]:
+                capture.emit("replay_preroll_ready", **initialization,
+                             start_protocol_verified=arm, output_verified=False)
+                print("[REPLAY] Ready; waiting for scope RUN trigger.", flush=True)
+                announced = True
+        elif announced:
+            raise RuntimeError("Matrix32 lost verified running state during replay pre-roll")
+        else:
+            ready_since = None
+        await asyncio.sleep(.002)
+
+
 class ReplaySnapshots:
     """Latest-slot interface consumed unchanged by the live frequency worker."""
     def __init__(self):
