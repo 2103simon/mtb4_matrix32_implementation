@@ -114,14 +114,15 @@ def analyze_restart(model,sequence,times,ids,mapped,support,cycles):
     indices = first_pulse_indices(mapped,write,ack,end)
     lo,hi = mapped["lower"],mapped["upper"]
     for i in indices:
-        states = boundary_states(model,lo[i],hi[i])
+        states = boundary_states(model,lo[i],hi[i],
+                                 minimum_prefix=sequence["restore_sc_id"]+1)
         # Condition on SC restoration being available at this candidate
         # onset. A muted prefix is not an active-frequency witness.
         active = [(o,hz) for o,hz,on in states if on]
         matches = []
         measured = None
         original = cycles[i]["classification"] if i<len(cycles) else None
-        if hi[i]>=end:
+        if lo[i]<support_start or hi[i]>=end:
             status = "FIRST_PULSE_AT_NEXT_CONTROL_OR_SUPPORT_EDGE"
         elif not active:
             status = "NO_ACTIVE_PREFIX_AT_FIRST_PULSE"
