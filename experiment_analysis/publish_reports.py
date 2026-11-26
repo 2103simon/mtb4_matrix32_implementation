@@ -42,6 +42,8 @@ def _safe_relative(source_root, link, *, link_root=None):
 def _clean_links(text, root, run_id, *, link_root=None):
     def render_link(match):
         label, uri = match.groups()
+        if link_root is not None and link_root!=root and uri in REPORTS:
+            return match.group(0)
         if uri.startswith(('http://','https://','#','mailto:')):
             return match.group(0)
         local = _safe_relative(root, uri, link_root=link_root)
