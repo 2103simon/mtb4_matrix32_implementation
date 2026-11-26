@@ -7,7 +7,7 @@ from __future__ import annotations
 import sys as _bootstrap_sys
 from pathlib import Path as _bootstrap_path
 _bootstrap_sys.path.insert(0, str(_bootstrap_path(__file__).resolve().parents[1]))
-from experiment_analysis.paths import analysis_root
+from experiment_analysis.paths import analysis_root, ensure_derived_destination
 
 import argparse
 import csv
@@ -310,8 +310,11 @@ def plot(folder, widths, frames, index):
     plt.close(fig)
 
 
-def run(run_dir, *, threshold=2.):
+def run(run_dir, *, threshold=2., output_dir=None):
     root = Path(run_dir).expanduser().resolve()
+    destination = (analysis_root(root) if output_dir is None else
+                   ensure_derived_destination(output_dir, root))
+    destination.mkdir(parents=True, exist_ok=True)
     meta = json.loads((root/"metadata.json").read_text(encoding="utf-8"))
     nano = read_nano_frames(root/"nano_serial.jsonl")
     # Use the observed INFO response, not a requested mode or an assumption
@@ -343,7 +346,7 @@ def run(run_dir, *, threshold=2.):
         print(f"[GRAY PHYSICAL {idx}] Reading CH2: {ch2}", flush=True)
         pulses, waveform = edges_from_csv(ch2, threshold=threshold)
         widths, spacing, stat = geometry(rec, nano, pulses, frame_s=frame_s)
-        folder = analysis_root(root)/f"record_{idx:05d}"
+        folder = destination/f"record_{idx:05d}"
         folder.mkdir(parents=True, exist_ok=True)
         save_csv(folder/"gray_pulse_widths.csv", widths, [
             "frame", "role", "group", "scope_frame_s", "rise_s",
@@ -378,7 +381,7 @@ def run(run_dir, *, threshold=2.):
             f"{stat['nano_minus_rate_scaled_scope_spacing_us']['std']} us",
             flush=True,
         )
-    out = analysis_root(root)
+    out = destination
     payload = {
         "schema": "matrix32_gray_physical_pulse_geometry_v1",
         "records": reports,
