@@ -438,7 +438,7 @@ def run(run_dir):
     lines += ["","Chronological identity membership:"]
     for reason,count in sorted(primary["chronological_status_counts"].items()):
         lines.append(f"- {reason}: {count}")
-    (dest/"report.md").write_text("\\n".join(lines)+"\\n",encoding="utf-8")
+    (dest/"report.md").write_text("\n".join(lines)+"\n",encoding="utf-8")
     print(f"[CYCLE BOUNDARY] {dest/'report.md'}")
 
 
