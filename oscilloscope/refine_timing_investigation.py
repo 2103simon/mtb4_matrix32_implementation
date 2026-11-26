@@ -55,6 +55,20 @@ def compare_models(x, y, host_slope=None):
     return result
 
 
+def record_sync_exchanges(record, epoch, by_seq):
+    """Resolve and verify the exact saved per-record USB observations."""
+    idx = int(record["index"])
+    ids = epoch["sync_sequence_ids"]
+    if not ids or len(ids) != len(set(ids)):
+        raise ValueError(f"Record {idx}: missing or repeated SYNC IDs")
+    clock_epoch = record["clock_epoch"]
+    expected = (clock_epoch["pre_sync_sequence_ids"] +
+                clock_epoch["post_sync_sequence_ids"])
+    if ids != expected:
+        raise ValueError(f"Record {idx}: original SYNC epoch mismatch")
+    return [by_seq[seq] for seq in ids]
+
+
 def inspect_usb(rows, fit, nano_seconds):
     if not fit:
         return {"status": "missing_original_fit"}
@@ -110,15 +124,7 @@ def run(run_dir):
             continue
         x, y = _xy(pairs)
         epoch = epochs[idx]
-        ids = epoch["sync_sequence_ids"]
-        if len(ids) != len(set(ids)):
-            raise ValueError(f"Record {idx}: repeated SYNC IDs")
-        clock_epoch = rec["clock_epoch"]
-        expected = (clock_epoch["pre_sync_sequence_ids"] +
-                    clock_epoch["post_sync_sequence_ids"])
-        if ids != expected:
-            raise ValueError(f"Record {idx}: original SYNC epoch mismatch")
-        selected = [by_seq[seq] for seq in ids]
+        selected = record_sync_exchanges(rec, epoch, by_seq)
         fit = epoch.get("fit")
         row["original_status"] = epoch["status"]
         row["usb"] = inspect_usb(selected, fit, y)
