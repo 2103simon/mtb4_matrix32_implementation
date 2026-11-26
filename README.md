@@ -6,6 +6,8 @@ Research/bench software for reading **MTB4 fingertip tactile sensors** through a
 
 This README documents the repository's primary branch, **`main`**. **Scope hardware runs and firmware uploading require local hardware and operator verification**; passing unit tests alone cannot establish electrical safety or timing accuracy.
 
+Contributors: follow the [repository analysis and data-handling rules](AGENTS.md), including immutable recordings, shared analysis functions and reproducible derived results.
+
 ## Contents
 
 - [System and signal flow](#system-and-signal-flow)
