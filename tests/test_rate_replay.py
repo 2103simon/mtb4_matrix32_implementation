@@ -8,7 +8,10 @@ import time
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from communication.rate_replay import ReplayPlan, ReplaySnapshots, load_replay, replay_batches
+from communication.rate_replay import (
+    ReplayPlan, ReplaySnapshots, load_replay, replay_batches,
+    replay_initialization, await_replay_trigger,
+)
 from experiment_analysis.paths import sha256
 
 
@@ -75,6 +78,68 @@ class ReplaySourceTests(unittest.TestCase):
                 load_replay(root, duration_s=.04)
 
 
+class ReplayInitializationTests(unittest.IsolatedAsyncioTestCase):
+    def test_positive_first_target_and_reject_mute_start(self):
+        from run_tactile_stimulation import requested_frequency
+        positive = {"sa_rates_hz": [81]*12}
+        mute = {"sa_rates_hz": [0]*12}
+        plan = ReplayPlan({}, {}, [(0, [positive]), (10, [mute])])
+        initial, info = replay_initialization(
+            plan, requested_frequency, taxel=0, receptor="sa_ii")
+        self.assertIs(initial, positive)
+        self.assertEqual(info["initial_target_hz"], 81)
+        self.assertEqual(info["positive_source_samples"], 1)
+        self.assertEqual(info["mute_source_samples"], 1)
+        plan.batches.reverse()
+        with self.assertRaisesRegex(ValueError, "mute target"):
+            replay_initialization(plan, requested_frequency, taxel=0, receptor="sa_ii")
+
+    async def test_gate_waits_for_verified_start(self):
+        from types import SimpleNamespace
+        plan = ReplayPlan({"source": "test"}, {}, [(0, [{"value": 81}])])
+        snapshots, capture = ReplaySnapshots(), Capture()
+        device = SimpleNamespace(connected=True, running=False,
+                                 config_verified=False, config={"sf": 81})
+        info = {"initial_target_hz": 81, "max_preroll_s": 1,
+                "post_start_settle_s": .01}
+        with tempfile.TemporaryDirectory() as tmp:
+            trigger = Path(tmp)/"trigger.json"
+            task = asyncio.create_task(await_replay_trigger(
+                plan, snapshots, capture, trigger, device=device, arm=True,
+                initial={"value": 81}, initialization=info, stale_seconds=.25))
+            try:
+                await asyncio.sleep(.02)
+                self.assertTrue(capture.samples)
+                self.assertFalse(any(n == "replay_preroll_ready" for n, _ in capture.events))
+                device.running = device.config_verified = True
+                async def wait_ready():
+                    while not any(n == "replay_preroll_ready" for n, _ in capture.events):
+                        await asyncio.sleep(.001)
+                await asyncio.wait_for(wait_ready(), .5)
+                now = time.monotonic_ns()
+                trigger.write_text(json.dumps({"source": plan.provenance, "start_ns": now}))
+                self.assertEqual(await asyncio.wait_for(task, .5), now)
+                self.assertTrue(all(s["value"] == 81 for s in capture.samples))
+            finally:
+                if not task.done():
+                    task.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+
+    async def test_early_trigger_rejected(self):
+        from types import SimpleNamespace
+        plan = ReplayPlan({}, {}, [(0, [{"value": 81}])])
+        with tempfile.TemporaryDirectory() as tmp:
+            trigger = Path(tmp)/"trigger.json"
+            trigger.write_text("{}")
+            with self.assertRaisesRegex(RuntimeError, "before verified readiness"):
+                await await_replay_trigger(
+                    plan, ReplaySnapshots(), Capture(), trigger,
+                    device=SimpleNamespace(connected=True), arm=True,
+                    initial={"value": 81}, initialization={"max_preroll_s": 1},
+                    stale_seconds=.25)
+
+
 class Capture:
     def __init__(self):
         self.recorder = self
@@ -121,7 +186,7 @@ class ReplayDeliveryTests(unittest.IsolatedAsyncioTestCase):
         capture.start = lambda **kw: None
         plan = ReplayPlan({"duration_s": .025, "sample_count": 1,
                            "source_settings_sha256": "test"}, {},
-                          [(0, [{"value": 1}])])
+                          [(0, [{"sa_rates_hz": [81]*12}])])
         aborts = []
         device = SimpleNamespace(connected=True,
                                  abort_pending_commands=lambda: aborts.append(True))
@@ -136,7 +201,10 @@ class ReplayDeliveryTests(unittest.IsolatedAsyncioTestCase):
                                            "start_ns": time.monotonic_ns()}))
             with patch("run_tactile_stimulation.frequency_worker", blocked), \
                  patch("run_tactile_stimulation.stale_supervisor", blocked), \
+                 patch("run_tactile_stimulation.await_replay_trigger",
+                       new_callable=AsyncMock) as gate, \
                  patch("run_tactile_stimulation.stop_output", new_callable=AsyncMock) as stop:
+                gate.return_value = time.monotonic_ns()
                 stop.return_value = True
                 task = asyncio.create_task(run_replay_tasks(
                     plan, trigger, device, ready, capture, arm=True,
