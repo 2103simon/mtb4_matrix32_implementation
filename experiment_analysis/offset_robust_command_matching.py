@@ -520,23 +520,27 @@ def plot_tracking(path, rows, *, index):
     plt.close(fig)
 
 
-def plot_command_agreement(path, rows, *, index):
-    """Measured vs stable ACK-indicated frequency (not latency proof)."""
+def plot_command_agreement(path, rows, *, index, source="ack"):
+    """Measured vs stable command-state frequency (not latency proof)."""
+    if source not in ("ack", "mcu"):
+        raise ValueError("Unknown command source")
+    label = "ACK-indicated SF" if source == "ack" else "MCU requested rate"
+    value_key = "ack_expected_hz_if_stable" if source == "ack" else "mcu_requested_hz_if_stable"
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     good = [r for r in rows
-            if r.get("ack_assessment") == "STABLE_ACROSS_TESTED_OFFSETS"]
+            if r.get(f"{source}_assessment") == "STABLE_ACROSS_TESTED_OFFSETS"]
     fig, axes = plt.subplots(1, 2, figsize=(14, 5.5),
                              layout="constrained")
     if good:
         t = [(r["start_scope_s"]+r["end_scope_s"])/2 for r in good]
         m = [r["measured_inverse_period_hz"] for r in good]
-        ack = [r["ack_expected_hz_if_stable"] for r in good]
+        ack = [r[value_key] for r in good]
         axes[0].scatter(t, m, s=10, alpha=.6,
                         label="Physical approved onset intervals")
         axes[0].scatter(t, ack, s=10, alpha=.5,
-                        label="ACK state stable across tested offsets")
+                        label=f"{label} stable across tested offsets")
         axes[0].legend(fontsize=8)
         axes[1].scatter(ack, m, s=11, alpha=.55)
         hi = max(ack+m)
@@ -545,11 +549,11 @@ def plot_command_agreement(path, rows, *, index):
         axes[1].legend(fontsize=8)
     else:
         for ax in axes:
-            ax.text(.5, .5, "No ACK intervals stable across tested offsets",
+            ax.text(.5, .5, f"No {source.upper()} intervals stable across tested offsets",
                     ha="center", va="center", transform=ax.transAxes)
     axes[0].set(xlabel="Scope-local time (s)", ylabel="Frequency (Hz)",
-                title="Stable ACK states vs measured physical frequency")
-    axes[1].set(xlabel="ACK-indicated SF (Hz)",
+                title=f"Stable {source.upper()} states vs measured physical frequency")
+    axes[1].set(xlabel=f"{label} (Hz)",
                 ylabel="Measured physical 1/period (Hz)",
                 title="Diagnostic command-versus-measurement scatter")
     fig.suptitle(
