@@ -323,8 +323,9 @@ class Matrix32Device:
                     print(f"Could not stop stimulation cleanly during disconnect: {exc}")
         finally:
             live_sf_in_flight = (
-                self._live_frequency_task is not None
-                and not self._live_frequency_task.done())
+                self._live_persistent_record is not None or
+                (self._live_frequency_task is not None
+                 and not self._live_frequency_task.done()))
             if (client.is_connected
                     and self._live_frequency_session is not None
                     and not live_sf_in_flight):
@@ -771,7 +772,9 @@ class Matrix32Device:
         timing_marker.mark() must ACK before the BLE write is issued. If a
         transport ignores cancellation, the caller returns
         with an error while the lock remains held until that task finishes.
-        Experimental shared mode uses the persistent SF transport and its guard\n        and exchange timeout semantics.\n        An independent STOP supervisor must remain active; cancellation does
+        Experimental shared mode uses the persistent SF transport and its guard
+        and exchange timeout semantics.
+        An independent STOP supervisor must remain active; cancellation does
         not prove that a pending write never reached the device.
         """
         if type(channel) is not int or not 1 <= channel <= 32:
@@ -1253,7 +1256,6 @@ class Matrix32Device:
             if not defer_release:
                 if self._live_frequency_task is exchange:
                     self._live_frequency_task = None
-                self._live_persistent_record = None
                 if failed and self._live_frequency_session is not None:
                     try:
                         await self._close_live_frequency_session()
@@ -1261,6 +1263,7 @@ class Matrix32Device:
                         if record is not None:
                             record["session_close_error"] = "{}: {}".format(
                                 type(exc).__name__, exc)
+                self._live_persistent_record = None
                 if self._configuration_lock.locked():
                     self._configuration_lock.release()
 
@@ -1497,8 +1500,9 @@ class Matrix32Device:
             # that teardown. An idle persistent subscription can be released
             # immediately after the independent stop command path.
             live_sf_in_flight = (
-                self._live_frequency_task is not None
-                and not self._live_frequency_task.done())
+                self._live_persistent_record is not None or
+                (self._live_frequency_task is not None
+                 and not self._live_frequency_task.done()))
             if not live_sf_in_flight:
                 try:
                     await self._close_live_frequency_session()
