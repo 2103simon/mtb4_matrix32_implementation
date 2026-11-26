@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from communication.serial_ports import resolve_port
-from communication.rate_replay import load_replay
+from communication.rate_replay import load_replay, replay_initialization
 from record_scope import (
     acquire, atomic_json, configure, scope_settings, validate_csv, verify,
     verify_waveform_timing, verify_waveform_scaling,
@@ -112,9 +112,8 @@ def plan(args, p):
         p.error("--replay-start-s requires --replay-source")
     if args.replay_source is not None and (
             args.count != 1 or args.operator_prompts is not None
-            or args.trigger_position_pct != 0
-            or (args.run and args.arm and not args.capture_before_start)):
-        p.error("Replay requires one record, 0% trigger, no prompts, and --capture-before-start when armed")
+            or args.trigger_position_pct != 0 or args.capture_before_start):
+        p.error("Replay requires one record, 0% trigger, no prompts, and verified START before capture (omit --capture-before-start)")
     if args.dummy_load_confirmed and not args.arm:
         p.error("--dummy-load-confirmed is only used together with --arm")
     if args.capture_before_start and (not args.run or not args.arm or not args.dummy_load_confirmed):
@@ -161,12 +160,18 @@ def plan(args, p):
     if args.operator_prompt_schedule and args.trigger_position_pct != 0:
         p.error("--operator-prompts requires --trigger-position-pct 0")
     args.replay_provenance = None
+    args.replay_initialization = None
     if args.replay_source is not None:
         try:
             replay = load_replay(args.replay_source,
                                  duration_s=nominal_window_s+.5,
                                  start_s=args.replay_start_s, stale_s=args.stale_ms/1000)
             args.replay_provenance = replay.provenance
+            from run_tactile_stimulation import requested_frequency
+            source = replay.source_config["stimulation_source"]
+            _, args.replay_initialization = replay_initialization(
+                replay, requested_frequency, taxel=int(source["taxel"]),
+                receptor=source["encoding"])
         except (OSError, ValueError, KeyError, TypeError) as exc:
             p.error(f"Invalid replay source: {exc}")
     # Explicitly reuse the shape that record_scope.configure/verify expects.
@@ -196,9 +201,10 @@ def plan(args, p):
         "mcu_stale_timeout_ms": args.stale_ms,
         "experimental_shared_sf_sc": args.experimental_shared_sf_sc,
         "replay_source": args.replay_provenance,
+        "replay_initialization": args.replay_initialization,
         "controller_ready_timeout_s": args.controller_ready_timeout,
         "capture_before_matrix32_start": args.capture_before_start,
-        "acquisition_order": ("replay_ready_then_pre_sync_then_scope_RUN_triggers_replay"
+        "acquisition_order": ("source_preroll_then_verified_start_then_pre_sync_then_scope_RUN_triggers_replay"
                               if args.replay_provenance else
                               "controller_ready_then_pre_sync_then_arm_scope"),
         "no_person_connected": True,
@@ -537,10 +543,13 @@ class StimulationChild:
             expected.wait(timeout=min(0.05, max(0.001, deadline-time.monotonic())))
         if self.replay_provenance is not None:
             self.check()
+            if self.arm and not self.matrix32_started.is_set():
+                raise RuntimeError("Armed replay ready without observed Matrix32 START")
             return {"replay_ready_observed_monotonic_ns": self.replay_ready_observed_ns,
+                    "matrix32_start_observed_monotonic_ns": self.matrix32_started_observed_ns,
                     "mcu_configuration_acknowledged": False,
                     "startup_electrical_output_verified": False,
-                    "scope_capture_precedes_matrix32_start": True}
+                    "scope_capture_precedes_matrix32_start": False}
         # Require the MCU configuration ACK indication in both live modes.
         if not self.mcu_ready.is_set():
             raise RuntimeError("Matrix32 START reported without MCU handshake")
