@@ -85,14 +85,15 @@ def main_observability(m):
     for label,d in m["runs"].items():
         s = primary(m,label)
         p = s["tolerances"]["original"]
-        rows.append((label,d["sf_ok"],s["target_acks"],s["unique_local"],
+        rows.append((label,d["sf_ok"],s["muted_scheduler_inside"],s["outside_or_edge"],s["target_acks"],s["unique_local"],
                      count_range(p["min"],p["max"]),ratio_range(p["min"],p["max"],s["target_acks"]),
                      f"{p['matching']}/{p['assessed']}"))
     for label,p in m["pooled_replays"]["1.0"]["original"].items():
-        rows.append((f"Replay {label} pooled","—",p["target_acks"],p["unique_local"],
+        rows.append((f"Replay {label} pooled",p["target_acks"]+p["muted_scheduler_inside"]+p["outside_or_edge"],
+                     p["muted_scheduler_inside"],p["outside_or_edge"],p["target_acks"],p["unique_local"],
                      count_range(p["min"],p["max"]),ratio_range(p["min"],p["max"],p["target_acks"]),
                      f"{p['matching']}/{p['assessed']}"))
-    return table(("Run","SF OK ACKs","Target ACKs inside support","Unique local","Distinct chronological","Chronological coverage","Matching/assessed cycles"),rows)
+    return table(("Run","SF OK ACKs","Muted inside","Outside/edge","Target ACKs inside support","Unique local","Distinct chronological","Chronological coverage","Matching/assessed cycles"),rows)
 
 
 def type_table(m):
@@ -114,6 +115,19 @@ def stable_table(m):
             rows.append((label,name,f"{v['stable_intervals']}/{d['approved_intervals']}",
                          fmt(v["median_abs_error_hz"]),fmt(v["p95_abs_error_hz"]),fmt(v["max_abs_error_hz"])))
     return table(("Run","Stable reference","Eligible/all intervals","Median |error| Hz","P95 Hz","Max Hz"),rows)
+
+
+def same_interval_table(m):
+    rows=[]
+    for label,d in m["runs"].items():
+        v=d["stable"]["same_interval_comparison"]
+        if v:
+            for key in ("controller_target","ack"):
+                s=v[key]
+                fmt=lambda x: f"{x:.3f}" if x is not None else "—"
+                rows.append((label,key,s["stable_intervals"],fmt(s["median_abs_error_hz"]),
+                             fmt(s["p95_abs_error_hz"]),fmt(s["max_abs_error_hz"])))
+    return table(("Run","Reference on identical eligible intervals","N","Median |error| Hz","P95 Hz","Max Hz"),rows)
 
 
 def settled_table(m):
@@ -173,6 +187,20 @@ def transport_table(m,detail=False):
     if detail:
         headers += ["SC req→write ms","SC write→ACK ms","SF after SC req→write ms","SF after SC write→ACK ms","Replay lateness P95 ms"]
     return table(headers,rows)
+
+
+def transport_distribution_table(m):
+    rows=[]
+    for label in ("A1","B1","A2","B2"):
+        for group in ("sf","sc","sf_after_sc","sf_after_sf"):
+            g=m["replay"][label]["latency_groups"][group]
+            metrics=g["metrics_ms"]
+            pairs=[]
+            for key in ("request_to_write_ms","write_to_ack_ms","request_to_terminal_ms"):
+                v=metrics[key]
+                pairs.append(f"{v['median']:.2f} / {v['p95']:.2f}")
+            rows.append((label,group,g["success"],*pairs))
+    return table(("Run","Context","OK count","Req→write median/P95 ms","Write→ACK median/P95 ms","Req→terminal median/P95 ms"),rows)
 
 
 def transport_reduction(m):
@@ -285,7 +313,7 @@ def charge_text(m):
             "For a nominal 100 kΩ resistor branch, integrate baseline-subtracted voltage divided by "
             "resistance from 100 µs before onset to the selected endpoint. Only quiet, nonoverlapping, "
             "non-rail windows enter summaries. The primary diagnostic uses 2.5 V quiet threshold and "
-            "1 ms post-onset; 4 V and 0.55/1.5 ms test sensitivity. The negative-only finite-window net "
+            "1 ms post-onset; 4 V and 0.55/1.5 ms test sensitivity. The original 1 V quiet criterion rejected windows because of recorded baseline variation and is not used for the primary charge estimates. The negative-only finite-window net "
             "charge is negative in the candidate-group median. These are resistor-branch estimates, "
             "not total stimulator current, complete charge recovery, proof of safety, or a mechanism. "
             "The 2.5 ms spacing subset is consistent with the muted 400 Hz scheduler but does not "
@@ -311,6 +339,20 @@ def figure(name,caption):
     return f"![{name}]({name}.png)\n\n*{caption}*"
 
 
+def number_condensed_figures(markdown):
+    index=0
+    def replace(match):
+        nonlocal index
+        index+=1
+        uri,caption=match.group(1),match.group(2)
+        caption=re.sub(r"^Figure\s+\d+\s*[-—]\s*","",caption)
+        return f"![Figure {index}]({uri})\n\n*Figure {index} — {caption}*"
+    markdown=re.sub(r"^!\[[^\n\]]*\]\(([^\n)]+)\)\n\n\*([^\n]+)\*$",
+                    replace,markdown,flags=re.M)
+    require(index==6,"Condensed report must contain six captioned figures")
+    return markdown
+
+
 def render_condensed(m,old):
     ref=m["runs"]["Reference"]
     chain=m["reference_command_chain"]
@@ -327,7 +369,7 @@ def render_condensed(m,old):
                ("BLE transport",transport_reduction(m)),
                ("Electrical safety","Not established; verified dummy-load bench only")]),
            "## Experiment and measurement windows",historical_body(old,"Experiment and measurement windows"),
-           "The following original measurement description and figures concern the reference run. Four independent scope records replayed the same recorded input window; they are not additional portions of the original host session.",
+           "The preceding original measurement description and figures concern the reference run. Four independent scope records replayed the same recorded input window; they are not additional portions of the original host session.",
            sources_table(m),
            f"Replay input: {m['replay_source']['sample_count']} snapshots over {m['replay_source']['duration_s']} s, identical verified source values and schedule. The first pair used 10 V/div and the second 20 V/div on CH1. Each run is a separate dummy-load recording.",
            "## 1. Frequency requests and physical observability",main_observability(m),
@@ -345,7 +387,7 @@ def render_condensed(m,old):
            "The preceding host-cadence result is from the original reference session. In the controlled paired replays, actual input values/schedule are verified; changed target selection and output are outcomes, not fixed command streams.",
            transport_table(m),
            figure("transport_latency","Median request-to-trace-terminal durations for matched replay conditions; latency is host protocol timing, not electrical application."),
-           "The shared implementation reduces subscription overhead and is now the sole live SF/SC transport. The 7.5 ms inter-command guard and zero-current mute ordering remain unchanged; no firmware change was made. No demonstrated degradation in ordinary-frequency matching coverage is established from these two descriptive repetitions.",
+           "The shared implementation reduces subscription overhead and is now the sole live SF/SC transport. The existing 7.5 ms SF guard is retained and applied across the shared SF/SC session; zero-current mute ordering remains unchanged; no firmware change was made. No demonstrated degradation in ordinary-frequency matching coverage is established from these two descriptive repetitions.",
            "## 5. Current shutdown, restart and incomplete waveforms",historical_body(old,"5. Current shutdown, restart and incomplete waveforms"),
            restart_table(m),
            "First-pulse alternatives are conditional on SC availability; they may include residual pulses. The reported host window is not a measured current-on duration. Local restart matches are not added to chronological counts without joint attribution.",
@@ -354,7 +396,7 @@ def render_condensed(m,old):
            "The shared persistent session is supported for the verified dummy-load research setup. Insufficient observation time, current transitions and possible between-cycle replacement explain much of the missing evidence; an unmatched ACK is not a failed command. Exact physical application latency, internally superseded command identities, complete current/charge balance and safety remain unproven. No additional hardware experiment is required to answer the present model-conditioned observability question.",
            "## Detailed evidence, limitations and reproducibility",
            "[Detailed technical consolidation](extended_analysis_technical_report.md). "+evidence_index(m)]
-    return "\n\n".join(lines)+"\n"
+    return number_condensed_figures("\n\n".join(lines)+"\n")
 
 
 def render_detailed(m,old):
@@ -372,6 +414,7 @@ def render_detailed(m,old):
            "The earlier approved reference analysis reported 59 in-scope ACKs with isolated settled evidence and 85 eligible intervals (85 within tolerance). These are historical affine-map/settled-window quantities, not the revised denominator or execution count. The revised settled reference uses integer controller targets rather than raw float MCU rates.",
            stable_table(m),
            figure("settled_accuracy","Median and P95 absolute error for stable integer target and ACK states across the signed records. Error comparisons use different eligible subsets."),
+           "For the identical subset where both integer target and ACK states are stable:",same_interval_table(m),
            "Historical original reference per-ACK overview (unchanged figure; provisional affine placement, retained for audit history):",
            "![Original per-ACK overview](../ack_physical_observability/command_physical_timeline.png)",
            "## 2. Rapid frequency transitions and clock-model sensitivity",clock_text(),timing_table(m),
@@ -397,8 +440,8 @@ def render_detailed(m,old):
            f"Stable target/ACK disagreements: {chain['physical_target_ack_disagreements']} of {chain['physical_both_stable_intervals']} intervals where both states are stable. Different command-state timing is a plausible cause, not evidence of a Matrix32 frequency error.",
            "### Controlled replay and transport comparison",
            f"Same {m['replay_source']['sample_count']} source snapshots and {m['replay_source']['duration_s']} s half-open replay window in all four runs. Initial positive snapshot held until START and settling; preroll is excluded from source replay counts. Transport is the intended A/B variable; repeat CH1 scale changed for rail-free morphology.",
-           transport_table(m,detail=True),figure("transport_latency","Host request-to-terminal medians by command context for the two A/B pairs. Not physical latency."),
-           f"SC and SF-after-SC relative median reductions: {transport_reduction(m)}. The shared SF/SC ACK session avoids repeated subscription setup, retains mandatory ACKs, one outstanding exchange, failure poisoning, independent STOP and the 7.5 ms guard. Firmware, mute/resume ordering and the tactile conversion policy are not modified.",
+           transport_table(m,detail=True),transport_distribution_table(m),figure("transport_latency","Host request-to-terminal medians by command context for the two A/B pairs. Not physical latency."),
+           f"SC and SF-after-SC relative median reductions: {transport_reduction(m)}. The shared SF/SC ACK session avoids repeated subscription setup, retains mandatory ACKs, one outstanding exchange, failure poisoning and independent STOP, and extends the 7.5 ms SF guard across mixed SF/SC exchanges. Firmware, mute/resume ordering and the tactile conversion policy are not modified.",
            "## Confidence and remaining limitations",
            "Direct measurements: signed scope-clock periods and morphology; same-host request/write/ACK timing; replay delivery values and timing. Conditional evidence: stable target/ACK attribution, chronological distinct counts and restart candidates. Unknowns: USB asymmetry, Nano ISR delay, exact scheduler availability/application, unobserved internal boundaries, precise physical STOP and complete electrical charge balance. Neither the bench test nor the transport change is a safety qualification. Pooled counts are descriptive sums of two repeated replays per transport, not independent population statistics.",
            "## Reproducibility",evidence_index(m)]
