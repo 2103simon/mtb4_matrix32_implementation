@@ -12,7 +12,7 @@ from __future__ import annotations
 import sys as _bootstrap_sys
 from pathlib import Path as _bootstrap_path
 _bootstrap_sys.path.insert(0, str(_bootstrap_path(__file__).resolve().parents[1]))
-from experiment_analysis.paths import analysis_root
+from experiment_analysis.paths import analysis_root, ensure_derived_destination
 
 import argparse
 import csv
@@ -253,9 +253,12 @@ def plot_model_evaluation(path, x, y, evaluation, cv_points, *, index):
     return str(path)
 
 
-def run(run_dir, *, block_s=1., gate_us=100.):
+def run(run_dir, *, block_s=1., gate_us=100., output_dir=None):
     """Read source logs; create only new analysis outputs and diagnostics."""
     root = Path(run_dir).expanduser().resolve()
+    destination = (analysis_root(root) if output_dir is None else
+                   ensure_derived_destination(output_dir, root))
+    destination.mkdir(parents=True, exist_ok=True)
     meta = json.loads((root/"metadata.json").read_text(encoding="utf-8"))
     clock = json.loads((root/"epoch_clock_analysis.json").read_text(encoding="utf-8"))
     serial = read_nano_frames(root/"nano_serial.jsonl")
@@ -290,7 +293,7 @@ def run(run_dir, *, block_s=1., gate_us=100.):
             assessment, cv_points = assess_models(
                 x, y, block_s=block_s, gate_us=gate_us)
             report.update(assessment)
-            folder = analysis_root(root)/f"record_{index:05d}"
+            folder = destination/f"record_{index:05d}"
             folder.mkdir(parents=True, exist_ok=True)
             with (folder/"clock_model_holdout_predictions.csv").open(
                     "w", newline="", encoding="utf-8") as handle:
@@ -305,7 +308,7 @@ def run(run_dir, *, block_s=1., gate_us=100.):
         reports.append(report)
         overview.append(report)
 
-    analysis = analysis_root(root)
+    analysis = destination
     analysis.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema": "matrix32_cv_clock_model_diagnostics_v1",
