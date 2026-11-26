@@ -183,7 +183,7 @@ async def stop_output(device, *, reason, capture=None):
         print(f"[WARNING] {reason}: BLE unavailable; output state UNKNOWN")
         if capture is not None:
             capture.emit("stop_unavailable", reason=reason, output_state="UNKNOWN")
-        return
+        return False
     print(f"[STOP] {reason}")
     if capture is not None:
         capture.emit("stop_requested", reason=reason)
@@ -191,6 +191,7 @@ async def stop_output(device, *, reason, capture=None):
         await asyncio.wait_for(device.stop(), timeout=STOP_TIMEOUT_SECONDS)
         if capture is not None:
             capture.emit("stop_write_completed", reason=reason, output_verified=False)
+        return True
     except Exception as exc:
         if capture is not None:
             capture.emit("stop_failed", reason=reason, error=repr(exc), output_state="UNKNOWN")
@@ -470,10 +471,10 @@ async def run_replay_tasks(plan, trigger, device, ready, capture, *, arm,
             device.abort_pending_commands()
         worker.cancel()
         watchdog.cancel()
-        if arm:
-            await stop_output(device, reason="finite replay completed", capture=capture)
+        if arm and not await stop_output(device, reason="finite replay completed", capture=capture):
+            raise ConnectionError("Replay STOP could not be sent")
         snapshots.running = False
-    capture.emit("replay_output_stop_requested_completed", output_verified=False)
+    capture.emit("replay_finished", stop_write_completed=arm, output_verified=False)
     print("[REPLAY] Completed; remaining idle for scope transfer.", flush=True)
     # Parent owns the normal process shutdown after acquisition and transfer.
     await asyncio.Event().wait()
@@ -588,7 +589,7 @@ def main():
                         help="Stop output when no tactile sample arrives for this many ms (default 250)")
     args = parser.parse_args()
     if (args.experimental_shared_sf_sc or args.replay_source) and args.arm and not args.dummy_load_confirmed:
-        parser.error("Experimental armed transport requires --dummy-load-confirmed")
+        parser.error("Armed replay or experimental transport requires --dummy-load-confirmed")
     if bool(args.replay_source) != bool(args.replay_trigger) or (args.replay_source and not args.record):
         parser.error("Replay requires --replay-source, --replay-trigger and --record")
     if args.replay_source is None and args.replay_start_s is not None:
