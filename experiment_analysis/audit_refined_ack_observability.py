@@ -18,7 +18,7 @@ from experiment_analysis.audit_ack_physical_observability import (
     verify_approved_record, event_stream, MIN_PREVIOUS_CYCLE_GUARD_S,
     MATCH_ABSOLUTE_HZ, MATCH_RELATIVE_FRACTION, MAX_REGULAR_PERIOD_S,
 )
-from experiment_analysis.analyze_command_chain import pair_transactions
+from experiment_analysis.analyze_command_chain import pair_transactions, transaction_rows
 from experiment_analysis.analyze_integrated_matrix32 import acknowledged_frequency_states
 from experiment_analysis.offset_robust_command_matching import refined_onset_envelopes, _csv
 from experiment_analysis.paths import analysis_root, ensure_derived_destination, raw_run_dir, sha256
@@ -57,7 +57,88 @@ def assess_window(periods, lower, upper, valid, start, end, hz, guard_s):
     }
 
 
-def classify(events, times, onset_ids, mapped, support):
+BOUNDARIES = ("request", "write", "ack")
+CONTROL_REQUESTS = ("sf_requested", "sc_requested", "configuration_requested",
+                    "stop_requested", "shutdown_stop_requested", "start_requested")
+
+
+def control_boundaries(events, transactions, mode):
+    """Use validated embedded BLE timestamps; never extend missing evidence.
+
+    START, STOP and full configuration retain their request boundary.
+    """
+    if mode not in BOUNDARIES:
+        raise ValueError("Unknown boundary mode")
+    by_request = {(r["family"], int(r["request_ns"])): r for r in transactions
+                  if r["family"] in ("sf", "sc")}
+    controls = []
+    for event in events:
+        if event["event"] not in CONTROL_REQUESTS:
+            continue
+        request = int(event["pc_monotonic_ns"])
+        tr = by_request.get((event["event"].split("_")[0], request))
+        boundary, source = request, "request"
+        if mode != "request" and event["event"] in ("sf_requested","sc_requested"):
+            if tr is not None and tr["success"] and tr["embedded_timing_valid"]:
+                boundary = tr["write_begin_ns"] if mode == "write" else tr["ack_ns"]
+                source = mode
+            else:
+                source = "request_missing_or_invalid_ble_timing"
+        controls.append((request, int(boundary), event["event"], source))
+    return sorted(controls)
+
+
+def next_boundary(controls, activation, capture_end):
+    # A later independent STOP request can precede an outstanding SF ACK.
+    options = [(end, request, kind, source)
+               for request,end,kind,source in controls if request > activation]
+    options.append((capture_end, None, "capture_end", "capture_end"))
+    return min(options, key=lambda x:x[0])
+
+
+def transition_periods(events, times, onset_ids, mapped, transactions):
+    """Inventory periods intersecting SF/SC write-to-ACK windows.
+
+    'Possible' uses the outer envelope; 'certain' means intersection for
+    all endpoint values in the tested envelope, not calibrated certainty.
+    Inverse periods spanning changes are not unique command witnesses.
+    """
+    states = acknowledged_frequency_states(events)
+    state_times = np.asarray([s["pc_monotonic_ns"] for s in states],dtype=np.int64)
+    rows = []
+    for i, dt in enumerate(np.diff(times)):
+        if not mapped["interval_valid"][i]:
+            continue
+        lo0, hi0 = mapped["lower"][i], mapped["upper"][i]
+        lo1, hi1 = mapped["lower"][i+1], mapped["upper"][i+1]
+        for tr in transactions:
+            if tr["family"] not in ("sf","sc") or not tr["success"] or not tr["embedded_timing_valid"]:
+                continue
+            w,a = tr["write_begin_ns"],tr["ack_ns"]
+            if not (lo0 <= a and hi1 >= w):
+                continue
+            before = int(np.searchsorted(state_times,tr["request_ns"],side="left"))-1
+            after = int(np.searchsorted(state_times,tr["terminal_ns"],side="right"))-1
+            old = states[before]["expected_hz"] if before>=0 and states[before]["output_active_assumed"] else None
+            new = states[after]["expected_hz"] if after>=0 and states[after]["output_active_assumed"] else None
+            hz = 1/float(dt)
+            def compatible(v):
+                return v is not None and v>0 and dt<=MAX_REGULAR_PERIOD_S and abs(hz-v)<=max(MATCH_ABSOLUTE_HZ,MATCH_RELATIVE_FRACTION*v)
+            rows.append({"start_id":onset_ids[i],"end_id":onset_ids[i+1],
+                         "start_scope_s":float(times[i]),"end_scope_s":float(times[i+1]),
+                         "period_ms":float(dt*1000),"inverse_period_hz":hz,
+                         "family":tr["family"],"request_ns":tr["request_ns"],
+                         "write_ns":w,"embedded_ack_ns":a,"terminal_ns":tr["terminal_ns"],
+                         "intersection_across_tested_envelope":bool(hi0<=a and lo1>=w),
+                         "previous_active_hz":old,"next_active_hz":new,
+                         "compatible_previous":bool(compatible(old)),
+                         "compatible_next":bool(compatible(new)),
+                         "long_pause":bool(dt>MAX_REGULAR_PERIOD_S),
+                         "unique_application_proven":False})
+    return rows
+
+
+def classify(events, times, onset_ids, mapped, support, *, boundary="request"):
     """Associate each active state with the most recent successful SF identity."""
     ordered = sorted(events, key=lambda e: int(e["pc_monotonic_ns"]))
     pairs, issues = pair_transactions(ordered)
@@ -111,9 +192,10 @@ def classify(events, times, onset_ids, mapped, support):
     periods = np.diff(times)
     lower, upper = mapped["lower"], mapped["upper"]
     start_lower, start_upper, end_lower, end_upper = support
-    controls = sorted(int(e["pc_monotonic_ns"]) for e in ordered
-                      if e["event"] in ("sf_requested","sc_requested","configuration_requested",
-                                         "stop_requested","shutdown_stop_requested","start_requested"))
+    transactions, issues = transaction_rows(ordered, [], [])
+    if issues:
+        raise ValueError(f"Ambiguous transaction timing: {issues}")
+    controls = control_boundaries(ordered, transactions, boundary)
     rows = []
     for item in by_ack.values():
         at, hz = item["ack_ns"], item["ack_hz"]
@@ -125,8 +207,8 @@ def classify(events, times, onset_ids, mapped, support):
         details = []
         prev = item["previous_sf_hz"]
         for activation, activation_kind in item["windows"]:
-            later = [t for t in controls if t > activation]
-            end = min(end_lower, later[0]) if later else end_lower
+            end, next_request, next_kind, boundary_source = next_boundary(
+                controls, activation, end_lower)
             # Use previous SF period, and for current restore also the
             # restored SF period. These are settling assumptions, not bounds.
             guard = max(MIN_PREVIOUS_CYCLE_GUARD_S, 1/float(prev)) if prev else None
@@ -148,6 +230,8 @@ def classify(events, times, onset_ids, mapped, support):
             max_run = max(max_run,w["consecutive_matching"])
             details.append({"activation_ns":activation,"activation_kind":activation_kind,
                             "end_ns":end,"guard_ms":guard*1000,
+                            "next_control_request_ns":next_request,
+                            "next_control_kind":next_kind,"boundary_source":boundary_source,
                             "available_ms":w["available_ms"]})
         if scope != "inside":
             status = "OUTSIDE_GRAY_SUPPORT" if scope=="outside" else "GRAY_EDGE_UNCERTAIN"
@@ -167,6 +251,7 @@ def classify(events, times, onset_ids, mapped, support):
             status = "NO_ISOLATED_COMPLETE_PERIOD"
         rows.append({**{k:v for k,v in item.items() if k!="windows"},
                      "gray_scope_membership":scope, "classification":status,
+                     "boundary_mode":boundary,
                      "active_window_count":len(details),
                      "active_windows_json":json.dumps(details),
                      "settled_window_ms":available,
@@ -228,10 +313,13 @@ def run(run_dir):
     if len(by_seq)!=len(exchange_list):
         raise ValueError("Duplicate SYNC sequence")
     exchanges = record_sync_exchanges(record,epoch,by_seq)
-    dest = ensure_derived_destination(analysis/"refined_ack_observability", root)
+    dest = ensure_derived_destination(analysis/"refined_ack_observability_boundaries", root)
     if dest.exists():
         raise FileExistsError(dest)
-    scenarios, results = {}, {}
+    scenarios, results, transition_results = {}, {}, {}
+    transactions, timing_issues = transaction_rows(events, [], [])
+    if timing_issues:
+        raise ValueError(f"Ambiguous transaction timing: {timing_issues}")
     for scale in (1.,2.,3.):
         # Map support endpoints together with the signed physical onsets.
         all_times = np.r_[x[0],times,x[-1]]
@@ -240,14 +328,32 @@ def run(run_dir):
         support = (lo[0],hi[0],lo[-1],hi[-1])
         trimmed = {"lower":lo[1:-1],"upper":hi[1:-1],
                    "interval_valid":mapped["interval_valid"][1:-1]}
-        rows = classify(events,times,[r["id"] for r in onsets],trimmed,support)
-        results[str(scale)] = rows
-        scenarios[str(scale)] = {**summarize(rows), "clock":mapped["scenario"]}
+        ids = [r["id"] for r in onsets]
+        scenarios[str(scale)] = {"clock":mapped["scenario"],"boundaries":{}}
+        for boundary in BOUNDARIES:
+            rows = classify(events,times,ids,trimmed,support,boundary=boundary)
+            results[(str(scale),boundary)] = rows
+            counts = summarize(rows)
+            counts["boundary_sources"] = dict(Counter(
+                window["boundary_source"] for row in rows
+                for window in json.loads(row["active_windows_json"])))
+            scenarios[str(scale)]["boundaries"][boundary] = counts
+        transitions = transition_periods(events,times,ids,trimmed,transactions)
+        transition_results[str(scale)] = transitions
+        scenarios[str(scale)]["transition_context"] = {
+            "period_transaction_pairs":len(transitions),
+            "distinct_intersecting_periods":len({(r["start_id"],r["end_id"]) for r in transitions}),
+            "certain_tested_intersection_pairs":sum(r["intersection_across_tested_envelope"] for r in transitions),
+            "long_pause_pairs":sum(r["long_pause"] for r in transitions),
+        }
     dest.mkdir(parents=True,exist_ok=False)
-    for scale,rows in results.items():
+    for (scale,boundary),rows in results.items():
         if rows:
-            _csv(dest/f"sf_ack_scale_{scale}.csv",rows,list(rows[0]))
-    payload = {"schema":"matrix32_refined_per_ack_v1","run":root.name,
+            _csv(dest/f"sf_ack_{boundary}_scale_{scale}.csv",rows,list(rows[0]))
+    for scale,rows in transition_results.items():
+        if rows:
+            _csv(dest/f"transition_periods_scale_{scale}.csv",rows,list(rows[0]))
+    payload = {"schema":"matrix32_refined_per_ack_boundaries_v2","run":root.name,
                "source_sha256":hashes,"trace_sha256":sha256(trace),
                "timing_refinement_sha256":sha256(refinement_path),
                "approved_onsets_sha256":approval["approved_onsets_sha256"],
@@ -259,17 +365,23 @@ def run(run_dir):
              "Counts refer to SF ACK events, not unique numeric frequencies.",
              "Denominator: successful live SF ACKs inside supported Gray window.",
              "Target denominator excludes muted-scheduler SF; restore SF counts only with active evidence.",
-             "All eligible complete periods must fit in the full tested host envelope after a",
-             "prior-cycle guard and before the next control request (not merely its ACK).",
+             "All eligible complete periods fit in the full tested host envelope after a",
+             "prior-cycle guard. Activation remains at the logged ACK (SC ACK for restoration).",
+             "End boundaries: next request; next validated BLE write begin (primary); next",
+             "embedded ACK (sensitivity only, may overlap physical application).",
+             "Missing or invalid write/ACK evidence falls back to request; STOP, START and",
+             "full configuration always use request boundaries. Transition-period rows are",
+             "separate possible compatibility evidence, never unique command witnesses.",
              "Tolerance: max(1 Hz, 2.5% of SF). Missing witnesses do not prove non-execution.",
              "Two consecutive matching periods are a stronger witness, not unique proof.",
              "The refined clock is not calibrated; Gray holdout p95 margins are heuristic.","",
-             "| Gray margin scale | Target ACKs | >=1 matching period | >=2 consecutive | No-guard matching |",
-             "| --- | ---: | ---: | ---: | ---: |"]
+             "| Gray margin scale | End boundary | Target ACKs | >=1 matching period | >=2 consecutive | No-guard matching |",
+             "| --- | --- | ---: | ---: | ---: | ---: |"]
     for scale,s in scenarios.items():
-        g=s["target_sf_inside"]
-        lines.append(f"| {scale} | {g['n']} | {g['one_or_more_matching']} | {g['two_or_more_consecutive_matching']} | {g['matching_without_guard']} |")
-    lines += ["","## Primary scenario (1x)","",json.dumps(scenarios["1.0"],indent=2)]
+        for boundary,counts in s["boundaries"].items():
+            g=counts["target_sf_inside"]
+            lines.append(f"| {scale} | {boundary} | {g['n']} | {g['one_or_more_matching']} | {g['two_or_more_consecutive_matching']} | {g['matching_without_guard']} |")
+    lines += ["","## Primary scenario (1x, write)","",json.dumps(scenarios["1.0"]["boundaries"]["write"],indent=2)]
     (dest/"report.md").write_text("\n".join(lines)+"\n")
     print(f"[ACK OBSERVABILITY] {dest/'report.md'}")
 
