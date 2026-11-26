@@ -181,8 +181,12 @@ class Evidence:
             windows = [(float(r["active_window_end_ns"])-float(r["restore_sc_ack_ns"]))/1e6 for r in no_pulse]
             require(all(w>=0 for w in windows),"Negative restart window")
             path = original["chronological"]
+            inside = original["command_scope_membership"].get("inside",0)
+            require(len(rows)<=inside<=data["sf_ok"],"Invalid SF scope denominator")
             data["scenarios"][scale] = {
                 "target_acks":len(rows),"types":types,
+                "muted_scheduler_inside":inside-len(rows),
+                "outside_or_edge":data["sf_ok"]-inside,
                 "unique_local":original["target_unique_matching"],"any_local":original["target_any_matching"],
                 "required_on_paths":len(path["required_target_ids"]),
                 "optional_on_paths":len(set(path["possible_target_ids"])-set(path["required_target_ids"])),
@@ -249,6 +253,8 @@ def pool(data,labels,scale="1.0",tolerance="original"):
              for k in ("ordinary","restore")}
     windows = [v for r in items for v in r["no_pulse_windows_ms"]]
     return {"target_acks":sum(r["target_acks"] for r in items),"types":types,
+            "muted_scheduler_inside":sum(r["muted_scheduler_inside"] for r in items),
+            "outside_or_edge":sum(r["outside_or_edge"] for r in items),
             "unique_local":sum(r["unique_local"] for r in items),"any_local":sum(r["any_local"] for r in items),
             "min":sum(r["min"] for r in p) if all(r["min"] is not None for r in p) else None,
             "max":sum(r["max"] for r in p) if all(r["max"] is not None for r in p) else None,
