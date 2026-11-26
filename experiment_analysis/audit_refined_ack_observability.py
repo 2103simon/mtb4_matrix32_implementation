@@ -283,7 +283,8 @@ def summarize(rows):
             "scope_membership_counts":dict(Counter(r["gray_scope_membership"] for r in rows))}
 
 
-def run(run_dir):
+def load_refined_evidence(run_dir):
+    """Verify the same signed pulses and independent timing inputs for both audits."""
     root = raw_run_dir(run_dir)
     analysis = analysis_root(root, legacy_ok=False)
     sources = [root/name for name in ("metadata.json","nano_serial.jsonl","epoch_clock_analysis.json")]
@@ -313,6 +314,33 @@ def run(run_dir):
     if len(by_seq)!=len(exchange_list):
         raise ValueError("Duplicate SYNC sequence")
     exchanges = record_sync_exchanges(record,epoch,by_seq)
+    return dict(root=root, analysis=analysis, hashes=hashes, refinement_path=refinement_path,
+                approval=approval, onsets=onsets, times=times, excluded=excluded,
+                trace=trace, events=events, x=x, y=y, epoch=epoch, refined=refined,
+                exchanges=exchanges)
+
+
+def map_refined_evidence(ctx, scale):
+    """Map signed onsets and support endpoints with the existing clock envelope."""
+    x, times = ctx["x"], ctx["times"]
+    all_times = np.r_[x[0],times,x[-1]]
+    mapped = refined_onset_envelopes(all_times,x,ctx["y"],ctx["epoch"],
+                                     ctx["refined"],ctx["exchanges"],scale=scale)
+    lo,hi = mapped["lower"],mapped["upper"]
+    support = (lo[0],hi[0],lo[-1],hi[-1])
+    trimmed = {"lower":lo[1:-1],"upper":hi[1:-1],
+               "valid":mapped["valid"][1:-1],
+               "interval_valid":mapped["interval_valid"][1:-1],
+               "nominal":mapped["nominal"][1:-1]}
+    return trimmed, support, mapped["scenario"]
+
+
+def run(run_dir):
+    ctx = load_refined_evidence(run_dir)
+    root, analysis, hashes = ctx["root"], ctx["analysis"], ctx["hashes"]
+    trace, events = ctx["trace"], ctx["events"]
+    approval, onsets, times = ctx["approval"], ctx["onsets"], ctx["times"]
+    excluded, refinement_path = ctx["excluded"], ctx["refinement_path"]
     dest = ensure_derived_destination(analysis/"refined_ack_observability_boundaries", root)
     if dest.exists():
         raise FileExistsError(dest)
@@ -321,15 +349,9 @@ def run(run_dir):
     if timing_issues:
         raise ValueError(f"Ambiguous transaction timing: {timing_issues}")
     for scale in (1.,2.,3.):
-        # Map support endpoints together with the signed physical onsets.
-        all_times = np.r_[x[0],times,x[-1]]
-        mapped = refined_onset_envelopes(all_times,x,y,epoch,refined,exchanges,scale=scale)
-        lo,hi = mapped["lower"],mapped["upper"]
-        support = (lo[0],hi[0],lo[-1],hi[-1])
-        trimmed = {"lower":lo[1:-1],"upper":hi[1:-1],
-                   "interval_valid":mapped["interval_valid"][1:-1]}
+        trimmed, support, clock = map_refined_evidence(ctx, scale)
         ids = [r["id"] for r in onsets]
-        scenarios[str(scale)] = {"clock":mapped["scenario"],"boundaries":{}}
+        scenarios[str(scale)] = {"clock":clock,"boundaries":{}}
         for boundary in BOUNDARIES:
             rows = classify(events,times,ids,trimmed,support,boundary=boundary)
             results[(str(scale),boundary)] = rows
