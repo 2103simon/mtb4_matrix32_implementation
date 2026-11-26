@@ -151,6 +151,53 @@ def _same_effective_value(states, indices):
     return chosen[0] if len(set(chosen)) == 1 else None
 
 
+def classify_mcu_rate(start, end, *, mcu_pc, mcu_rates,
+                      measured_hz, mcu_max_age_s=0.25):
+    """Shared whole-envelope classification for a recorded rate series."""
+    r = {
+        "mcu_assessment": "UNKNOWN_NO_MCU_COVERAGE",
+        "mcu_requested_hz_if_stable": None,
+        "mcu_error_hz_if_stable": None,
+    }
+    if len(mcu_pc):
+        ms = np.searchsorted(mcu_pc, start, side="right")-1
+        me = np.searchsorted(mcu_pc, end, side="right")-1
+        if np.any(ms < 0) or np.any(me < 0):
+            r["mcu_assessment"] = "BEFORE_MCU_DATA"
+        else:
+            start_val = mcu_rates[ms]
+            end_val = mcu_rates[me]
+            age_s = (end-mcu_pc[me])/1e9
+            if np.any(age_s > mcu_max_age_s) or np.any(age_s < 0):
+                r["mcu_assessment"] = "MCU_SNAPSHOT_TOO_OLD"
+            elif not np.all(mcu_rates[
+                    max(0, int(np.searchsorted(
+                        mcu_pc, np.min(start), side="right")-1)):
+                    int(np.searchsorted(mcu_pc, np.max(end),
+                                        side="right"))] == start_val[0]):
+                # Check the entire uncertainty envelope, not merely a
+                # few sampled endpoints: brief MCU commands may be skipped.
+                r["mcu_assessment"] = "MCU_FREQUENCY_CHANGES_WITHIN_OFFSET_RANGE"
+            else:
+                hz = float(start_val[0])
+                r["mcu_requested_hz_if_stable"] = hz
+                r["mcu_error_hz_if_stable"] = float(measured_hz-hz)
+                r["mcu_assessment"] = "STABLE_ACROSS_TESTED_OFFSETS"
+    return r
+
+
+def controller_target_rates(mcu, taxel, encoding):
+    """Reconstruct integer targets from recorded snapshots, using live policy."""
+    from run_tactile_stimulation import requested_frequency
+
+    key = "ra_rates_hz" if encoding == "ra_i" else "sa_rates_hz"
+    rates = mcu["ra_rate_hz"] if encoding == "ra_i" else mcu["sa_rate_hz"]
+    return np.array([
+        requested_frequency({key: sample}, taxel, encoding)
+        for sample in rates
+    ], dtype=int)
+
+
 def classify_interval(start_host_ns, end_host_ns, *, mcu_pc, mcu_rates,
                       ack_pc, ack_states, hold_s=0.005,
                       mcu_max_age_s=0.25, tolerance_abs_hz=8.,
@@ -177,30 +224,9 @@ def classify_interval(start_host_ns, end_host_ns, *, mcu_pc, mcu_rates,
         "ack_matching_diagnostic": "NOT_COMPARABLE",
         "all_scenarios_agree": False,
     }
-    if len(mcu_pc):
-        ms = np.searchsorted(mcu_pc, start, side="right")-1
-        me = np.searchsorted(mcu_pc, end, side="right")-1
-        if np.any(ms < 0) or np.any(me < 0):
-            r["mcu_assessment"] = "BEFORE_MCU_DATA"
-        else:
-            start_val = mcu_rates[ms]
-            end_val = mcu_rates[me]
-            age_s = (end-mcu_pc[me])/1e9
-            if np.any(age_s > mcu_max_age_s) or np.any(age_s < 0):
-                r["mcu_assessment"] = "MCU_SNAPSHOT_TOO_OLD"
-            elif not np.all(mcu_rates[
-                    max(0, int(np.searchsorted(
-                        mcu_pc, np.min(start), side="right")-1)):
-                    int(np.searchsorted(mcu_pc, np.max(end),
-                                        side="right"))] == start_val[0]):
-                # Check the entire uncertainty envelope, not merely a
-                # few sampled endpoints: brief MCU commands may be skipped.
-                r["mcu_assessment"] = "MCU_FREQUENCY_CHANGES_WITHIN_OFFSET_RANGE"
-            else:
-                hz = float(start_val[0])
-                r["mcu_requested_hz_if_stable"] = hz
-                r["mcu_error_hz_if_stable"] = float(measured_hz-hz)
-                r["mcu_assessment"] = "STABLE_ACROSS_TESTED_OFFSETS"
+    r.update(classify_mcu_rate(
+        start, end, mcu_pc=mcu_pc, mcu_rates=mcu_rates,
+        measured_hz=measured_hz, mcu_max_age_s=mcu_max_age_s))
     if len(ack_pc):
         a0 = np.searchsorted(ack_pc, start, side="right")-1
         a1 = np.searchsorted(ack_pc, end, side="right")-1
@@ -319,7 +345,7 @@ def refined_onset_envelopes(times, x, y, epoch, refinement, exchanges, *, scale)
 
 def analyze_record(*, root, record, epoch, cv, mcu, states,
                    taxel, encoding, scale, refinement=None, exchanges=None,
-                   nano_frames=None):
+                   nano_frames=None, integer_targets=False):
     idx = int(record["index"])
     report = {
         "record": idx, "original_clock_status": epoch.get("status"),
@@ -388,7 +414,9 @@ def analyze_record(*, root, record, epoch, cv, mcu, states,
     rates = (mcu["sa_rate_hz"] if encoding == "sa_ii"
              else mcu["ra_rate_hz"])[:, taxel]
     order = np.argsort(mcu_pc, kind="stable")
-    mcu_pc, rates = mcu_pc[order], rates[order]
+    mcu_pc, raw_rates = mcu_pc[order], rates[order]
+    rates = (controller_target_rates(mcu, taxel, encoding)[order]
+             if integer_targets else raw_rates)
     ack_sorted = sorted(states, key=lambda s: int(s["pc_monotonic_ns"]))
     ack_pc = np.asarray([int(a["pc_monotonic_ns"]) for a in ack_sorted],
                         dtype=np.int64)
@@ -431,6 +459,21 @@ def analyze_record(*, root, record, epoch, cv, mcu, states,
                 ack_pc=ack_pc, ack_states=ack_sorted,
                 measured_hz=1/dt,
             )
+        if integer_targets:
+            raw = (classify_mcu_rate(
+                start, end, mcu_pc=mcu_pc, mcu_rates=raw_rates,
+                measured_hz=1/dt) if interval_valid[i] else
+                {"mcu_assessment": "OUTSIDE_GRAY_FRAME_SUPPORT"})
+            row["raw_mcu_assessment"] = raw["mcu_assessment"]
+            row["raw_mcu_rate_hz_if_stable"] = raw.get("mcu_requested_hz_if_stable")
+            if status.get("mcu_requested_hz_if_stable") is not None:
+                target = int(status["mcu_requested_hz_if_stable"])
+                status["mcu_requested_hz_if_stable"] = target
+                # Zero is a mute request, not a legal SF command.
+                if target == 0:
+                    status["mcu_assessment"] = "STABLE_MUTE_TARGET"
+                    status["mcu_error_hz_if_stable"] = None
+                    status["all_scenarios_agree"] = False
         row.update(status)
         result_rows.append(row)
     counts = Counter(row.get("ack_assessment") for row in result_rows)
@@ -522,10 +565,15 @@ def plot_tracking(path, rows, *, index):
 
 def plot_command_agreement(path, rows, *, index, source="ack"):
     """Measured vs stable command-state frequency (not latency proof)."""
-    if source not in ("ack", "mcu"):
+    labels = {
+        "ack": ("ACK-indicated SF", "ack_expected_hz_if_stable"),
+        "mcu": ("MCU requested rate", "mcu_requested_hz_if_stable"),
+        "controller_target": ("Reconstructed integer controller target",
+                              "controller_target_hz_if_stable"),
+    }
+    if source not in labels:
         raise ValueError("Unknown command source")
-    label = "ACK-indicated SF" if source == "ack" else "MCU requested rate"
-    value_key = "ack_expected_hz_if_stable" if source == "ack" else "mcu_requested_hz_if_stable"
+    label, value_key = labels[source]
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
