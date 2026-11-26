@@ -112,8 +112,9 @@ def plan(args, p):
         p.error("--replay-start-s requires --replay-source")
     if args.replay_source is not None and (
             args.count != 1 or args.operator_prompts is not None
-            or args.trigger_position_pct != 0 or not args.capture_before_start):
-        p.error("Replay requires one record, 0% trigger, --capture-before-start and no operator prompts")
+            or args.trigger_position_pct != 0
+            or (args.run and args.arm and not args.capture_before_start)):
+        p.error("Replay requires one record, 0% trigger, no prompts, and --capture-before-start when armed")
     if args.dummy_load_confirmed and not args.arm:
         p.error("--dummy-load-confirmed is only used together with --arm")
     if args.capture_before_start and (not args.run or not args.arm or not args.dummy_load_confirmed):
