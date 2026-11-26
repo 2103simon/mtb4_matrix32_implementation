@@ -138,5 +138,112 @@ class MixedSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((client.opens, client.closes), (1, 1))
 
 
+class MixedDeviceTests(unittest.IsolatedAsyncioTestCase):
+    def device(self, shared):
+        from copy import deepcopy
+        from matrix32.device import Matrix32Device
+        device = Matrix32Device(
+            config={"sa": [1], "sc": [100], "sf": 81, "sw": [100],
+                    "pw": 100, "sv": 50, "st": 10},
+            experimental_shared_sf_sc=shared)
+        client = FakeClient()
+        device.client = client
+        device.write_char_uuid = "write"
+        device.read_char_uuid = "indicate"
+        device.running = True
+        device.config_verified = True
+        device.verified_config_snapshot = deepcopy(device.config)
+        return device, client
+
+    async def test_shared_mute_resume_preserves_order_guard_and_config(self):
+        device, client = self.device(True)
+        try:
+            sf = await device.apply_live_frequency(80)
+            mute = await device.apply_live_current(1, 0)
+            fast = await device.apply_live_frequency(400)
+            restore_sf = await device.apply_live_frequency(81)
+            restore_sc = await device.apply_live_current(1, 100)
+            records = [sf, mute, fast, restore_sf, restore_sc]
+            self.assertEqual([r["command"] for r in records],
+                             ["SF", "SC", "SF", "SF", "SC"])
+            self.assertEqual([r["persistent_session_reused"] for r in records],
+                             [False, True, True, True, True])
+            self.assertEqual(client.opens, 1)
+            self.assertEqual(client.closes, 0)
+            for earlier, later in zip(records, records[1:]):
+                self.assertGreaterEqual(
+                    later["write_begin_monotonic_s"] - earlier["ack_monotonic_s"],
+                    .0075 - 1e-6)
+                self.assertEqual(later["status"], "OK")
+            self.assertEqual(device.config["sf"], 81)
+            self.assertEqual(device.config["sc"], [100])
+            self.assertEqual(device.config, device.verified_config_snapshot)
+            self.assertTrue(device.config_verified)
+        finally:
+            await device.close_live_frequency_session()
+        self.assertEqual(client.closes, 1)
+
+    async def test_default_sc_still_uses_temporary_session(self):
+        device, client = self.device(False)
+        try:
+            await device.apply_live_frequency(80)
+            await device.apply_live_current(1, 0)
+            self.assertEqual((client.opens, client.closes), (2, 2))
+            sf = await device.apply_live_frequency(400)
+            self.assertFalse(sf["persistent_session_reused"])
+        finally:
+            await device.close_live_frequency_session()
+        self.assertEqual((client.opens, client.closes), (3, 3))
+
+    async def test_sc_error_closes_session_and_invalidates_config(self):
+        from matrix32.device import LiveCurrentUpdateError
+        device, client = self.device(True)
+        await device.apply_live_frequency(80)
+        client.replies = [b">ERR<"]
+        with self.assertRaises(LiveCurrentUpdateError):
+            await device.apply_live_current(1, 0)
+        self.assertFalse(device.config_verified)
+        self.assertIsNone(device._live_frequency_session)
+        self.assertEqual(client.closes, 1)
+        self.assertFalse(device._configuration_lock.locked())
+        with self.assertRaises(RuntimeError):
+            await device.apply_live_frequency(81)
+
+    async def test_independent_stop_during_pending_sc(self):
+        from unittest.mock import AsyncMock, patch
+        from matrix32.device import LiveCurrentUpdateError
+        device, client = self.device(True)
+        await device.apply_live_frequency(80)
+        client.write_started.clear()
+        client.release_write = asyncio.Event()
+        task = asyncio.create_task(device.apply_live_current(1, 0))
+        await asyncio.wait_for(client.write_started.wait(), 1)
+        try:
+            with patch("matrix32.device.stim_stop", new_callable=AsyncMock) as stop:
+                await asyncio.wait_for(device.stop(), .5)
+                stop.assert_awaited_once()
+            self.assertEqual(client.closes, 0)
+            self.assertFalse(device.running)
+            self.assertFalse(device.config_verified)
+            self.assertTrue(device.live_current_records[-1]["ack"]["abort_requested"])
+        finally:
+            client.release_write.set()
+            with self.assertRaises(LiveCurrentUpdateError):
+                await task
+        self.assertIsNone(device._live_frequency_session)
+        self.assertFalse(device._configuration_lock.locked())
+        self.assertEqual(client.closes, 1)
+
+    async def test_aborted_send_never_writes(self):
+        sf, _ = command_pair()
+        client = FakeClient()
+        async with PersistentConfigAckSession(client, "write", "indicate") as session:
+            with self.assertRaises(asyncio.CancelledError):
+                await session.send(sf, record={"abort_requested": True})
+            self.assertEqual(client.writes, [])
+            with self.assertRaises(RuntimeError):
+                await session.send(sf)
+
+
 if __name__ == "__main__":
     unittest.main()
