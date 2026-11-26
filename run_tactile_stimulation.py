@@ -14,6 +14,7 @@ from pathlib import Path
 
 from communication.mcu_configuration import McuConfigurationHandshake
 from communication.serial_manager import SerialManager
+from communication.rate_replay import load_replay, ReplaySnapshots, replay_batches
 from connect_matrix32 import check_bleak_version, check_pc_bluetooth
 from matrix32 import Matrix32Device
 from recording.matrix32_trace import OptionalCapture
@@ -435,16 +436,70 @@ async def stale_supervisor(sm, device, ready, *, arm, stale_seconds, capture=Non
             raise TimeoutError("Stale tactile input: watchdog stopped stimulation")
 
 
+async def run_replay_tasks(plan, trigger, device, ready, capture, *, arm,
+                           taxel, receptor, stale_seconds):
+    """Use the live worker and watchdog; no Feather handshake is simulated."""
+    snapshots = ReplaySnapshots()
+    capture.start(applied_settings={"acknowledged": False, "mode": "recorded_replay",
+                                    "source_settings_sha256": plan.provenance["source_settings_sha256"]})
+    print("[REPLAY] Ready; waiting for scope RUN trigger.", flush=True)
+    deadline = time.monotonic()+120
+    while not trigger.is_file():
+        if time.monotonic() >= deadline or not device.connected:
+            raise TimeoutError("Replay trigger missing or BLE disconnected")
+        await asyncio.sleep(.002)
+    marker = json.loads(trigger.read_text(encoding="utf-8"))
+    if marker["source"] != plan.provenance:
+        raise ValueError("Replay source or selection changed since parent planning")
+    start_ns = int(marker["start_ns"])
+    if not 0 <= time.monotonic_ns()-start_ns <= 50_000_000:
+        raise TimeoutError("Replay trigger is stale or in the future")
+    ready.configured_ns = start_ns-1
+    ready.set()
+    capture.emit("replay_started", scheduled_start_ns=start_ns, source=plan.provenance)
+    async with asyncio.TaskGroup() as group:
+        worker = group.create_task(frequency_worker(
+            snapshots, device, ready, taxel, receptor, arm=arm,
+            stale_seconds=stale_seconds, capture=capture))
+        watchdog = group.create_task(stale_supervisor(
+            snapshots, device, ready, arm=arm, stale_seconds=stale_seconds, capture=capture))
+        await replay_batches(plan, snapshots, capture, start_ns=start_ns)
+        # No repeated or fabricated input after EOF. Invalidate pending work,
+        # cancel the producers of writes, and STOP without waiting for them.
+        if arm:
+            device.abort_pending_commands()
+        worker.cancel()
+        watchdog.cancel()
+        if arm:
+            await stop_output(device, reason="finite replay completed", capture=capture)
+        snapshots.running = False
+    capture.emit("replay_output_stop_requested_completed", output_verified=False)
+    print("[REPLAY] Completed; remaining idle for scope transfer.", flush=True)
+    # Parent owns the normal process shutdown after acquisition and transfer.
+    await asyncio.Event().wait()
+
+
 async def run(config, stim_config=None, *, arm, record=False,
               stale_seconds=STALE_SECONDS, experimental_shared_sf_sc=False,
+              replay_plan=None, replay_trigger=None,
               serial_factory=SerialManager, device_factory=Matrix32Device):
     stim_config = build_stim_config(config) if stim_config is None else stim_config
     taxel, receptor = validate_settings(config, stim_config, arm=arm)
+    if replay_plan is not None:
+        if not record or replay_trigger is None:
+            raise ValueError("Replay requires recording and a fresh parent trigger")
+        for key, actual in (("tactile_encoding", config["tactile_encoding"]),
+                            ("stimulation_source", config["stimulation_source"]),
+                            ("matrix32_stimulation", stim_config)):
+            if replay_plan.source_config.get(key) != actual:
+                raise ValueError(f"Replay source and current configuration differ: {key}")
+        if replay_trigger.exists():
+            raise ValueError("Refusing pre-existing replay trigger")
     check_bleak_version()
     await asyncio.to_thread(check_pc_bluetooth)
     device = (device_factory(config=stim_config, experimental_shared_sf_sc=True)
               if experimental_shared_sf_sc else device_factory(config=stim_config))
-    sm = serial_factory(config=config)
+    sm = None if replay_plan is not None else serial_factory(config=config)
     ready = asyncio.Event()
     ready.configured_ns = 0
     manifest_config = {
@@ -459,6 +514,7 @@ async def run(config, stim_config=None, *, arm, record=False,
             "source": config["stimulation_source"],
             "matrix32_channel": 1,
             "experimental_shared_sf_sc": experimental_shared_sf_sc,
+            "replay_source": replay_plan.provenance if replay_plan is not None else None,
         },
     }
     capture = OptionalCapture(record, config["recordings_dir"], manifest_config)
@@ -467,6 +523,11 @@ async def run(config, stim_config=None, *, arm, record=False,
         if not device.connected or device.last_battery_level is None:
             raise RuntimeError("Matrix32 readiness check failed")
         print(f"[BLE] Ready. Battery={device.last_battery_level}%; stimulation OFF")
+        if replay_plan is not None:
+            await run_replay_tasks(replay_plan, replay_trigger, device, ready, capture,
+                                   arm=arm, taxel=taxel, receptor=receptor,
+                                   stale_seconds=stale_seconds)
+            return
         sm.start_comm(config.get("serial", {}).get("port"))
         if not sm.is_running():
             raise ConnectionError("Failed to open MCU serial connection")
@@ -501,7 +562,8 @@ async def run(config, stim_config=None, *, arm, record=False,
             except BaseException as exc:
                 capture.emit("ble_disconnect_failed", error=repr(exc))
                 print(f"[WARNING] Matrix32 disconnect uncertain: {exc}")
-        sm.stop_serial()
+        if sm is not None:
+            sm.stop_serial()
         capture.close()
         print("[SHUTDOWN] Finished.")
 
@@ -518,11 +580,19 @@ def main():
                         help="Confirm isolated dummy-load setup for experimental transport")
     parser.add_argument("--experimental-shared-sf-sc", action="store_true",
                         help="Unqualified mixed persistent ACK session; isolated dummy-load bench only")
+    parser.add_argument("--replay-source", type=Path)
+    parser.add_argument("--replay-start-s", type=float)
+    parser.add_argument("--replay-duration-s", type=float, default=20.5)
+    parser.add_argument("--replay-trigger", type=Path)
     parser.add_argument("--stale-ms", type=int, default=250,
                         help="Stop output when no tactile sample arrives for this many ms (default 250)")
     args = parser.parse_args()
-    if args.experimental_shared_sf_sc and args.arm and not args.dummy_load_confirmed:
+    if (args.experimental_shared_sf_sc or args.replay_source) and args.arm and not args.dummy_load_confirmed:
         parser.error("Experimental armed transport requires --dummy-load-confirmed")
+    if bool(args.replay_source) != bool(args.replay_trigger) or (args.replay_source and not args.record):
+        parser.error("Replay requires --replay-source, --replay-trigger and --record")
+    if args.replay_source is None and args.replay_start_s is not None:
+        parser.error("--replay-start-s requires --replay-source")
     if not 50 <= args.stale_ms <= 2000:
         parser.error("--stale-ms must be between 50 and 2000")
     with MCU_CONFIG.open(encoding="utf-8") as file:
@@ -530,6 +600,9 @@ def main():
     if args.recordings_dir is not None:
         config["recordings_dir"] = str(args.recordings_dir)
     stim_config = build_stim_config(config)
+    replay_plan = (load_replay(args.replay_source, duration_s=args.replay_duration_s,
+                               start_s=args.replay_start_s, stale_s=args.stale_ms/1000)
+                   if args.replay_source else None)
     print(
         f"[CONFIG] Fixed Matrix32 CH1: SC={stim_config['sc'][0]}, "
         f"SW={stim_config['sw'][0]} us/phase, "
@@ -540,7 +613,8 @@ def main():
         asyncio.run(run(config, stim_config, arm=args.arm,
                         record=args.record,
                         stale_seconds=args.stale_ms / 1000,
-                        experimental_shared_sf_sc=args.experimental_shared_sf_sc))
+                        experimental_shared_sf_sc=args.experimental_shared_sf_sc,
+                        replay_plan=replay_plan, replay_trigger=args.replay_trigger))
     except KeyboardInterrupt:
         print("[STOP] Ctrl+C requested.")
     except Exception as exc:
