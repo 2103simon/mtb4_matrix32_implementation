@@ -31,11 +31,16 @@ def load_replay(source_run, *, duration_s=20.5, start_s=None, stale_s=.25):
         raise ValueError("Invalid stale threshold")
     root = raw_run_dir(source_run)
     folder = root/"mcu_matrix32"
+    if len(list(folder.glob("*_tactile_rates.csv"))) != 1:
+        raise ValueError("Expected one unambiguous source rate recording")
     rid = choose_recording(folder)
     data = load_recordings(folder, rid)
     if data.get("mode") != "rates":
         raise ValueError("Replay requires recorded atomic rate snapshots")
-    cfg = data["experiment_settings"]["configuration"]
+    settings = data["experiment_settings"]
+    if settings.get("mcu_configuration_confirmed", {}).get("acknowledged") is not True:
+        raise ValueError("Source must be an original ACK-configured MCU recording")
+    cfg = settings["configuration"]
     times = [int(t) for t in data["taxel_pc_ns"]]
     if not times or any(b < a for a, b in zip(times, times[1:])):
         raise ValueError("Source arrival times must be nondecreasing")
@@ -114,10 +119,12 @@ async def wait_until_ns(deadline_ns):
 
 
 async def replay_batches(plan, snapshots, capture, *, start_ns, max_lateness_s=.05):
-    """Never burst overdue samples after a stalled event loop.
+    """Reject excessive delivery lateness rather than silently replaying stale data.
 
     Actual PC arrival timestamps, not planned times, drive the watchdog and
     are saved in the new session. Equal source timestamps share one delivery.
+    Short scheduling delays can compress adjacent deliveries; log every delay
+    so A/B timing equivalence can be checked rather than assumed.
     """
     limit_ns = round(max_lateness_s*1e9)
     if limit_ns <= 0:
