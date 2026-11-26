@@ -224,7 +224,7 @@ class PersistentConfigAckSession:
     request ID, so unsolicited, duplicate, malformed, or otherwise ambiguous
     indications fail the session closed.
 
-    This helper underpins the qualified Matrix32Device live-frequency path and
+    This helper underpins the shared Matrix32Device live SF/SC path and
     remains available to experiment runners that need the same transport
     semantics explicitly.
     """
@@ -361,6 +361,8 @@ class PersistentConfigAckSession:
         cancelled = None
 
         try:
+            if record.get("abort_requested"):
+                raise asyncio.CancelledError()
             record["write_begin_monotonic_s"] = time.monotonic()
             await self.client.write_gatt_char(
                 self.write_uuid, bytes(message), response=bool(write_response))
@@ -396,6 +398,8 @@ class PersistentConfigAckSession:
             record["elapsed_ms"] = round(
                 (time.monotonic() - started) * 1000, 3)
             record["completed_monotonic_s"] = time.monotonic()
+            if cause is not None or cancelled is not None:
+                self._fatal_reason = self._fatal_reason or record["status"]
             self._busy = False
             self._record = None
             self._response = None

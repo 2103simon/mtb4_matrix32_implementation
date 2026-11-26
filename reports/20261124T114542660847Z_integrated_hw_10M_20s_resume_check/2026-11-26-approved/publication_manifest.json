@@ -1,0 +1,121 @@
+{
+  "approval_recorded_utc": "2026-11-26T12:17:26.503252+00:00",
+  "approved_by": "operator",
+  "binding_manifest_sha256": "6af79dea416f7082672282e38594bde489af83198dce298c4d545a542e291d87",
+  "files": {
+    "ack_physical_observability/command_physical_timeline.png": {
+      "bytes": 285723,
+      "published_sha256": "295f33488b79ebf2e446a1aa959d5053395fbdf56a2174afabd66b76d00faae7",
+      "source_sha256": "295f33488b79ebf2e446a1aa959d5053395fbdf56a2174afabd66b76d00faae7"
+    },
+    "command_timing/figures/active_muted_timing_boxplots.png": {
+      "bytes": 121125,
+      "published_sha256": "8b1956d2905811d3e0301d6d6b8fd8dd3ba14ee367184cdbe40e8f5afcc3d7eb",
+      "source_sha256": "8b1956d2905811d3e0301d6d6b8fd8dd3ba14ee367184cdbe40e8f5afcc3d7eb"
+    },
+    "command_timing/figures/command_burst_analysis.png": {
+      "bytes": 84135,
+      "published_sha256": "4321cf029d959dcb365649d1dac9acec2b280028bad7f3f40517b45dc15f2a53",
+      "source_sha256": "4321cf029d959dcb365649d1dac9acec2b280028bad7f3f40517b45dc15f2a53"
+    },
+    "command_timing/figures/command_latency_boxplots.png": {
+      "bytes": 74538,
+      "published_sha256": "b1c7a3cef2691fd45fb0282fd3f604c3d476a558cde9bc133f8ea567d1d3c184",
+      "source_sha256": "b1c7a3cef2691fd45fb0282fd3f604c3d476a558cde9bc133f8ea567d1d3c184"
+    },
+    "command_timing/figures/latency_distribution.png": {
+      "bytes": 52460,
+      "published_sha256": "b9b070f311530912128b385afeedc42bd1c1796f019f89b3bbce6cd13bff0790",
+      "source_sha256": "b9b070f311530912128b385afeedc42bd1c1796f019f89b3bbce6cd13bff0790"
+    },
+    "command_timing/figures/message_cadence_boxplots.png": {
+      "bytes": 88486,
+      "published_sha256": "dbaf300e78fd612a8c6707fb5924a54bb5a9a1fa5d4c7f1db19591431289f27a",
+      "source_sha256": "dbaf300e78fd612a8c6707fb5924a54bb5a9a1fa5d4c7f1db19591431289f27a"
+    },
+    "command_timing/figures/throughput_per_second.png": {
+      "bytes": 103389,
+      "published_sha256": "45e34897e0bc12d7c5093d3a46e66ed4abe025bd52e5543cd35bb8fe94a8447e",
+      "source_sha256": "45e34897e0bc12d7c5093d3a46e66ed4abe025bd52e5543cd35bb8fe94a8447e"
+    },
+    "extended_analysis_technical_report.md": {
+      "bytes": 24873,
+      "published_sha256": "eb8371a170fe56b28daa2803c7d207ddf47e08dc6f8d6aa432ec37c7b9db5fce",
+      "source_sha256": "801104cde98bca54658df24116eea05b700271a825bfdc0c72efce2503790efb"
+    },
+    "final_experiment_report.md": {
+      "bytes": 17815,
+      "published_sha256": "05caf49a0b9f41c153dbe397fa340d6920d64024ebe8069a8c5d0ef8eb9fd437",
+      "source_sha256": "b90fd6f4812d8021f0084cb00bf8648d1ead934ba6fa899c1e399dfb96542061"
+    },
+    "frequency_transitions/figures/transition_overview.png": {
+      "bytes": 163129,
+      "published_sha256": "f02bbecb3ea36d1fef400342e5d76fd294646289fd08dc23ed3c62a26b3c27c5",
+      "source_sha256": "f02bbecb3ea36d1fef400342e5d76fd294646289fd08dc23ed3c62a26b3c27c5"
+    },
+    "frequency_transitions/figures/transition_timing_sensitivity.png": {
+      "bytes": 81723,
+      "published_sha256": "d3d60881103945714eebdb2f3bd6d8a08b3c11404ec1621ec48a42eae5c963ff",
+      "source_sha256": "d3d60881103945714eebdb2f3bd6d8a08b3c11404ec1621ec48a42eae5c963ff"
+    },
+    "presentation_figures/host_timing_overview.png": {
+      "bytes": 198291,
+      "published_sha256": "e0ed8719b74b7dc97beb8e9bfa8c4ff1858118076b27dc8341640fa55d3ee070",
+      "source_sha256": "e0ed8719b74b7dc97beb8e9bfa8c4ff1858118076b27dc8341640fa55d3ee070"
+    },
+    "presentation_figures/observation_windows.png": {
+      "bytes": 41809,
+      "published_sha256": "400dbf8ecd307f17165659dd66d62e4248361af9913809705a4aa19b0e8ff30f",
+      "source_sha256": "400dbf8ecd307f17165659dd66d62e4248361af9913809705a4aa19b0e8ff30f"
+    },
+    "report_revision/observability.png": {
+      "bytes": 48077,
+      "published_sha256": "cd664180528b2aaac09f46e8fd1823d408cf4e5449e6a75f579bb969dc7f69aa",
+      "source_sha256": "cd664180528b2aaac09f46e8fd1823d408cf4e5449e6a75f579bb969dc7f69aa"
+    },
+    "report_revision/settled_accuracy.png": {
+      "bytes": 56239,
+      "published_sha256": "d43f3c30941e9f65ae16271eb84eb1b1a38036aef7d8656f7baf5421d7c70fc6",
+      "source_sha256": "d43f3c30941e9f65ae16271eb84eb1b1a38036aef7d8656f7baf5421d7c70fc6"
+    },
+    "report_revision/transport_latency.png": {
+      "bytes": 40608,
+      "published_sha256": "9f6217bc7d8d308542ca1c751256d029ac0177a452e1f83bb61a9c5a1a12b0a4",
+      "source_sha256": "9f6217bc7d8d308542ca1c751256d029ac0177a452e1f83bb61a9c5a1a12b0a4"
+    },
+    "stimulation_shutdown/figures/incomplete_pulse_morphology.png": {
+      "bytes": 418828,
+      "published_sha256": "3e076dc99aae2feac4f5a7af5d4f5c08f01eb917a55c5f4981382155458d7d33",
+      "source_sha256": "3e076dc99aae2feac4f5a7af5d4f5c08f01eb917a55c5f4981382155458d7d33"
+    },
+    "stimulation_shutdown/figures/shutdown_overview.png": {
+      "bytes": 96754,
+      "published_sha256": "d98cde83cbeeaff3c7921449c14507bf61ee7e0199532c4867cd9aa6a9e3fe00",
+      "source_sha256": "d98cde83cbeeaff3c7921449c14507bf61ee7e0199532c4867cd9aa6a9e3fe00"
+    }
+  },
+  "metadata_sha256": "4ed468385fe6284d2cbd036d537487621e5b866864baf8a42fd5593e1bce955a",
+  "raw_data_included": false,
+  "raw_metadata_sha256_by_run": {
+    "A1": "b4362c41a5752da2094c4a9ab1973e363097a26b39c4a9d3ef1b533f26765621",
+    "A2": "9f5861473df5a552b70eab008feadfa0864e417ac89577b6122b1cf9e290a855",
+    "B1": "d70a4747a586b3f35836b19097bf28c7dba490bf76be29096630fc9751854fbc",
+    "B2": "5837f539c6cfe111671a63cd55f59ef6f6a196bbeb0a01241dca7b5434f3c23b",
+    "Reference": "4ed468385fe6284d2cbd036d537487621e5b866864baf8a42fd5593e1bce955a"
+  },
+  "review_approved": true,
+  "revision_manifest_sha256": "c9cc80d615678dd7226440336e691ea3eb75947cc0c812778712a0e375f0219f",
+  "revision_metrics_sha256": "85bab507b5e275f304990b3a3aa7824fc913bf2039dd85d904ff3c0bf1004aaa",
+  "run_id": "20261124T114542660847Z_integrated_hw_10M_20s_resume_check",
+  "schema": "matrix32_publication_snapshot_v1",
+  "signed_onsets_sha256_by_run": {
+    "A1": "e8c4ef46dc8c10696f08c299c9f43e924f56a4e0f041c2f1cf7676c974daf285",
+    "A2": "1e20b30c2452b2d411faa2c0ec4991af18fe88e18fc5c74e3f97c3f7c879812b",
+    "B1": "d333bfa81328eacef82277af4cdc06f345976c77a211dab3d12bd03e21d07fa7",
+    "B2": "266ae66ad9788eb3a0ed8e073cc87f03dfce5b39b0ec3980c8173e03152e0379",
+    "Reference": "9f735020f6b93eb86af5d84a5daf809f22f03da295998f9b1b39cb4d799964cb"
+  },
+  "signed_review_included": false,
+  "source_analysis_at_publication": "results/20261124T114542660847Z_integrated_hw_10M_20s_resume_check/analysis/report_revision",
+  "tag": "2026-11-26-approved"
+}

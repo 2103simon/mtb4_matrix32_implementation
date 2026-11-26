@@ -166,3 +166,79 @@ python -m unittest discover -s tests -p 'test_plot_integrated_overview.py' -v
 Neither this figure generator nor the per-ACK audit changes the Nano
 firmware, raw acquisition, original clock fit, signed onset inventory,
 operator decisions, or approval hashes.
+
+
+## Cycle-boundary and chronological attribution (exploratory)
+
+For the four signed 2026-11-26 replay recordings, run:
+
+```bash
+python -m experiment_analysis.audit_cycle_boundary_observability --run-dir "$MTB4_RUN"
+```
+
+This reuses the verified pulse inventory, Gray anchors, USB timing evidence
+and timing refinement. The previous `cycle_boundary_observability` output
+is preserved. New outputs are written once to
+`results/<RUN_ID>/analysis/cycle_boundary_observability_chronological/`.
+
+- The scheduler hypothesis selects the latest available SF at the approved
+  negative onset for the following period. The interval from BLE write begin
+  to embedded ACK receipt models availability, not a calibrated application
+  time bound. Commands during the period do not invalidate its witness.
+- All frequency-independent candidates are preserved at each boundary.
+  The chronological calculation assigns one matching identity to each
+  matching assessed cycle, with nondecreasing SF transaction identities.
+  It returns exact minimum/maximum distinct target counts, and the identities
+  present on every path or on at least one path. Initial START and muted
+  scheduler commands are not counted as target ACKs.
+- An incompatible assessed cycle is explicitly listed; a path through the
+  remaining matching cycles is conditional on that subset. No path means
+  no chronological solution under these assumptions, not device failure.
+- The independent clock envelopes are tested at 1x, 2x and 3x Gray margins,
+  with frequency tolerances max(1 Hz, 2.5%), max(0.5 Hz, 1%) and
+  max(0.25 Hz, 0.5%). Do not select clock offsets or tolerances to optimize
+  agreement. Path feasibility across per-boundary envelopes does not
+  establish a jointly feasible clock realization.
+- The target denominator remains successful live target SF ACKs inside
+  supported Gray time (using trace ACK membership for comparison with earlier
+  audits). The per-target CSVs expose local evidence, chronological membership,
+  candidate period IDs, minimum frequency error, current context, next-SF
+  timestamps, and possible or strict timing brackets for replacement.
+  Strict brackets constrain both command windows between observed boundaries;
+  possible brackets use overlapping uncertainty windows. Neither proves
+  supersession, and absence of a witness does not imply non-execution.
+
+The summary reports all nine combinations of timing scale and frequency
+tolerance. Detailed command investigation uses the original tolerance at
+each scale. Existing cycle CSVs and signed approvals are not rewritten or
+copied. The chronological result remains an exploratory model-conditioned
+estimate, not an electrical safety or device execution qualification.
+
+
+## Mute/resume diagnostic (exploratory)
+
+```bash
+python -m experiment_analysis.audit_restart_observability --run-dir "$MTB4_RUN"
+```
+
+Output: `results/<RUN_ID>/analysis/restart_observability/`. The diagnostic
+shares the signed pulse, clock envelope, transaction and cycle-boundary
+functions above. It distinguishes actual acknowledged SC restoration from
+positive SF restore attempts that were replaced while current remained
+commanded zero. The first observed onset candidates run from the restore
+write to the first definitely post-ACK onset. Each is conditional on SC
+restore availability at that boundary; earlier or residual output cannot
+be ruled out. A candidate first-to-second pulse period may overlap the
+associated SC restore transaction, but must not overlap any subsequent
+SC write, STOP, timing-support edge or long pause. New SF transactions
+during the period do not invalidate its initial frequency candidate.
+
+The same frequency tolerance and 1x/2x/3x timing scales are used. CSVs
+inventory SC restorations, first-cycle candidates and all restoration SF
+ACKs (including cancelled attempts). The summary compares prior local
+matches with newly recovered local evidence, counting each restore SF once.
+These local union counts do not update the chronological bounds, because
+possible-first-pulse alternatives need not all be realizable together.
+No internal application time, electrical OFF, or successful physical
+restart is proved by the SC ACK or timing model. All signed evidence and
+prior outputs remain unchanged.

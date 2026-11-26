@@ -70,8 +70,8 @@ class Matrix32Device:
 
     No separate per-channel frequency command is known in the available protocol.
 
-    Consecutive live global-frequency updates use the qualified persistent
-    indication transport by default; see docs/live_frequency_updates.md.
+    Live SF and SC updates share one persistent indication subscription.
+    See docs/ble_shared_session_experiment.md for bench evidence and limits.
     """
 
     def __init__(self, config=None, target_device=TARGET_DEVICE):
@@ -102,15 +102,16 @@ class Matrix32Device:
         # deadline must not wait for a stalled configuration transaction.
         self._configuration_lock = asyncio.Lock()
         self._control_generation = 0
-        self._live_current_task = None
         self.live_current_records = []
         self._live_width_task = None
         self.live_width_records = []
         self._live_frequency_task = None
         self._live_frequency_cleanup_task = None
+        # The persistent exchange slot owns both SF and SC.
+        self._live_persistent_record = None
         self._live_frequency_session = None
-        self._live_frequency_last_ack_monotonic_s = None
-        self._live_frequency_last_write_begin_monotonic_s = None
+        self._live_config_last_ack_monotonic_s = None
+        self._live_config_last_write_begin_monotonic_s = None
         self.live_frequency_records = []
         self.disconnect_observations = []
 
@@ -150,12 +151,12 @@ class Matrix32Device:
         # is gone with it. No asynchronous unsubscribe is possible from this
         # synchronous Bleak disconnect callback.
         self._live_frequency_session = None
-        self._live_frequency_last_ack_monotonic_s = None
-        self._live_frequency_last_write_begin_monotonic_s = None
+        self._live_config_last_ack_monotonic_s = None
+        self._live_config_last_write_begin_monotonic_s = None
         print("[Matrix32] BLE link disconnected.")
 
     def abort_pending_commands(self):
-        """Invalidate pending START/SW/SF work before an independent STOP attempt.
+        """Invalidate pending START/SW/SF/SC work before an independent STOP attempt.
 
         This only changes host state; it does not send STOP or prove output-off.
         The caller must still cancel/supervise tasks and issue bounded R/OFF.
@@ -168,13 +169,13 @@ class Matrix32Device:
         self.running = False
         self.config_verified = False
         self.verified_config_snapshot = None
-        if self._live_current_task is not None and not self._live_current_task.done():
-            self.live_current_records[-1]["ack"]["abort_requested"] = True
         if self._live_width_task is not None and not self._live_width_task.done():
             self.live_width_records[-1]["ack"]["abort_requested"] = True
         if (self._live_frequency_task is not None
                 and not self._live_frequency_task.done()):
-            self.live_frequency_records[-1]["ack"]["abort_requested"] = True
+            record = self._live_persistent_record
+            if record is not None:
+                record["ack"]["abort_requested"] = True
 
     def _check_control_generation(self, generation):
         task = asyncio.current_task()
@@ -309,17 +310,18 @@ class Matrix32Device:
                 except Exception as exc:
                     print(f"Could not stop stimulation cleanly during disconnect: {exc}")
         finally:
-            live_sf_in_flight = (
-                self._live_frequency_task is not None
-                and not self._live_frequency_task.done())
+            live_config_in_flight = (
+                self._live_persistent_record is not None or
+                (self._live_frequency_task is not None
+                 and not self._live_frequency_task.done()))
             if (client.is_connected
                     and self._live_frequency_session is not None
-                    and not live_sf_in_flight):
+                    and not live_config_in_flight):
                 try:
                     await self._close_live_frequency_session()
                 except Exception as exc:
                     print(
-                        "Could not close persistent live-frequency indication "
+                        "Could not close persistent live SF/SC indication "
                         "session during disconnect: {}: {}".format(
                             type(exc).__name__, exc))
             try:
@@ -353,23 +355,23 @@ class Matrix32Device:
         return bool(self.client is not None and self.client.is_connected)
 
     async def _close_live_frequency_session(self):
-        """Close the reusable SF indication subscription, if one is open."""
+        """Close the reusable SF/SC indication subscription, if one is open."""
         session = self._live_frequency_session
         if session is None:
-            self._live_frequency_last_ack_monotonic_s = None
-            self._live_frequency_last_write_begin_monotonic_s = None
+            self._live_config_last_ack_monotonic_s = None
+            self._live_config_last_write_begin_monotonic_s = None
             return
         try:
             await session.close()
         finally:
             self._live_frequency_session = None
-            self._live_frequency_last_ack_monotonic_s = None
-            self._live_frequency_last_write_begin_monotonic_s = None
+            self._live_config_last_ack_monotonic_s = None
+            self._live_config_last_write_begin_monotonic_s = None
 
     async def close_live_frequency_session(self):
-        """Explicitly release the optimized live-SF indication subscription.
+        """Explicitly release the shared live SF/SC indication subscription.
 
-        Consecutive apply_live_frequency() calls normally reuse one persistent
+        Consecutive SF and SC calls normally reuse one persistent
         indication subscription automatically. Other indication-owning device
         operations close it themselves, so callers rarely need this method.
         It is exposed for applications that want to release the subscription
@@ -384,7 +386,7 @@ class Matrix32Device:
     async def prepare_live_frequency_session(self):
         """Pre-open the reusable indication subscription for time-critical SF.
 
-        apply_live_frequency() opens the session lazily when needed, so this is
+        Either live SF or SC opens the session lazily when needed, so this is
         optional for ordinary code. Call it after START and before a
         time-critical update burst to keep the one-time subscription setup out
         of the first measured live-frequency transaction.
@@ -718,6 +720,26 @@ class Matrix32Device:
                 record["cleanup_pending"] = True
                 exchange.add_done_callback(release_exchange)
 
+    def _propose_live_current(self, channel, current_command):
+        old_config = deepcopy(self.config)
+        channels = old_config["sa"]
+        currents = old_config["sc"]
+        if (any(type(ch) is not int or not 1 <= ch <= 32 for ch in channels)
+                or len(set(channels)) != len(channels)
+                or len(currents) != len(channels)
+                or any(type(w) is not int or not 0 <= w <= 65535 for w in currents)):
+            raise ValueError("Verified active-channel currents must be explicit valid integers")
+        if channel not in channels:
+            raise ValueError("Live current update cannot activate an inactive channel")
+        proposed = deepcopy(old_config)
+        index = channels.index(channel)
+        old_current = currents[index]
+        proposed["sc"][index] = current_command
+        message = next(
+            item for item in build_config_messages(proposed)
+            if item.startswith(b">SC;"))
+        return old_config, proposed, message, old_current
+
     async def apply_live_current(
             self, channel, current_command, *, timeout_s=2.0, timing_marker=None):
         """Send one ACK-required 32-current SC vector during running output.
@@ -729,11 +751,11 @@ class Matrix32Device:
         running is unqualified: ACK does not prove physical zero output.
         No STOP, START, retry, or implicit activation is sent.
 
-        timeout_s covers the complete exchange, including an optional timing
-        marker handshake, subscribe, write and unsubscribe. When supplied,
-        timing_marker.mark() must ACK before the BLE write is issued. If a
-        transport ignores cancellation, the caller returns
-        with an error while the lock remains held until that task finishes.
+        SC uses the same persistent indication session and minimum 7.5 ms
+        ACK-to-next-write guard as SF. timeout_s bounds the command exchange
+        after subscription, guard and optional diagnostic marker. The marker
+        must ACK before the BLE write. If cancellation is delayed, the lock
+        remains held until cleanup completes.
         An independent STOP supervisor must remain active; cancellation does
         not prove that a pending write never reached the device.
         """
@@ -744,158 +766,22 @@ class Matrix32Device:
         if (type(timeout_s) not in (int, float) or not math.isfinite(timeout_s)
                 or not 0 < timeout_s <= 10):
             raise ValueError("Live update operation timeout must be >0 and <=10 seconds")
-        # Do not queue live transitions behind another indication owner.
-        if self._configuration_lock.locked():
-            raise RuntimeError("Another Matrix32 configuration/indication transaction is pending")
-        await self._configuration_lock.acquire()
-        try:
-            await self._close_live_frequency_session()
-            self._require_connection()
-            if not self.running:
-                raise RuntimeError("Live current update requires running stimulation")
-            if self.read_char_uuid is None:
-                raise RuntimeError("Matrix32Device indication characteristic is unavailable")
-            if (not self.config_verified
-                    or self.config != self.verified_config_snapshot):
-                raise RuntimeError("Live current update requires the exact ACK-verified configuration")
-            old_config = deepcopy(self.config)
-            channels = old_config["sa"]
-            currents = old_config["sc"]
-            if (any(type(ch) is not int or not 1 <= ch <= 32 for ch in channels)
-                    or len(set(channels)) != len(channels)
-                    or len(currents) != len(channels)
-                    or any(type(w) is not int or not 0 <= w <= 65535 for w in currents)):
-                raise ValueError("Verified active-channel currents must be explicit valid integers")
-            if channel not in channels:
-                raise ValueError("Live current update cannot activate an inactive channel")
-            proposed = deepcopy(old_config)
-            index = channels.index(channel)
-            old_current = currents[index]
-            proposed["sc"][index] = current_command
-            message = next(
-                item for item in build_config_messages(proposed)
-                if item.startswith(b">SC;"))
-        except BaseException:
-            self._configuration_lock.release()
-            raise
-
-        requested = time.monotonic()
-        generation = self._control_generation
-        ack_record = {}
-        record = {
-            "sequence_id": len(self.live_current_records) + 1,
-            "command": "SC", "channel": channel,
-            "old_current_command": old_current, "new_current_command": current_command,
-            "same_value": old_current == current_command,
-            "old_config": old_config, "requested_config": proposed,
-            "request_hex": message.hex(" "), "response_hex": None,
-            "status": "IN_FLIGHT", "timeout_s": timeout_s,
-            "request_monotonic_s": requested,
-            "write_begin_monotonic_s": None, "write_return_monotonic_s": None,
-            "ack_monotonic_s": None, "completed_monotonic_s": None,
-            "elapsed_ms": None, "configuration_verified_after": False,
-            "cleanup_pending": False, "ack": ack_record,
-            "marker": None, "marker_ack_to_ble_write_ms": None,
-        }
-        self.live_current_records.append(record)
-        self.config_verified = False
-        self.verified_config_snapshot = None
-        exchange = asyncio.create_task(write_config_with_ack(
-            self.client, self.write_char_uuid, self.read_char_uuid, message,
-            timeout_s=timeout_s, record=ack_record, marker=timing_marker))
-        self._live_current_task = exchange
-
-        def copy_evidence():
-            for key in ("response_hex", "write_begin_monotonic_s",
-                        "write_return_monotonic_s", "ack_monotonic_s"):
-                record[key] = ack_record.get(key)
-            record["marker"] = ack_record.get("marker")
-            marker_record = record.get("marker")
-            marker_ack = (
-                marker_record.get("ack_monotonic_s")
-                if isinstance(marker_record, dict) else None)
-            write_begin = record.get("write_begin_monotonic_s")
-            record["marker_ack_to_ble_write_ms"] = (
-                round((write_begin - marker_ack) * 1000, 3)
-                if marker_ack is not None and write_begin is not None else None)
-
-        def release_exchange(task):
-            # Consume the result even after the caller timed out/cancelled.
-            try:
-                task.result()
-            except BaseException:
-                pass
-            copy_evidence()
-            record["cleanup_pending"] = False
-            record["exchange_completed_monotonic_s"] = time.monotonic()
-            if self._live_current_task is task:
-                self._live_current_task = None
-            self._configuration_lock.release()
-
-        try:
-            done, _pending = await asyncio.wait({exchange}, timeout=timeout_s)
-            if not done:
-                record["status"] = "TIMEOUT"
-                ack_record["abort_requested"] = True
-                exchange.cancel()
-                raise LiveCurrentUpdateError(record)
-            try:
-                exchange.result()
-            except ConfigurationAckError as exc:
-                record["status"] = exc.record["status"]
-                raise LiveCurrentUpdateError(record) from exc
-            if generation != self._control_generation:
-                record["status"] = "CONTROL_ABORTED"
-                raise LiveCurrentUpdateError(record)
-            if not self.connected:
-                record["status"] = "BLE_DISCONNECTED"
-                raise LiveCurrentUpdateError(record)
-            if not self.running:
-                record["status"] = "STOPPED_DURING_UPDATE"
-                raise LiveCurrentUpdateError(record)
-            if self.config != old_config:
-                record["status"] = "CONFIG_CHANGED_DURING_UPDATE"
-                raise LiveCurrentUpdateError(record)
-            self.config = deepcopy(proposed)
-            self.verified_config_snapshot = deepcopy(proposed)
-            self.config_verified = True
-            record["configuration_verified_after"] = True
-            record["status"] = "OK"
-            return record
-        except asyncio.CancelledError:
-            record["status"] = "CANCELLED"
-            ack_record["abort_requested"] = True
-            exchange.cancel()
-            raise
-        except LiveCurrentUpdateError:
-            raise
-        except Exception as exc:
-            record["status"] = "TRANSPORT_ERROR"
-            record["error"] = "{}: {}".format(type(exc).__name__, exc)
-            raise LiveCurrentUpdateError(record) from exc
-        finally:
-            copy_evidence()
-            record["completed_monotonic_s"] = time.monotonic()
-            record["elapsed_ms"] = round(
-                (record["completed_monotonic_s"] - requested) * 1000, 3)
-            if exchange.done():
-                release_exchange(exchange)
-            else:
-                record["cleanup_pending"] = True
-                exchange.add_done_callback(release_exchange)
+        return await self._apply_live_persistent_config(
+            command="SC", value=current_command, channel=channel,
+            timeout_s=timeout_s, timing_marker=timing_marker,
+            min_ack_to_write_ms=LIVE_FREQUENCY_MIN_ACK_TO_WRITE_MS)
 
     async def apply_live_frequency(
             self, hz, *, timeout_s=2.0, timing_marker=None,
-            min_ack_to_write_ms=LIVE_FREQUENCY_MIN_ACK_TO_WRITE_MS,
-            transport="optimized_persistent"):
-        """Apply one verified live SF update over the optimized persistent path.
+            min_ack_to_write_ms=LIVE_FREQUENCY_MIN_ACK_TO_WRITE_MS):
+        """Apply one verified live SF update over the shared SF/SC persistent path.
 
         Consecutive calls reuse one indication subscription and send the short
         SF frame with ATT Write Command. Exactly one command may be outstanding
         and one unique Matrix32 application-level >OK< indication is mandatory
         before the call succeeds. The next SF write is held until at least
-        7.5 ms after the previous SF ACK; callers may request a larger guard but
-        cannot request a smaller one through this qualified API.
+        7.5 ms after the previous SF or SC ACK; callers may request a larger guard but
+        cannot request a smaller one through this API.
 
         The current configuration must already be ACK-verified and stimulation
         must be running. Same-value requests are transmitted. No STOP, START,
@@ -903,13 +789,9 @@ class Matrix32Device:
 
         timing_marker, when supplied, is emitted after the post-ACK guard and
         before the SF write. It is diagnostic and therefore adds latency; the
-        qualified ~44 Hz path does not use a per-command marker.
+        ordinary live path does not use a per-command marker.
 
         timeout_s bounds the command exchange after any required guard/marker.
-        transport="legacy_per_command_subscription" is retained only so closed
-        S05/S06-F1 experiment runners can reproduce their original transport
-        semantics; ordinary callers should use the default optimized path.
-
         If a transport does not respond promptly to cancellation, this method
         can return an error while the configuration lock remains held until the
         exchange cleanup finishes. An independent STOP supervisor remains
@@ -922,13 +804,6 @@ class Matrix32Device:
                 or not 0 < timeout_s <= 10):
             raise ValueError(
                 "Live update operation timeout must be >0 and <=10 seconds")
-        if transport == "legacy_per_command_subscription":
-            return await self._apply_live_frequency_legacy(
-                hz, timeout_s=timeout_s, timing_marker=timing_marker)
-        if transport != "optimized_persistent":
-            raise ValueError(
-                "Live SF transport must be 'optimized_persistent' or "
-                "'legacy_per_command_subscription'")
         if (type(min_ack_to_write_ms) not in (int, float)
                 or not math.isfinite(min_ack_to_write_ms)
                 or not LIVE_FREQUENCY_MIN_ACK_TO_WRITE_MS
@@ -936,6 +811,19 @@ class Matrix32Device:
                 <= LIVE_FREQUENCY_MAX_ACK_TO_WRITE_MS):
             raise ValueError(
                 "Live SF ACK-to-next-write guard must be 7.5..5000 ms")
+        return await self._apply_live_persistent_config(
+            command="SF", value=hz, timeout_s=timeout_s,
+            timing_marker=timing_marker, min_ack_to_write_ms=min_ack_to_write_ms)
+
+    async def _apply_live_persistent_config(
+            self, *, command, value, timeout_s, timing_marker,
+            min_ack_to_write_ms, channel=None):
+        """One shared persistent exchange path for SF and SC."""
+        if command not in ("SF", "SC"):
+            raise ValueError("Unsupported persistent live command")
+        is_sf = command == "SF"
+        error_type = LiveFrequencyUpdateError if is_sf else LiveCurrentUpdateError
+        records = self.live_frequency_records if is_sf else self.live_current_records
         if self._configuration_lock.locked():
             raise RuntimeError(
                 "Another Matrix32 configuration/indication transaction is pending")
@@ -951,36 +839,43 @@ class Matrix32Device:
             self._require_connection()
             if not self.running:
                 raise RuntimeError(
-                    "Live frequency update requires running stimulation")
+                    "Live SF/SC update requires running stimulation")
             if self.read_char_uuid is None:
                 raise RuntimeError(
                     "Matrix32Device indication characteristic is unavailable")
             if (not self.config_verified
                     or self.config != self.verified_config_snapshot):
                 raise RuntimeError(
-                    "Live frequency update requires the exact "
+                    "Live SF/SC update requires the exact "
                     "ACK-verified configuration")
 
-            old_config = deepcopy(self.config)
-            old_frequency = old_config["sf"]
-            proposed = deepcopy(old_config)
-            proposed["sf"] = hz
-            message = next(
-                item for item in build_config_messages(proposed)
-                if item.startswith(b">SF;"))
+            if is_sf:
+                old_config = deepcopy(self.config)
+                old_frequency = old_config["sf"]
+                proposed = deepcopy(old_config)
+                proposed["sf"] = value
+                message = next(
+                    item for item in build_config_messages(proposed)
+                    if item.startswith(b">SF;"))
+                details = {"old_frequency_hz": old_frequency,
+                           "new_frequency_hz": value,
+                           "same_value": old_frequency == value}
+            else:
+                old_config, proposed, message, old_current = self._propose_live_current(
+                    channel, value)
+                details = {"channel": channel, "old_current_command": old_current,
+                           "new_current_command": value, "same_value": old_current == value}
 
             requested = time.monotonic()
             generation = self._control_generation
-            previous_ack = self._live_frequency_last_ack_monotonic_s
-            previous_write_begin = (
-                self._live_frequency_last_write_begin_monotonic_s)
+            # Guard after either family, as in the reviewed A/B path.
+            previous_ack = self._live_config_last_ack_monotonic_s
+            previous_write_begin = self._live_config_last_write_begin_monotonic_s
             ack_record = {}
             record = {
-                "sequence_id": len(self.live_frequency_records) + 1,
-                "command": "SF",
-                "old_frequency_hz": old_frequency,
-                "new_frequency_hz": hz,
-                "same_value": old_frequency == hz,
+                "sequence_id": len(records) + 1,
+                "command": command,
+                **details,
                 "old_config": old_config,
                 "requested_config": proposed,
                 "request_hex": message.hex(" "),
@@ -1000,7 +895,7 @@ class Matrix32Device:
                 "marker_ack_to_ble_write_ms": None,
                 "persistent_subscription": True,
                 "persistent_session_reused": None,
-                "transport": "optimized_persistent",
+                "transport": "shared_persistent_sf_sc",
                 "subscribe_begin_monotonic_s": None,
                 "subscribe_return_monotonic_s": None,
                 "write_procedure": "ATT_WRITE_COMMAND",
@@ -1011,7 +906,8 @@ class Matrix32Device:
                 "previous_ack_to_write_begin_ms": None,
                 "inter_write_begin_ms": None,
             }
-            self.live_frequency_records.append(record)
+            records.append(record)
+            self._live_persistent_record = record
             self.config_verified = False
             self.verified_config_snapshot = None
 
@@ -1028,9 +924,12 @@ class Matrix32Device:
                 remaining = max(0.0, guard_deadline - time.monotonic())
                 record["guard_sleep_requested_ms"] = round(
                     remaining * 1000.0, 3)
-                if remaining > 0:
+                while remaining > 0:
                     await asyncio.sleep(remaining)
+                    self._check_control_generation(generation)
+                    remaining = max(0.0, guard_deadline - time.monotonic())
 
+            self._check_control_generation(generation)
             if timing_marker is not None:
                 try:
                     marker_record = timing_marker.mark()
@@ -1044,8 +943,9 @@ class Matrix32Device:
                     record["marker_error"] = "{}: {}".format(
                         type(exc).__name__, exc)
                     failed = True
-                    raise LiveFrequencyUpdateError(record) from exc
+                    raise error_type(record) from exc
 
+            self._check_control_generation(generation)
             exchange = asyncio.create_task(session.send(
                 message,
                 timeout_s=timeout_s,
@@ -1094,6 +994,7 @@ class Matrix32Device:
                     record["exchange_completed_monotonic_s"] = time.monotonic()
                     if self._live_frequency_task is exchange:
                         self._live_frequency_task = None
+                    self._live_persistent_record = None
                     if self._live_frequency_cleanup_task is asyncio.current_task():
                         self._live_frequency_cleanup_task = None
                     if self._configuration_lock.locked():
@@ -1109,40 +1010,38 @@ class Matrix32Device:
                 defer_release = True
                 self._live_frequency_cleanup_task = asyncio.create_task(
                     deferred_cleanup())
-                raise LiveFrequencyUpdateError(record)
+                raise error_type(record)
 
             try:
                 exchange.result()
             except ConfigurationAckError as exc:
                 record["status"] = exc.record["status"]
                 failed = True
-                raise LiveFrequencyUpdateError(record) from exc
+                raise error_type(record) from exc
 
             copy_evidence()
             if generation != self._control_generation:
                 record["status"] = "CONTROL_ABORTED"
                 failed = True
-                raise LiveFrequencyUpdateError(record)
+                raise error_type(record)
             if not self.connected:
                 record["status"] = "BLE_DISCONNECTED"
                 failed = True
-                raise LiveFrequencyUpdateError(record)
+                raise error_type(record)
             if not self.running:
                 record["status"] = "STOPPED_DURING_UPDATE"
                 failed = True
-                raise LiveFrequencyUpdateError(record)
+                raise error_type(record)
             if self.config != old_config:
                 record["status"] = "CONFIG_CHANGED_DURING_UPDATE"
                 failed = True
-                raise LiveFrequencyUpdateError(record)
+                raise error_type(record)
 
             self.config = deepcopy(proposed)
             self.verified_config_snapshot = deepcopy(proposed)
             self.config_verified = True
-            self._live_frequency_last_ack_monotonic_s = record[
-                "ack_monotonic_s"]
-            self._live_frequency_last_write_begin_monotonic_s = record[
-                "write_begin_monotonic_s"]
+            self._live_config_last_ack_monotonic_s = record["ack_monotonic_s"]
+            self._live_config_last_write_begin_monotonic_s = record["write_begin_monotonic_s"]
             record["configuration_verified_after"] = True
             record["status"] = "OK"
             return record
@@ -1160,7 +1059,7 @@ class Matrix32Device:
                 self._live_frequency_cleanup_task = asyncio.create_task(
                     deferred_cleanup())
             raise
-        except LiveFrequencyUpdateError:
+        except (LiveFrequencyUpdateError, LiveCurrentUpdateError):
             raise
         except Exception as exc:
             if record is None:
@@ -1168,7 +1067,7 @@ class Matrix32Device:
             record["status"] = "TRANSPORT_ERROR"
             record["error"] = "{}: {}".format(type(exc).__name__, exc)
             failed = True
-            raise LiveFrequencyUpdateError(record) from exc
+            raise error_type(record) from exc
         finally:
             if record is not None:
                 if exchange is not None and exchange.done():
@@ -1196,171 +1095,18 @@ class Matrix32Device:
             if not defer_release:
                 if self._live_frequency_task is exchange:
                     self._live_frequency_task = None
-                if failed and self._live_frequency_session is not None:
-                    try:
-                        await self._close_live_frequency_session()
-                    except Exception as exc:
-                        if record is not None:
-                            record["session_close_error"] = "{}: {}".format(
-                                type(exc).__name__, exc)
-                if self._configuration_lock.locked():
-                    self._configuration_lock.release()
-
-    async def _apply_live_frequency_legacy(
-            self, hz, *, timeout_s=2.0, timing_marker=None):
-        """Historical per-command subscribe/write/ACK/unsubscribe SF path.
-
-        Kept for reproducibility of closed S05 and original S06-F1 protocols.
-        New application code should use apply_live_frequency() with its default
-        optimized persistent transport.
-        """
-        if self._configuration_lock.locked():
-            raise RuntimeError(
-                "Another Matrix32 configuration/indication transaction is pending")
-        await self._configuration_lock.acquire()
-        try:
-            await self._close_live_frequency_session()
-            self._require_connection()
-            if not self.running:
-                raise RuntimeError(
-                    "Live frequency update requires running stimulation")
-            if self.read_char_uuid is None:
-                raise RuntimeError(
-                    "Matrix32Device indication characteristic is unavailable")
-            if (not self.config_verified
-                    or self.config != self.verified_config_snapshot):
-                raise RuntimeError(
-                    "Live frequency update requires the exact "
-                    "ACK-verified configuration")
-            old_config = deepcopy(self.config)
-            old_frequency = old_config["sf"]
-            proposed = deepcopy(old_config)
-            proposed["sf"] = hz
-            message = next(
-                item for item in build_config_messages(proposed)
-                if item.startswith(b">SF;"))
-        except BaseException:
-            self._configuration_lock.release()
-            raise
-
-        requested = time.monotonic()
-        generation = self._control_generation
-        ack_record = {}
-        record = {
-            "sequence_id": len(self.live_frequency_records) + 1,
-            "command": "SF",
-            "old_frequency_hz": old_frequency,
-            "new_frequency_hz": hz,
-            "same_value": old_frequency == hz,
-            "old_config": old_config,
-            "requested_config": proposed,
-            "request_hex": message.hex(" "),
-            "response_hex": None,
-            "status": "IN_FLIGHT",
-            "timeout_s": timeout_s,
-            "request_monotonic_s": requested,
-            "write_begin_monotonic_s": None,
-            "write_return_monotonic_s": None,
-            "ack_monotonic_s": None,
-            "completed_monotonic_s": None,
-            "elapsed_ms": None,
-            "configuration_verified_after": False,
-            "cleanup_pending": False,
-            "ack": ack_record,
-            "marker": None,
-            "marker_ack_to_ble_write_ms": None,
-            "persistent_subscription": False,
-            "persistent_session_reused": False,
-            "write_procedure": "ATT_WRITE_COMMAND",
-            "transport": "legacy_per_command_subscription",
-        }
-        self.live_frequency_records.append(record)
-        self.config_verified = False
-        self.verified_config_snapshot = None
-        exchange = asyncio.create_task(write_config_with_ack(
-            self.client, self.write_char_uuid, self.read_char_uuid, message,
-            timeout_s=timeout_s, record=ack_record, marker=timing_marker))
-        self._live_frequency_task = exchange
-
-        def copy_evidence():
-            for key in (
-                "response_hex", "write_begin_monotonic_s",
-                "write_return_monotonic_s", "ack_monotonic_s",
-            ):
-                record[key] = ack_record.get(key)
-            record["marker"] = ack_record.get("marker")
-            marker_record = record.get("marker")
-            marker_ack = (
-                marker_record.get("ack_monotonic_s")
-                if isinstance(marker_record, dict) else None)
-            write_begin = record.get("write_begin_monotonic_s")
-            record["marker_ack_to_ble_write_ms"] = (
-                round((write_begin - marker_ack) * 1000, 3)
-                if marker_ack is not None and write_begin is not None else None)
-
-        def release_exchange(task):
-            try:
-                task.result()
-            except BaseException:
-                pass
-            copy_evidence()
-            record["cleanup_pending"] = False
-            record["exchange_completed_monotonic_s"] = time.monotonic()
-            if self._live_frequency_task is task:
-                self._live_frequency_task = None
-            self._configuration_lock.release()
-
-        try:
-            done, _pending = await asyncio.wait({exchange}, timeout=timeout_s)
-            if not done:
-                record["status"] = "TIMEOUT"
-                ack_record["abort_requested"] = True
-                exchange.cancel()
-                raise LiveFrequencyUpdateError(record)
-            try:
-                exchange.result()
-            except ConfigurationAckError as exc:
-                record["status"] = exc.record["status"]
-                raise LiveFrequencyUpdateError(record) from exc
-            if generation != self._control_generation:
-                record["status"] = "CONTROL_ABORTED"
-                raise LiveFrequencyUpdateError(record)
-            if not self.connected:
-                record["status"] = "BLE_DISCONNECTED"
-                raise LiveFrequencyUpdateError(record)
-            if not self.running:
-                record["status"] = "STOPPED_DURING_UPDATE"
-                raise LiveFrequencyUpdateError(record)
-            if self.config != old_config:
-                record["status"] = "CONFIG_CHANGED_DURING_UPDATE"
-                raise LiveFrequencyUpdateError(record)
-            self.config = deepcopy(proposed)
-            self.verified_config_snapshot = deepcopy(proposed)
-            self.config_verified = True
-            record["configuration_verified_after"] = True
-            record["status"] = "OK"
-            return record
-        except asyncio.CancelledError:
-            record["status"] = "CANCELLED"
-            ack_record["abort_requested"] = True
-            exchange.cancel()
-            raise
-        except LiveFrequencyUpdateError:
-            raise
-        except Exception as exc:
-            record["status"] = "TRANSPORT_ERROR"
-            record["error"] = "{}: {}".format(type(exc).__name__, exc)
-            raise LiveFrequencyUpdateError(record) from exc
-        finally:
-            copy_evidence()
-            record["completed_monotonic_s"] = time.monotonic()
-            record["elapsed_ms"] = round(
-                (record["completed_monotonic_s"] - requested) * 1000, 3)
-            if exchange.done():
-                release_exchange(exchange)
-            else:
-                record["cleanup_pending"] = True
-                exchange.add_done_callback(release_exchange)
+                try:
+                    if failed and self._live_frequency_session is not None:
+                        try:
+                            await self._close_live_frequency_session()
+                        except Exception as exc:
+                            if record is not None:
+                                record["session_close_error"] = "{}: {}".format(
+                                    type(exc).__name__, exc)
+                finally:
+                    self._live_persistent_record = None
+                    if self._configuration_lock.locked():
+                        self._configuration_lock.release()
 
     async def probe_frequency_ack(self, hz):
         """Send ONLY SF, never START; caller must verify device is physically idle."""
@@ -1433,20 +1179,21 @@ class Matrix32Device:
             self._stop_cleanup_needed = False
             self.running = False
         finally:
-            # STOP must not wait for the configuration lock. If an SF exchange
+            # STOP must not wait for the configuration lock. If a persistent exchange
             # is still in flight, do not unsubscribe underneath it; generation
             # invalidation plus the exchange's own failure/timeout cleanup owns
             # that teardown. An idle persistent subscription can be released
             # immediately after the independent stop command path.
-            live_sf_in_flight = (
-                self._live_frequency_task is not None
-                and not self._live_frequency_task.done())
-            if not live_sf_in_flight:
+            live_config_in_flight = (
+                self._live_persistent_record is not None or
+                (self._live_frequency_task is not None
+                 and not self._live_frequency_task.done()))
+            if not live_config_in_flight:
                 try:
                     await self._close_live_frequency_session()
                 except Exception as exc:
                     print(
-                        "Could not close persistent live-frequency indication "
+                        "Could not close persistent live SF/SC indication "
                         "session after STOP: {}: {}".format(
                             type(exc).__name__, exc))
 

@@ -75,3 +75,111 @@ python -m unittest discover -s tests -p 'test_scientific_report_presentation.py'
 
 Detailed analyses, results and proofs remain available via the linked reports.
 The new report is a presentation layer over the existing validated findings.
+
+
+## November 26 investigation: revised condensed and detailed reports
+
+The 2026-11-25 approved snapshot is immutable. Its unchanged measurement
+window, host timing, and voltage morphology sections/figures remain the
+source for the revised presentation; historical affine-map metrics are
+explicitly labeled, not silently substituted or pooled. The revised
+calculation uses the original reference and both replay A/B pairs. Replay
+pools exclude the reference run. The new builder checks signed pulse
+inventories, original scope/Nano and USB fingerprints, command traces,
+replay identity, matching audit counts and the historical reference
+provenance. It reuses existing analyses; no waveform copying or hardware.
+
+From the repo root on `analysis/timing-investigation`:
+
+```bash
+git pull --ff-only
+python -m unittest discover -s tests -v
+
+REF=20261124T114542660847Z_integrated_hw_10M_20s_resume_check
+A1=20261126T090848918698Z_ble_ab_baseline
+B1=20261126T091212099927Z_ble_ab_shared
+A2=20261126T094712943788Z_ble_ab_baseline_20vdiv
+B2=20261126T095023427339Z_ble_ab_shared_20vdiv
+
+# Reuse completed diagnostics. Generate ONLY missing outputs.
+(
+  set -e
+  for run in "$REF" "$A1" "$B1" "$A2" "$B2"; do
+    raw="data/recordings/$run"
+    analysis="results/$run/analysis"
+    test -s "$analysis/timing_refinement/timing_refinement_summary.json" ||
+      python -m oscilloscope.refine_timing_investigation --run-dir "$raw"
+    test -s "$analysis/piecewise_command_analysis_integer/summary.json" ||
+      python -m experiment_analysis.run_piecewise_command_analysis --run-dir "$raw"
+    test -s "$analysis/refined_ack_observability_boundaries/summary.json" ||
+      python -m experiment_analysis.audit_refined_ack_observability --run-dir "$raw"
+    test -s "$analysis/cycle_boundary_observability_chronological/summary.json" ||
+      python -m experiment_analysis.audit_cycle_boundary_observability --run-dir "$raw"
+    test -s "$analysis/restart_observability/summary.json" ||
+      python -m experiment_analysis.audit_restart_observability --run-dir "$raw"
+  done
+  test -s "results/$REF/analysis/command_chain_diagnostic/summary.json" ||
+    python -m experiment_analysis.analyze_command_chain --run-dir "data/recordings/$REF"
+  python -m experiment_analysis.build_revised_experiment_reports
+)
+```
+
+Alternatively, run the same preparation and build in one command:
+
+```bash
+python -m experiment_analysis.build_revised_experiment_reports --prepare-missing
+```
+
+This invokes the existing analysis modules only when their output directory
+is absent (including the A/B and charge diagnostics). A partial directory
+without its summary is an error; existing completed outputs are validated
+by the report builder rather than regenerated.
+
+The earlier A/B comparison and quiet-threshold charge diagnostics must also
+be present (they were generated during the investigation). If absent, use
+`experiment_analysis.compare_ble_replays --baseline ... --shared ...`
+for each pair and `oscilloscope.analyze_transient_charge --run-dir ...
+--resistance-ohm 100000 --quiet-limit-v 2.5` / `--quiet-limit-v 4.0`
+for A2 and B2, preserving existing diagnostics. The original reference's
+`extended_analysis_manifest.json` and reused original approved figures
+must remain available. A stale or partial output is an error to investigate,
+not a reason to delete or overwrite signed evidence.
+
+Both reports are generated together into
+`results/$REF/analysis/report_revision/`:
+
+- `final_experiment_report.md` (condensed, six figures)
+- `extended_analysis_technical_report.md` (full technical consolidation)
+- `report_revision_metrics.json` (source-derived calculations and hashes)
+- `report_revision_manifest.json` (generated files, retained figures,
+  signed evidence and unsigned review status)
+
+The builder refuses an existing revision folder. If another review build
+is needed, preserve or explicitly rename the old folder first. It retains
+links to existing reference figures rather than copying them into results.
+
+Create a portable **unsigned** review package with the existing publisher:
+
+```bash
+python -m experiment_analysis.publish_reports \
+  --run-dir "data/recordings/$REF" --revision \
+  --reports-root "results/$REF/review_exports" --tag 2026-11-26-review
+
+zip -r matrix32_report_review.zip \
+  "results/$REF/review_exports/$REF/2026-11-26-review" \
+  "results/$REF/analysis/report_revision/report_revision_metrics.json" \
+  "results/$REF/analysis/report_revision/report_revision_manifest.json"
+```
+
+The review export normalizes figure paths and bundles only the reports and
+their referenced images. The metrics and manifest are included only in the
+local review ZIP. No unsigned revision can be published to the tracked
+reports directory. After the operator approves both exact reports, publish
+a new tag with the explicit `--revision --approved-by "operator"` option,
+then review the Git diff and commit the new snapshot on the working branch.
+Do not replace the old approved tag. Merge to main only after review.
+
+All revised command observability remains conditional on the availability,
+scheduler and timing-envelope models; the chronological extrema do not
+prove a joint clock realization or internal electrical execution. No
+electrical safety clearance is implied.

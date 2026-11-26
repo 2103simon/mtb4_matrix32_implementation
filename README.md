@@ -6,6 +6,8 @@ Research/bench software for reading **MTB4 fingertip tactile sensors** through a
 
 This README documents the repository's primary branch, **`main`**. **Scope hardware runs and firmware uploading require local hardware and operator verification**; passing unit tests alone cannot establish electrical safety or timing accuracy.
 
+Contributors: follow the [repository analysis and data-handling rules](AGENTS.md), including immutable recordings, shared analysis functions and reproducible derived results.
+
 ## Contents
 
 - [System and signal flow](#system-and-signal-flow)
@@ -218,7 +220,7 @@ For MCU-driven Matrix32 operation without the oscilloscope, the separate control
 ```bash
 python run_tactile_stimulation.py --record           # no stimulation
 # Isolated dummy load and authorized bench setup ONLY:
-python run_tactile_stimulation.py --arm --record
+python run_tactile_stimulation.py --arm --dummy-load-confirmed --record
 ```
 
 It uses a **250 ms stale-tactile-input supervisor** (overridable with `--stale-ms`), sequential BLE commands/ACKs, and best-effort STOP on shutdown. See [Matrix32/MCU software architecture](docs/pipeline_and_components.md).

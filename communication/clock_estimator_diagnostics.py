@@ -69,6 +69,76 @@ def _clock_intersection(exchanges, slope, anchor_nano_us, *,
     return result
 
 
+
+def causal_slope_interval(exchanges):
+    """Feasible affine clock rates without assuming symmetric USB delays.
+
+    Each send-side lower offset constraint must be <= each receive-side
+    upper constraint. Eliminating the common offset yields inequalities
+    in slope alone. Conditional on an affine clock and exact software
+    timestamps; not a hardware calibration.
+    """
+    if not exchanges:
+        raise ValueError("No SYNC exchanges")
+    low, high = 0.0, math.inf
+    for left in exchanges:
+        for right in exchanges:
+            dn = left["t2_nano_us"] - right["t3_nano_us"]
+            dh = left["t1_host_ns"] - right["t4_host_ns"]
+            if dn > 0:
+                low = max(low, dh / dn)
+            elif dn < 0:
+                high = min(high, dh / dn)
+            elif dh > 0:
+                return {"feasible": False, "reason": "inconsistent equal-time constraints"}
+    if high < low or high <= 0:
+        return {"feasible": False, "reason": "no positive affine slope"}
+    return {
+        "feasible": True,
+        "slope_lower_ns_per_us": low,
+        "slope_upper_ns_per_us": high if math.isfinite(high) else None,
+        "drift_lower_ppm": (low / 1000 - 1) * 1e6,
+        "drift_upper_ppm": (high / 1000 - 1) * 1e6 if math.isfinite(high) else None,
+    }
+
+
+def causal_host_envelope(exchanges, nano_us, fit, slope_interval):
+    """Conservative host-time envelope over the feasible affine slope range.
+
+    Bounds intentionally allow different slopes for separate constraints;
+    therefore they may be wider than the exact joint feasible projection.
+    Express relative to the original midpoint fit, not UTC. Gray/GPIO
+    timestamp errors and non-affine drift are NOT included.
+    """
+    if not slope_interval.get("feasible"):
+        return None
+    lo = slope_interval["slope_lower_ns_per_us"]
+    hi = slope_interval["slope_upper_ns_per_us"]
+    if hi is None:
+        return None
+    anchor = fit["anchor_host_monotonic_ns"]
+    nominal = (fit["relative_offset_ns"] +
+               fit["slope_host_ns_per_nano_us"] *
+               (nano_us - fit["anchor_nano_us"]))
+    lower = max(
+        (row["t1_host_ns"] - anchor) +
+        min(lo * (nano_us - row["t2_nano_us"]),
+            hi * (nano_us - row["t2_nano_us"]))
+        for row in exchanges
+    )
+    upper = min(
+        (row["t4_host_ns"] - anchor) +
+        max(lo * (nano_us - row["t3_nano_us"]),
+            hi * (nano_us - row["t3_nano_us"]))
+        for row in exchanges
+    )
+    return {
+        "lower_relative_to_midpoint_fit_us": (lower - nominal) / 1000,
+        "upper_relative_to_midpoint_fit_us": (upper - nominal) / 1000,
+        "width_us": (upper - lower) / 1000,
+    }
+
+
 def _window_fits(exchanges, window_count, min_samples, min_span_s):
     """Non-overlapping chronological segments, for stationarity diagnostics."""
     n = len(exchanges)

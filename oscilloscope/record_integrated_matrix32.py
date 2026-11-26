@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from communication.serial_ports import resolve_port
+from communication.rate_replay import load_replay, replay_initialization
 from record_scope import (
     acquire, atomic_json, configure, scope_settings, validate_csv, verify,
     verify_waveform_timing, verify_waveform_scaling,
@@ -73,6 +74,10 @@ def parser():
                         "24.5 s Nano buffer polling budget including BEGIN overhead")
     p.add_argument("--sync-count", type=int, default=30,
                    help="Number of binary CRC32 sync exchanges before AND after recording")
+    p.add_argument("--replay-source", type=Path, default=None,
+                   help="Replay recorded MCU rate snapshots from an existing integrated run")
+    p.add_argument("--replay-start-s", type=float, default=None,
+                   help="Override source offset from first MCU arrival; default prior scope start")
     p.add_argument("--stale-ms", type=int, default=250)
     p.add_argument("--capture-before-start", action="store_true",
                    help="Bench-only: arm scope after MCU ACKs even if positive sensor input "
@@ -101,6 +106,12 @@ def plan(args, p):
         p.error("--preview-prompts requires --operator-prompts, --count 1, and no --run/arming flags")
     if args.arm and (not args.run or not args.dummy_load_confirmed):
         p.error("--arm requires BOTH --run and --dummy-load-confirmed")
+    if args.replay_start_s is not None and args.replay_source is None:
+        p.error("--replay-start-s requires --replay-source")
+    if args.replay_source is not None and (
+            args.count != 1 or args.operator_prompts is not None
+            or args.trigger_position_pct != 0 or args.capture_before_start):
+        p.error("Replay requires one record, 0% trigger, no prompts, and verified START before capture (omit --capture-before-start)")
     if args.dummy_load_confirmed and not args.arm:
         p.error("--dummy-load-confirmed is only used together with --arm")
     if args.capture_before_start and (not args.run or not args.arm or not args.dummy_load_confirmed):
@@ -146,6 +157,21 @@ def plan(args, p):
         p.error(f"Invalid --operator-prompts: {exc}")
     if args.operator_prompt_schedule and args.trigger_position_pct != 0:
         p.error("--operator-prompts requires --trigger-position-pct 0")
+    args.replay_provenance = None
+    args.replay_initialization = None
+    if args.replay_source is not None:
+        try:
+            replay = load_replay(args.replay_source,
+                                 duration_s=nominal_window_s+.5,
+                                 start_s=args.replay_start_s, stale_s=args.stale_ms/1000)
+            args.replay_provenance = replay.provenance
+            from run_tactile_stimulation import requested_frequency
+            source = replay.source_config["stimulation_source"]
+            _, args.replay_initialization = replay_initialization(
+                replay, requested_frequency, taxel=int(source["taxel"]),
+                receptor=source["encoding"])
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            p.error(f"Invalid replay source: {exc}")
     # Explicitly reuse the shape that record_scope.configure/verify expects.
     args.channels = [1, 2]
     args.scales = {1: args.ch1_v_div, 2: 2.0}
@@ -171,9 +197,14 @@ def plan(args, p):
         "matrix32_armed": args.arm,
         "verified_dummy_load_operator_confirmation": bool(args.dummy_load_confirmed),
         "mcu_stale_timeout_ms": args.stale_ms,
+        "live_transport": "shared_persistent_sf_sc",
+        "replay_source": args.replay_provenance,
+        "replay_initialization": args.replay_initialization,
         "controller_ready_timeout_s": args.controller_ready_timeout,
         "capture_before_matrix32_start": args.capture_before_start,
-        "acquisition_order": "controller_ready_then_pre_sync_then_arm_scope",
+        "acquisition_order": ("source_preroll_then_verified_start_then_pre_sync_then_scope_RUN_triggers_replay"
+                              if args.replay_provenance else
+                              "controller_ready_then_pre_sync_then_arm_scope"),
         "no_person_connected": True,
         "clock_offset_calibrated": False,
         "sample_gap_free": False,
@@ -255,7 +286,10 @@ def acquire_buffered_record(nano, scope, args, record, child, *, console=None):
 
     def start_prompts(observation):
         check_capture()
-        prompts.start(observation)
+        if prompts is not None:
+            prompts.start(observation)
+        if getattr(args, "replay_provenance", None) is not None:
+            record["replay_trigger"] = child.trigger_replay(observation)
 
     def progress(observation):
         record["acquisition_progress"] = observation
@@ -278,7 +312,7 @@ def acquire_buffered_record(nano, scope, args, record, child, *, console=None):
         record["effective_acquire_timeout_s"] = min(args.acquire_timeout, remaining_s)
         record["arm_request_monotonic_ns"] = time.monotonic_ns()
         callbacks = {"on_progress": progress}
-        if prompts is not None:
+        if prompts is not None or getattr(args, "replay_provenance", None) is not None:
             callbacks["on_run_written"] = start_prompts
         record["acquisition"] = acquire(
             scope, record["effective_acquire_timeout_s"], **callbacks,
@@ -387,10 +421,17 @@ def verify_gray_frame_evidence(decoded, buffer):
 class StimulationChild:
     """Isolated process preserves existing Matrix32 BLE watchdog and shutdown."""
 
-    def __init__(self, root, *, arm, stale_ms, capture_before_start=False):
+    def __init__(self, root, *, arm, stale_ms, capture_before_start=False,
+                 replay_provenance=None,
+                 replay_start_s=None):
         self.root = Path(root)
         self.arm = arm
         self.stale_ms = stale_ms
+        self.replay_provenance = replay_provenance
+        self.replay_start_s = replay_start_s
+        self.replay_ready = threading.Event()
+        self.replay_completed = threading.Event()
+        self.replay_ready_observed_ns = None
         self.capture_before_start = capture_before_start
         self.process = None
         self.log = None
@@ -408,7 +449,14 @@ class StimulationChild:
                    "--record", "--recordings-dir", str(self.root / "mcu_matrix32"),
                    "--stale-ms", str(self.stale_ms)]
         if self.arm:
-            command.append("--arm")
+            # The parent plan already requires explicit dummy-load confirmation.
+            command.extend(["--arm", "--dummy-load-confirmed"])
+        if self.replay_provenance is not None:
+            command.extend(["--replay-source", self.replay_provenance["source_run"],
+                            "--replay-duration-s", str(self.replay_provenance["duration_s"]),
+                            "--replay-trigger", str(self.root / "replay_start.json")])
+            if self.replay_start_s is not None:
+                command.extend(["--replay-start-s", str(self.replay_start_s)])
         # Separate process group: cancelling this scope session must cancel
         # the entire BLE/MCU task group, not just this parent process.
         self.process = subprocess.Popen(
@@ -424,6 +472,11 @@ class StimulationChild:
                 for line in self.process.stdout:
                     observed_ns = time.monotonic_ns()
                     self.log.write(line)
+                    if "[REPLAY] Ready;" in line:
+                        self.replay_ready_observed_ns = observed_ns
+                        self.replay_ready.set()
+                    if "[REPLAY] Completed;" in line:
+                        self.replay_completed.set()
                     if "[MCU] Configured; ready for live data." in line:
                         self.mcu_ready_observed_ns = observed_ns
                         self.mcu_ready.set()
@@ -434,7 +487,7 @@ class StimulationChild:
                             or "[SHUTDOWN]" in line):
                         self.start_failure.set()
                     if any(tag in line for tag in
-                           ("[ERROR]", "[STOP]", "[START]", "[MCU]", "[BLE]",
+                           ("[ERROR]", "[STOP]", "[START]", "[MCU]", "[BLE]", "[REPLAY]",
                             "[SHUTDOWN]", "[WARNING]", "[RECORD]")):
                         print(f"[MATRIX32] {line.rstrip()}", flush=True)
             finally:
@@ -461,7 +514,8 @@ class StimulationChild:
         if self.process is None:
             raise RuntimeError("Controller has not been started")
         deadline = time.monotonic() + timeout
-        expected = (self.matrix32_started if self.arm and not self.capture_before_start
+        expected = (self.replay_ready if self.replay_provenance is not None else
+                    self.matrix32_started if self.arm and not self.capture_before_start
                     else self.mcu_ready)
         while not expected.is_set():
             self.check()
@@ -478,7 +532,16 @@ class StimulationChild:
                     + "; see matrix32_runner.log"
                 )
             expected.wait(timeout=min(0.05, max(0.001, deadline-time.monotonic())))
-        # Require the MCU configuration ACK indication in both modes.
+        if self.replay_provenance is not None:
+            self.check()
+            if self.arm and not self.matrix32_started.is_set():
+                raise RuntimeError("Armed replay ready without observed Matrix32 START")
+            return {"replay_ready_observed_monotonic_ns": self.replay_ready_observed_ns,
+                    "matrix32_start_observed_monotonic_ns": self.matrix32_started_observed_ns,
+                    "mcu_configuration_acknowledged": False,
+                    "startup_electrical_output_verified": False,
+                    "scope_capture_precedes_matrix32_start": False}
+        # Require the MCU configuration ACK indication in both live modes.
         if not self.mcu_ready.is_set():
             raise RuntimeError("Matrix32 START reported without MCU handshake")
         self.check()
@@ -489,6 +552,19 @@ class StimulationChild:
             "scope_capture_precedes_matrix32_start": bool(
                 self.arm and self.capture_before_start and not self.matrix32_started.is_set()),
         }
+
+    def trigger_replay(self, observation):
+        if self.replay_provenance is None or not self.replay_ready.is_set():
+            raise RuntimeError("Replay is not ready")
+        self.check()
+        path = self.root/"replay_start.json"
+        if path.exists():
+            raise FileExistsError("Replay trigger already exists")
+        # Host RUN write is the replay start reference, not physical trigger time.
+        marker = {"start_ns": round(observation["run_write_end_monotonic_s"]*1e9),
+                  "source": self.replay_provenance}
+        atomic_json(path, marker)
+        return marker
 
     def stop(self):
         if self.process is None:
@@ -565,7 +641,9 @@ def _run_session(args, requested, root, *, console=None):
     if console is not None:
         meta["console_log"] = "console.log"
     child = StimulationChild(root, arm=args.arm, stale_ms=args.stale_ms,
-                             capture_before_start=args.capture_before_start)
+                             capture_before_start=args.capture_before_start,
+                             replay_provenance=args.replay_provenance,
+                             replay_start_s=args.replay_start_s)
     nano_started = False
     try:
         nano_port = resolve_port(args.nano_port, "nano")
@@ -613,7 +691,7 @@ def _run_session(args, requested, root, *, console=None):
                         args.controller_ready_timeout
                     )
                     meta["controller_ready_observed_monotonic_ns"] = time.monotonic_ns()
-                    print("[MATRIX32] MCU configured"
+                    print(("[MATRIX32] Replay ready" if args.replay_provenance else "[MATRIX32] MCU configured")
                           + ("; Matrix32 START returned" if args.arm and not args.capture_before_start
                              else "; armed scope may precede Matrix32 START" if args.arm
                              else "; dry-run controller ready")
@@ -674,6 +752,15 @@ def _run_session(args, requested, root, *, console=None):
                                 "Scope acquisition ended; you may release the taxel. "
                                 "Saving waveforms now.",
                             )
+                        if args.replay_provenance is not None:
+                            # Finite replay can end shortly after the 20 s capture.
+                            # Require its explicit completion before transferring waveforms.
+                            replay_deadline = time.monotonic()+6
+                            while not child.replay_completed.wait(timeout=.05):
+                                child.check()
+                                if child.start_failure.is_set() or time.monotonic() >= replay_deadline:
+                                    raise RuntimeError("Replay did not complete with confirmed STOP write")
+                            record["replay_completion_reported"] = True
                         atomic_json(root / "metadata.json", meta)
                         record["scope_settings_after_acquisition"] = scope_settings(
                             scope, args.channels, args.trigger_channel,

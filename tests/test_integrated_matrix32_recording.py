@@ -328,6 +328,8 @@ class IntegratedBenchTests(unittest.TestCase):
         data = plan(p.parse_args(["--arm", "--run",
                                    "--dummy-load-confirmed"]), p)
         self.assertTrue(data["matrix32_armed"])
+        self.assertEqual(data["live_transport"], "shared_persistent_sf_sc")
+        self.assertNotIn("experimental_shared_sf_sc", data)
 
     def test_scope_ch1_matrix32_ch2_nano(self):
         p = parser()
